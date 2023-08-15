@@ -26,3 +26,6 @@ We appreciate any assistance in maturing this project and realizing its potentia
 
 **Installation:**
   ----
+  * **Windows**
+  * **Android**
+  * **Linux**
