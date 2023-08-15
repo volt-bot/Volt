@@ -20,9 +20,9 @@ We appreciate any assistance in maturing this project and realizing its potentia
   ----
 **Dependencies:**
 ----
-* SDL3
-* SDL_ttf (for text rendering)
-* SDL_image (for image support)
+* [SDL3](https://github.com/libsdl-org/SDL)
+* [SDL_ttf](https://github.com/libsdl-org/SDL_ttf) (for text rendering)
+* [SDL_image](https://github.com/libsdl-org/SDL_image) (for image support)
 
 **Installation:**
   ----
