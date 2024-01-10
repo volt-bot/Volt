@@ -1,3 +1,5 @@
+//#ifndef VOLT_UTIL_H
+//#define VOLT_UTIL_H
 #pragma once
 
 #include <atomic>
@@ -15,11 +17,13 @@
 #include <memory>
 #include <future>
 #include <random>
+#include <any>
 #include <optional>
 #include <execution>
 #include <thread>
 #include <stdexcept>
 #include <unordered_map>
+#include <map>
 #include <filesystem>
 #include <functional>
 #include <atomic>
@@ -32,6 +36,7 @@
 #include <locale>
 #include <codecvt>
 #include <type_traits>
+#include <typeindex>
 #ifdef _MSC_VER
 #include <ranges>
 #endif
@@ -329,6 +334,65 @@ private:
     NamedType<T, struct widthparam> value_;
 };
 
+
+
+
+namespace Dict{
+    using dict = std::map<std::type_index,std::any>;
+
+    template<class Name, class T>
+    struct key final{ explicit key()=default; };
+
+    template<class Name, class T>
+    auto get(const dict& d, key<Name,T> k)->std::optional<T>
+    {
+        if (auto pos = d.find(typeid(k)); pos!=d.end()){
+            return std::any_cast<T>(pos->second);
+        }
+        return {};
+    }
+
+    template<class Name, class T, class V>
+    void set(dict& d, key<Name,T> k, V&& value)
+    {
+        constexpr bool convertible= std::is_convertible_v<V,T>;
+        static_assert(convertible);
+        if constexpr(convertible){
+            d.insert_or_assign(typeid(k), T{std::forward<V>(value)});
+        }
+    }
+
+    namespace example{
+        using age_key=key<struct _age_,int>;
+        using gender_key=key<struct _gender_, std::pair<float,float>>;
+        using name_key=key<struct _name_,std::string>;
+
+        constexpr inline auto age=age_key{};
+        constexpr inline auto gender=gender_key{};
+        constexpr inline auto name=name_key{};
+
+        auto person=dict{};
+
+        /*set(person, name, "Florb");
+        set(person, age, 18);
+        set(person, gender, std::pair{0.5f,1.f});
+
+        const auto a=get(person,age);
+        const auto n=get(person,name);
+        const auto g=get(person,gender);
+
+        std::cout<<"name: "<<*n<<std::endl;*/
+
+
+
+    }
+}
+
+
+
+
+
+
 // the number of characters in a multibyte string is the sum of mblen()'s
 // note: the simpler approach is std::mbstowcs(nullptr, s.c_str(), s.size())
 
@@ -404,6 +468,20 @@ namespace Async {
             }
         }
 
+        template<class F, class... Args>
+        void runInterval(int _interval, std::function<bool()> _stop_source,F&& func_, Args&&... args) {
+            using return_type = std::invoke_result_t<F, Args...>;
+            auto task = std::make_shared<std::packaged_task<return_type()>>(
+                std::bind(std::forward<F>(func_), std::forward<Args>(args)...)
+                );
+                //can a thread kill itself
+                std::thread intervalWorker([this,_interval,_stop_source] {
+                    while (_stop_source()) {
+                        
+                    }
+                    });
+        }
+
        template<class F, class... Args>
         auto enqueue(F&& f, Args&&... args)
             -> std::future<std::invoke_result_t<F,Args...>> {
@@ -446,6 +524,7 @@ namespace Async {
 
     private:
         std::vector<std::thread> workers;
+        std::vector<std::thread> intervalWorkers;
         std::queue<std::function<void()>> tasks;
         std::mutex queue_mutex;
         std::condition_variable condition;
@@ -453,6 +532,45 @@ namespace Async {
     };
 
     ThreadPool GThreadPool(std::thread::hardware_concurrency());
+
+    std::function<bool()> defaultTrue = []()
+    { return true; };
+
+    ///NOTES: should return a handler for the dispatched recuring task(the handler can be used for control like killing the task if not needed anymore)
+    /// should have a lifetime param default = infinite(this param can be a lambda/functor that returns a boolean. the lambda is invoked after avery invoke
+    //calls the given method after the given interval
+    //param for number of iterations before termination
+    //consider making the stop source param the result of the previous return
+
+    /*template<class F, class... Args>
+    void setInterval(int interval_, std::function<bool()> stop_source_,F&& func_, Args&&... args){
+        using return_type = std::invoke_result_t<F, Args...>;
+            auto task = std::make_shared<std::packaged_task<return_type()>>(
+                std::bind(std::forward<F>(func_), std::forward<Args>(args)...)
+                );
+            //task();
+    }*/
+
+
+void setInterval(std::function<void(void)> func, unsigned int _interval, std::function<bool(void)> _stop_source=defaultTrue) {
+    /*std::thread(func, interval, stopSource {
+        while (!stopSource()) {
+            func();
+            std::this_thread::sleep_for(std::chrono::milliseconds(interval));
+        }
+    }).detach();*/
+
+    /*std::thread intervalWorker([func, _interval, _stop_source] {
+        while (_stop_source()) {
+            func();
+            std::this_thread::sleep_for(std::chrono::milliseconds(_interval));
+        }
+    }).detach();*/
+}
+
+
+
+
 };
 
 class TextProcessor {
@@ -1227,7 +1345,7 @@ namespace FileSystem {
            //std::deque<std::filesystem::path> files_;
             try {
                 for (const auto& dir_ent : std::filesystem::directory_iterator(path_, std::filesystem::directory_options::skip_permission_denied)) {
-                    const auto& d_path_ = dir_ent.path();
+                    const auto d_path_ = dir_ent.path();
                     if (std::filesystem::is_directory(d_path_))
                         futures.emplace_back(Async::GThreadPool.enqueue(&FileStore::internalScanFilesThreadPool, this, d_path_));
                     else {
@@ -1310,7 +1428,7 @@ namespace FileSystem {
             //for (const auto &ft: futures)ft.wait();
             nWorkerComplete -= 1;
         }
-#endif
+#endif  //__ANDROID__
 
         std::mutex filestore_mutex;
         std::mutex extension_filter_mux;
@@ -1323,3 +1441,5 @@ namespace FileSystem {
         std::atomic_int_fast32_t nWorkerComplete;
     };
 }
+
+ //#endif //VOLT_UTIL_H
