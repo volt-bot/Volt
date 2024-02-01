@@ -70,6 +70,17 @@ namespace Volt
 		};
 	}
 
+
+
+
+
+
+
+
+
+
+
+
 	SDL_Color WHITE = {0xFF, 0xFF, 0xFF, 0xFF};
 	SDL_Color BLACK = {0x00, 0x00, 0x00, 0xff};
 	SDL_Color YELLOW = {0xff, 0xff, 0x00, 0xff};
@@ -6764,9 +6775,10 @@ tell volt when to keep the draw thread alive
 		SDL_Color bg_color = {0x00, 0x00, 0x00, 0x00};
 		SDL_Color onHoverBgColor = {0x00, 0x00, 0x00, 0x00};
 		float corner_radius = 0.f;
-		std::any user_data;
+		std::any user_data, dataSetChangedData;
 		std::function<void(Cell &)> customDrawCallback;
 		std::function<bool(Cell &)> customEventHandlerCallback;
+		std::function<void(Cell &, std::any _data)> onDataSetChanged;
 		std::deque<TextBox> textBox;
 		std::deque<EditBox> editBox;
 		std::deque<RunningText> runningText;
@@ -6792,6 +6804,12 @@ tell volt when to keep the draw thread alive
 		Cell &registerCustomEventHandlerCallback(std::function<bool(Cell &)> _customEventHandlerCallback) noexcept
 		{
 			this->customEventHandlerCallback = std::move(_customEventHandlerCallback);
+			return *this;
+		}
+
+		Cell &registerOnDataSetChangedCallback(std::function<void(Cell &, std::any _data)> _onDataSetChanged) noexcept
+		{
+			this->onDataSetChanged = std::move(_onDataSetChanged);
 			return *this;
 		}
 
@@ -6910,6 +6928,13 @@ tell volt when to keep the draw thread alive
 				textBx.updatePosBy(_dx, _dy);
 			for (auto &rtext : runningText)
 				rtext.updatePosBy(_dx, _dy);
+		}
+
+		void notifyDataSetChanged(std::any _dataSetChangedData){
+			//add a check for empty _dataSetChangedData before storing
+			//or even consider passing _dataSetChangedData directly to the onDataSetChanged() callback
+			dataSetChangedData = _dataSetChangedData;
+			if(onDataSetChanged != nullptr)onDataSetChanged(*this, dataSetChangedData);
 		}
 
 		bool handleEvent() override
@@ -7047,6 +7072,10 @@ tell volt when to keep the draw thread alive
 		void stopRedrawSession()
 		{
 			adaptiveVsyncHD.stopRedrawSession();
+		}
+
+		void notifyDataSetChanged(std::any _data=0){
+			//data_set_changed=true;
 		}
 
 		Cell &getCell(std::size_t _index)
@@ -7323,8 +7352,8 @@ tell volt when to keep the draw thread alive
 				update_top_and_bottom_cells();
 				cells.emplace_back()
 					.setContext(this)
-					.setIndex(cells.size() - 1)
-					.adaptiveVsync = &CellsAdaptiveVsync;
+					.setIndex(cells.size() - 1);
+				//.adaptiveVsync = &CellsAdaptiveVsync;
 				preAddedCellSetUpCallback(cells.back());
 				maxCells++;
 				visibleCells.push_back(&cells.back());
@@ -7341,7 +7370,7 @@ tell volt when to keep the draw thread alive
 					.setIndex(cells.size() - 1)
 					.bg_color = cell_bg_color;
 				cells.back().pv = this;
-				cells.back().adaptiveVsync = &CellsAdaptiveVsync;
+				//ells.back().adaptiveVsync = &CellsAdaptiveVsync;
 				fillNewCellDataCallback(cells.back());
 				visibleCells.emplace_back(&cells.back());
 				ACTION_UP = true;
@@ -7637,7 +7666,7 @@ tell volt when to keep the draw thread alive
 						{
 							cells.emplace_back();
 							cells.back().setContext(this).setIndex(cells[cells.size() - 2].index + 1).bg_color = cell_bg_color;
-							cells.back().adaptiveVsync = &CellsAdaptiveVsync;
+							//cells.back().adaptiveVsync = &CellsAdaptiveVsync;
 							cells.back().pv = this;
 							fillNewCellDataCallback(cells.back());
 						}
