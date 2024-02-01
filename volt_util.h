@@ -474,10 +474,12 @@ namespace Async {
             auto task = std::make_shared<std::packaged_task<return_type()>>(
                 std::bind(std::forward<F>(func_), std::forward<Args>(args)...)
                 );
-                //can a thread kill itself
+                //clarity for this worker's lifetime is required to avoid potential dead locks
+                //should probably put the thread obj in a container like a que or a vector
+                //this needs to live until timeout or stop token invoke
                 std::thread intervalWorker([this,_interval,_stop_source] {
-                    while (_stop_source()) {
-                        
+                    while (not _stop_source()) {
+                        task();
                     }
                     });
         }
@@ -524,7 +526,7 @@ namespace Async {
 
     private:
         std::vector<std::thread> workers;
-        std::vector<std::thread> intervalWorkers;
+        //std::vector<std::thread> intervalWorkers;
         std::queue<std::function<void()>> tasks;
         std::mutex queue_mutex;
         std::condition_variable condition;
@@ -866,7 +868,8 @@ public:
                                         _max_lines - _wraped_text->size());
                         }
                         catch (const std::exception &exp) {
-                            SDL_Log("%s", exp.what());
+                            //SDL_Log("%s", exp.what());
+                            std::cout << exp.what() << std::endl;
                         }
                     }
                     _max_lines = _wraped_text->size() - 1;
