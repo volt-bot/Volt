@@ -42,45 +42,6 @@ static float tB_sP = 0.f, sn_spacing = 0.f;
 
 namespace Volt
 {
-
-
-	namespace DB{
-		class db{
-			public:
-				void setDatabase(){}
-
-				bool loadDatabase(std::string _path)
-				{
-					bool result = false;
-					auto start_ = std::chrono::system_clock::now();
-					/*int rc = sqlite3_open(dataBasePath.data(), &dataBase);
-					if (rc != SQLITE_OK)
-					{
-						result= false;
-					}*/
-					std::chrono::duration<double> dt = std::chrono::system_clock::now() - start_;
-					std::cout << "db finished load in: " << dt.count() << std::endl;
-					return result;
-				}
-
-				/*type dict-array*/void getWhere(/*dict*/){}
-				/*type dict-array*/void setWhere(/*dict*/){}
-			private:
-			//sqlite3* dataBase;
-		};
-	}
-
-
-
-
-
-
-
-
-
-
-
-
 	SDL_Color WHITE = {0xFF, 0xFF, 0xFF, 0xFF};
 	SDL_Color BLACK = {0x00, 0x00, 0x00, 0xff};
 	SDL_Color YELLOW = {0xff, 0xff, 0x00, 0xff};
@@ -428,6 +389,7 @@ tell volt when to keep the draw thread alive
 		std::string label = "nolabel";
 		std::string type="";
 		std::string action = "default";
+		std::string id = "null";
 		bool required = false;
 		bool is_form = false;
 		bool prevent_default_behaviour = false;
@@ -465,6 +427,8 @@ tell volt when to keep the draw thread alive
 			if(onHideCallback)
 				onHideCallback();
 		}
+
+		bool isHidden(){ return hidden; }
 
 		void show(){
 			hidden=false;
@@ -509,8 +473,9 @@ tell volt when to keep the draw thread alive
 		SDL_Window *window;
 		AdaptiveVsync *adaptiveVsync;
 		SDL_Event *event;
-		// parent view
+		//parent view
 		IView *pv;
+		IView *cv;
 
 		Context() = default;
 
@@ -529,8 +494,9 @@ tell volt when to keep the draw thread alive
 			RedrawTriggeredEvent = _context->RedrawTriggeredEvent;
 		}
 
-		void setParentView()
+		void setView(IView* _cv)
 		{
+			cv = _cv;
 		}
 
 		Context *getContext()
@@ -4604,12 +4570,14 @@ tell volt when to keep the draw thread alive
 	public:
 		using IView::getView;
 		using IView::type;
+		using IView::isHidden;
 
 	public:
 		friend class TextBoxBuilder;
 		TextBox &setContext(Context *_context)
 		{
 			Context::setContext(_context);
+			Context::setView(this);
 			return *this;
 		}
 
@@ -5445,6 +5413,10 @@ tell volt when to keep the draw thread alive
 		using IView::bounds;
 		using IView::getView;
 		using IView::required;
+		using IView::hide;
+		using IView::show;
+		using IView::isHidden;
+		//using IView::id;
 
 		EditBox() = default;
 		int32_t id = (-1);
@@ -6766,7 +6738,12 @@ tell volt when to keep the draw thread alive
 		//using IView::type;
 		using IView::action;
 		using IView::is_form;
+		using IView::isHidden;
+		using IView::hide;
+		using IView::show;
 		using IView::prevent_default_behaviour;
+
+		using FormData = std::unordered_map<std::string, std::string>;
 
 	public:
 	// std::string type
@@ -6779,6 +6756,7 @@ tell volt when to keep the draw thread alive
 		std::function<void(Cell &)> customDrawCallback;
 		std::function<bool(Cell &)> customEventHandlerCallback;
 		std::function<void(Cell &, std::any _data)> onDataSetChanged;
+		std::function<void(Cell &, FormData _data)> onFormSubmit;
 		std::deque<TextBox> textBox;
 		std::deque<EditBox> editBox;
 		std::deque<RunningText> runningText;
@@ -6792,6 +6770,7 @@ tell volt when to keep the draw thread alive
 		Cell &setContext(Context *context_) noexcept
 		{
 			Context::setContext(context_);
+			Context::setView(this);
 			return *this;
 		}
 
@@ -6813,6 +6792,12 @@ tell volt when to keep the draw thread alive
 			return *this;
 		}
 
+		Cell &registerOnFormSubmitCallback(std::function<void(Cell &, FormData _data)> _onFormSubmit) noexcept
+		{
+			this->onFormSubmit = std::move(_onFormSubmit);
+			return *this;
+		}
+
 		Cell &setIndex(const uint64_t &_index) noexcept
 		{
 			this->index = _index;
@@ -6827,6 +6812,27 @@ tell volt when to keep the draw thread alive
 								 pv->to_cust(_TextBoxAttr.rect.h, bounds.h)};
 			textBox.emplace_back()
 				.Build(this, _TextBoxAttr);
+
+			//if (is_form and _TextBoxAttr.type="submit"){
+			//textBox.back().setonsubmithandler }
+			return *this;
+		}
+
+		Cell &addTextBoxVertArray(TextBoxAttributes _TextBoxAttr, float percentageMargin, std::vector<std::string> _texts){
+			const auto yStep = _TextBoxAttr.rect.h+percentageMargin;
+			for (auto & _txt: _texts){
+				_TextBoxAttr.textAttributes.text = _txt;
+				addTextBox(_TextBoxAttr);
+				_TextBoxAttr.rect.y += yStep;
+			}
+			return *this;
+		}
+
+		Cell &addTextBoxHorArray(TextBoxAttributes _TextBoxAttr, std::vector<std::string> _texts){
+			return *this;
+		}
+
+		Cell &addTextBoxFlexArray(TextBoxAttributes _TextBoxAttr, std::vector<std::string> _texts){
 			return *this;
 		}
 
@@ -6960,6 +6966,8 @@ tell volt when to keep the draw thread alive
 			}/*else if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN){
 				if(type=="submit" and )
 			}*/
+			if(isHidden())
+				return result;
 
 			for (auto &imgBtn : imageButton)
 				result |= imgBtn.handleEvent();
@@ -6972,6 +6980,7 @@ tell volt when to keep the draw thread alive
 
 		void Draw() override
 		{
+			if(isHidden())return;
 			// use custom draw fun if available
 			// the default draw func has no ordering
 			if (nullptr == customDrawCallback)
@@ -7012,7 +7021,11 @@ tell volt when to keep the draw thread alive
 		using Context::event;
 		using IView::bounds;
 		using IView::getView;
-		using IView::hidden;
+		//using IView::type;
+		using IView::isHidden;
+		using IView::hide;
+		using IView::show;
+		using IView::prevent_default_behaviour;
 
 	public:
 		uint32_t prevLineCount = 0, consumedCells = 0, lineCount = 0, numPrevLineCells = 0;
@@ -7321,6 +7334,7 @@ tell volt when to keep the draw thread alive
 		CellBlock &Build(Context *context_, const int &maxCells_, const int &NumVerticalModules, const CellBlockProps &_blockProps, const ScrollDirection &scroll_direction = ScrollDirection::VERTICAL)
 		{
 			Context::setContext(context_);
+			Context::setView(this);
 			adaptiveVsyncHD.setAdaptiveVsync(adaptiveVsync);
 			pv = this;
 			bounds = _blockProps.rect;
@@ -7328,7 +7342,8 @@ tell volt when to keep the draw thread alive
 				bounds.x + DisplayInfo::Get().to_cust(_blockProps.margin.left, bounds.w),
 				bounds.y + DisplayInfo::Get().to_cust(_blockProps.margin.top, bounds.h),
 				DisplayInfo::Get().to_cust(100.f - (_blockProps.margin.left + _blockProps.margin.right), bounds.w),
-				DisplayInfo::Get().to_cust(100.f - (_blockProps.margin.top + _blockProps.margin.bottom), bounds.h)};
+				DisplayInfo::Get().to_cust(100.f - (_blockProps.margin.top + _blockProps.margin.bottom), bounds.h)
+				};
 			bgColor = _blockProps.bgColor;
 			cornerRadius = _blockProps.cornerRadius;
 			maxCells = maxCells_;
@@ -7352,8 +7367,8 @@ tell volt when to keep the draw thread alive
 				update_top_and_bottom_cells();
 				cells.emplace_back()
 					.setContext(this)
-					.setIndex(cells.size() - 1);
-				//.adaptiveVsync = &CellsAdaptiveVsync;
+					.setIndex(cells.size() - 1)
+				.adaptiveVsync = &CellsAdaptiveVsync;
 				preAddedCellSetUpCallback(cells.back());
 				maxCells++;
 				visibleCells.push_back(&cells.back());
@@ -7370,7 +7385,7 @@ tell volt when to keep the draw thread alive
 					.setIndex(cells.size() - 1)
 					.bg_color = cell_bg_color;
 				cells.back().pv = this;
-				//ells.back().adaptiveVsync = &CellsAdaptiveVsync;
+				cells.back().adaptiveVsync = &CellsAdaptiveVsync;
 				fillNewCellDataCallback(cells.back());
 				visibleCells.emplace_back(&cells.back());
 				ACTION_UP = true;
@@ -7420,6 +7435,13 @@ tell volt when to keep the draw thread alive
 						DisplayInfo::Get().toUpdatedHeight(bounds.y),
 						DisplayInfo::Get().toUpdatedWidth(bounds.w),
 						DisplayInfo::Get().toUpdatedHeight(bounds.h),
+					};
+				margin =
+					{
+						DisplayInfo::Get().toUpdatedWidth(margin.x),
+						DisplayInfo::Get().toUpdatedHeight(margin.y),
+						DisplayInfo::Get().toUpdatedWidth(margin.w),
+						DisplayInfo::Get().toUpdatedHeight(margin.h),
 					};
 				cellWidth = margin.w / static_cast<float>(numVerticalCells);
 				resetTexture();
@@ -7666,7 +7688,7 @@ tell volt when to keep the draw thread alive
 						{
 							cells.emplace_back();
 							cells.back().setContext(this).setIndex(cells[cells.size() - 2].index + 1).bg_color = cell_bg_color;
-							//cells.back().adaptiveVsync = &CellsAdaptiveVsync;
+							cells.back().adaptiveVsync = &CellsAdaptiveVsync;
 							cells.back().pv = this;
 							fillNewCellDataCallback(cells.back());
 						}
