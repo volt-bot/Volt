@@ -6,7 +6,7 @@ Volt GUI is an ambitious cross-platform C++ library aimed at simplifying the cre
 
 **Project Status**
 ----
-Volt GUI is currently at a nascent stage, and we're excited to invite developers of all levels to join us in shaping its future. We're seeking enthusiastic contributors who are passionate about GUI development, SDL3, and creating user-friendly interfaces.
+Volt GUI is currently at a nascent stage, and we're excited to invite developers of all levels to join us in shaping its future. We're seeking enthusiastic contributors who are passionate about GUI development and creating user-friendly interfaces.
 
 **How You Can Contribute**
 ----
@@ -24,7 +24,7 @@ We appreciate any assistance in maturing this project and realizing its potentia
 * [SDL_ttf](https://github.com/libsdl-org/SDL_ttf) (for text rendering)
 * [SDL_image](https://github.com/libsdl-org/SDL_image) (for image support)
 
-**Installation:**
+**Installation & Building:**
   ----
   * **Windows**
   * **MacOS**
