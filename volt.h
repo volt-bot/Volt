@@ -37,6 +37,9 @@
 #include <SDL3/SDL_ttf.h>
 #include "volt_util.h"
 #include "volt_fonts.h"
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 static float tB_sP = 0.f, sn_spacing = 0.f;
 
@@ -83,11 +86,11 @@ namespace Volt
 		std::uint32_t no_sleep_requests = 0;
 	};
 
-/*
-Volt is an event driven sys and only draws upon request.
-if you have an object/drawable that needs the drawing thread to stay alive eg animation, you must use this class to
-tell volt when to keep the draw thread alive
-*/
+	/*
+	Volt is an event driven sys and only draws upon request.
+	if you have an object/drawable that needs the drawing thread to stay alive eg animation, you must use this class to
+	tell volt when to keep the draw thread alive
+	*/
 	class AdaptiveVsyncHandler
 	{
 	public:
@@ -387,16 +390,16 @@ tell volt when to keep the draw thread alive
 		SDL_FRect bounds = {0.f, 0.f, 0.f, 0.f};
 		SDL_FRect min_bounds = {0.f, 0.f, 1.f, 1.f};
 		std::string label = "nolabel";
-		std::string type="";
+		std::string type = "";
 		std::string action = "default";
 		std::string id = "null";
 		bool required = false;
 		bool is_form = false;
 		bool prevent_default_behaviour = false;
 
-		bool hidden=false;
-		std::function<void()> onHideCallback=nullptr;
-		//IView *prev, *next;
+		bool hidden = false;
+		std::function<void()> onHideCallback = nullptr;
+		// IView *prev, *next;
 	public:
 		IView *getView()
 		{
@@ -418,20 +421,23 @@ tell volt when to keep the draw thread alive
 			bounds.x += dx, bounds.y += dy;
 		};
 
-		void setOnHide(std::function<void()> _onHideCallback){
+		void setOnHide(std::function<void()> _onHideCallback)
+		{
 			onHideCallback = _onHideCallback;
 		}
 
-		void hide(){
-			hidden=true;
-			if(onHideCallback)
+		void hide()
+		{
+			hidden = true;
+			if (onHideCallback)
 				onHideCallback();
 		}
 
-		bool isHidden(){ return hidden; }
+		bool isHidden() { return hidden; }
 
-		void show(){
-			hidden=false;
+		void show()
+		{
+			hidden = false;
 		}
 
 		virtual bool handleEvent() = 0;
@@ -463,7 +469,8 @@ tell volt when to keep the draw thread alive
 			else if (a > b)
 				return toCust(val, b);
 		}
-		private:
+
+	private:
 	};
 
 	class Context
@@ -473,7 +480,7 @@ tell volt when to keep the draw thread alive
 		SDL_Window *window;
 		AdaptiveVsync *adaptiveVsync;
 		SDL_Event *event;
-		//parent view
+		// parent view
 		IView *pv;
 		IView *cv;
 
@@ -494,7 +501,7 @@ tell volt when to keep the draw thread alive
 			RedrawTriggeredEvent = _context->RedrawTriggeredEvent;
 		}
 
-		void setView(IView* _cv)
+		void setView(IView *_cv)
 		{
 			cv = _cv;
 		}
@@ -503,7 +510,6 @@ tell volt when to keep the draw thread alive
 		{
 			return this;
 		}
-
 
 		void wakeGui()
 		{
@@ -561,12 +567,30 @@ tell volt when to keep the draw thread alive
 			auto ds = SDL_GetWindowDisplayScale(window);
 			auto fdm = SDL_GetFullscreenDisplayModes(1, &dc2);
 			float dpiScale = (float)dm->w / (float)windowWidth;
-			H_DPI=dpiScale;
+			H_DPI = dpiScale;
 			dpiScale = (float)dm->h / (float)windowHeight;
 			V_DPI = dpiScale;
 
-			SDL_Log("PixelDensity:%f DispScale:%f DispContentScale:%f HDPI:%f VDPI:%f Mode.W:%d Mode.H:%d", pd, ds, dcs, H_DPI, V_DPI,dm->w,dm->h);
+			SDL_Log("PixelDensity:%f DispScale:%f DispContentScale:%f HDPI:%f VDPI:%f Mode.W:%d Mode.H:%d", pd, ds, dcs, H_DPI, V_DPI, dm->w, dm->h);
 			DDPI = 95.f;
+#ifdef _WIN32
+			HDC screen = GetDC(0);
+			float dpiX = static_cast<float>(GetDeviceCaps(screen, LOGPIXELSX));
+			float dpiY = static_cast<float>(GetDeviceCaps(screen, LOGPIXELSY));
+
+			float dpi = static_cast<float>((dpiX + dpiY) / 2);
+			DDPI = dpi;
+			V_DPI = dpiX;
+			H_DPI = dpiY;
+
+			std::cout << "General DPI: " << dpi << std::endl;
+			std::cout << "DPIX: " << dpiX << std::endl;
+			std::cout << "DPIY: " << dpiY << std::endl;
+
+			ReleaseDC(0, screen);
+#else
+			std::cout << "Not on a Windows environment." << std::endl;
+#endif
 			// Get drawable size
 			// SDL_GL_GetDrawableSize(window, &drawableWidth, &drawableHeight);
 
@@ -624,7 +648,7 @@ tell volt when to keep the draw thread alive
 		float RenderH, RenderW, DPRenderH, DPRenderW, DDPI, H_DPI, V_DPI, V_DPI_R, H_DPI_R;
 		float OldRenderH, OldRenderW;
 		int DrawableH, DrawableW;
-		int maxTextureWidth,maxTextureHeight;
+		int maxTextureWidth, maxTextureHeight;
 		SDL_DisplayMode mode;
 		DeviceDisplayType display_type;
 		SDL_RendererInfo rendererInfo;
@@ -663,10 +687,10 @@ tell volt when to keep the draw thread alive
 		{
 			std::setlocale(LC_CTYPE, "en_US.UTF-8");
 		}
+		using Context::adaptiveVsync;
 		using Context::event;
 		using Context::getContext;
 		using Context::renderer;
-		using Context::adaptiveVsync;
 		using Context::window;
 		// using Context::RedrawTriggeredEvent;
 
@@ -738,8 +762,8 @@ tell volt when to keep the draw thread alive
 			// SDL_Log("MAJOR_GL_VERSION_USED: %d", GL_VER);
 
 			SDL_SetHint(SDL_HINT_RENDER_LINE_METHOD, "1");
-			//SDL_SetHint(SDL_HINT_RENDER_LINE_METHOD, "3");
-			// SDL_Log("Frame Rate: %d", SDL_GL_GetSwapInterval());
+			// SDL_SetHint(SDL_HINT_RENDER_LINE_METHOD, "3");
+			//  SDL_Log("Frame Rate: %d", SDL_GL_GetSwapInterval());
 
 			// smartFrame_;
 			adaptiveVsync = &adaptiveVsync_;
@@ -1981,7 +2005,7 @@ tell volt when to keep the draw thread alive
 		Interpolator &setIsAnimating(bool animating) noexcept
 		{
 			update_physics = animating;
-			if(animating == false)
+			if (animating == false)
 				value = 0;
 			return *this;
 		}
@@ -3936,7 +3960,8 @@ tell volt when to keep the draw thread alive
 		}
 	};
 
-	struct Style{
+	struct Style
+	{
 		SDL_FRect rect;
 		TextAttributes text;
 		TextWrapStyle text_wrap;
@@ -3945,7 +3970,7 @@ tell volt when to keep the draw thread alive
 		EdgeType edge;
 		Gravity gravity;
 		Margin margin;
-		uint32_t maxlines=1;
+		uint32_t maxlines = 1;
 		bool shrink_to_fit = false;
 		bool highlightOnHover = false;
 	};
@@ -3953,10 +3978,10 @@ tell volt when to keep the draw thread alive
 	struct ImageButtonAttributes
 	{
 		SDL_FRect rect = {0.f, 0.f, 0.f, 0.f};
-		//inner image box dimensions in percentage {%x,%y,%w,%h} relative to rect
+		// inner image box dimensions in percentage {%x,%y,%w,%h} relative to rect
 		SDL_FRect percentage_img_rect = {0.f, 0.f, 100.f, 100.f};
 		std::string image_path;
-		//image loading style
+		// image loading style
 		IMAGE_LD_STYLE image_load_style = IMAGE_LD_STYLE::NORMAL;
 		SDL_Texture *custom_texture = nullptr;
 		std::function<SDL_Surface *()> getImageSurface = nullptr;
@@ -4129,7 +4154,7 @@ tell volt when to keep the draw thread alive
 			{
 				if (isPointInBound(event->button.x, event->button.y))
 				{
-					//if(type=="submit")
+					// if(type=="submit")
 					touch_down_ = true;
 					shrinkButton();
 					result = true;
@@ -4521,7 +4546,6 @@ tell volt when to keep the draw thread alive
 		SDL_Color m_color;
 	};
 
-
 	struct U8TextBoxConfigData
 	{
 		SDL_FRect rect;
@@ -4569,8 +4593,8 @@ tell volt when to keep the draw thread alive
 	{
 	public:
 		using IView::getView;
-		using IView::type;
 		using IView::isHidden;
+		using IView::type;
 
 	public:
 		friend class TextBoxBuilder;
@@ -5412,11 +5436,11 @@ tell volt when to keep the draw thread alive
 	public:
 		using IView::bounds;
 		using IView::getView;
-		using IView::required;
 		using IView::hide;
-		using IView::show;
 		using IView::isHidden;
-		//using IView::id;
+		using IView::required;
+		using IView::show;
+		// using IView::id;
 
 		EditBox() = default;
 		int32_t id = (-1);
@@ -6704,7 +6728,8 @@ tell volt when to keep the draw thread alive
 															  getCellWidth_{ [](const void* obj) {
 																  return static_cast<const T*>(obj)->getCellWidth();
 															  } }*/
-		{}
+		{
+		}
 
 	private:
 		const void *object;
@@ -6729,24 +6754,24 @@ tell volt when to keep the draw thread alive
 	{
 	public:
 		// friend class CellBlock;
+		using Context::adaptiveVsync;
 		using Context::event;
 		using Context::getContext;
 		using Context::pv;
-		using Context::adaptiveVsync;
 		using IView::bounds;
 		using IView::getView;
-		//using IView::type;
+		// using IView::type;
 		using IView::action;
+		using IView::hide;
 		using IView::is_form;
 		using IView::isHidden;
-		using IView::hide;
-		using IView::show;
 		using IView::prevent_default_behaviour;
+		using IView::show;
 
 		using FormData = std::unordered_map<std::string, std::string>;
 
 	public:
-	// std::string type
+		// std::string type
 	public:
 		uint64_t index = 0;
 		SDL_Color bg_color = {0x00, 0x00, 0x00, 0x00};
@@ -6813,14 +6838,16 @@ tell volt when to keep the draw thread alive
 			textBox.emplace_back()
 				.Build(this, _TextBoxAttr);
 
-			//if (is_form and _TextBoxAttr.type="submit"){
-			//textBox.back().setonsubmithandler }
+			// if (is_form and _TextBoxAttr.type="submit"){
+			// textBox.back().setonsubmithandler }
 			return *this;
 		}
 
-		Cell &addTextBoxVertArray(TextBoxAttributes _TextBoxAttr, float percentageMargin, std::vector<std::string> _texts){
-			const auto yStep = _TextBoxAttr.rect.h+percentageMargin;
-			for (auto & _txt: _texts){
+		Cell &addTextBoxVertArray(TextBoxAttributes _TextBoxAttr, float percentageMargin, std::vector<std::string> _texts)
+		{
+			const auto yStep = _TextBoxAttr.rect.h + percentageMargin;
+			for (auto &_txt : _texts)
+			{
 				_TextBoxAttr.textAttributes.text = _txt;
 				addTextBox(_TextBoxAttr);
 				_TextBoxAttr.rect.y += yStep;
@@ -6828,11 +6855,13 @@ tell volt when to keep the draw thread alive
 			return *this;
 		}
 
-		Cell &addTextBoxHorArray(TextBoxAttributes _TextBoxAttr, std::vector<std::string> _texts){
+		Cell &addTextBoxHorArray(TextBoxAttributes _TextBoxAttr, std::vector<std::string> _texts)
+		{
 			return *this;
 		}
 
-		Cell &addTextBoxFlexArray(TextBoxAttributes _TextBoxAttr, std::vector<std::string> _texts){
+		Cell &addTextBoxFlexArray(TextBoxAttributes _TextBoxAttr, std::vector<std::string> _texts)
+		{
 			return *this;
 		}
 
@@ -6936,20 +6965,24 @@ tell volt when to keep the draw thread alive
 				rtext.updatePosBy(_dx, _dy);
 		}
 
-		void notifyDataSetChanged(std::any _dataSetChangedData){
-			//add a check for empty _dataSetChangedData before storing
-			//or even consider passing _dataSetChangedData directly to the onDataSetChanged() callback
+		void notifyDataSetChanged(std::any _dataSetChangedData)
+		{
+			// add a check for empty _dataSetChangedData before storing
+			// or even consider passing _dataSetChangedData directly to the onDataSetChanged() callback
 			dataSetChangedData = _dataSetChangedData;
-			if(onDataSetChanged != nullptr)onDataSetChanged(*this, dataSetChangedData);
+			if (onDataSetChanged != nullptr)
+				onDataSetChanged(*this, dataSetChangedData);
 		}
 
 		bool handleEvent() override
 		{
 			bool result = false;
-			if (customEventHandlerCallback != nullptr){
-				bool temp_res=customEventHandlerCallback(*this);
-				if(prevent_default_behaviour){
-					//reset the default behaviour to false
+			if (customEventHandlerCallback != nullptr)
+			{
+				bool temp_res = customEventHandlerCallback(*this);
+				if (prevent_default_behaviour)
+				{
+					// reset the default behaviour to false
 					prevent_default_behaviour = false;
 					return temp_res;
 				}
@@ -6963,10 +6996,10 @@ tell volt when to keep the draw thread alive
 						DisplayInfo::Get().toUpdatedWidth(bounds.w),
 						DisplayInfo::Get().toUpdatedHeight(bounds.h),
 					};
-			}/*else if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN){
-				if(type=="submit" and )
-			}*/
-			if(isHidden())
+			} /*else if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN){
+				 if(type=="submit" and )
+			 }*/
+			if (isHidden())
 				return result;
 
 			for (auto &imgBtn : imageButton)
@@ -6980,7 +7013,8 @@ tell volt when to keep the draw thread alive
 
 		void Draw() override
 		{
-			if(isHidden())return;
+			if (isHidden())
+				return;
 			// use custom draw fun if available
 			// the default draw func has no ordering
 			if (nullptr == customDrawCallback)
@@ -7021,11 +7055,11 @@ tell volt when to keep the draw thread alive
 		using Context::event;
 		using IView::bounds;
 		using IView::getView;
-		//using IView::type;
-		using IView::isHidden;
+		// using IView::type;
 		using IView::hide;
-		using IView::show;
+		using IView::isHidden;
 		using IView::prevent_default_behaviour;
+		using IView::show;
 
 	public:
 		uint32_t prevLineCount = 0, consumedCells = 0, lineCount = 0, numPrevLineCells = 0;
@@ -7087,8 +7121,9 @@ tell volt when to keep the draw thread alive
 			adaptiveVsyncHD.stopRedrawSession();
 		}
 
-		void notifyDataSetChanged(std::any _data=0){
-			//data_set_changed=true;
+		void notifyDataSetChanged(std::any _data = 0)
+		{
+			// data_set_changed=true;
 		}
 
 		Cell &getCell(std::size_t _index)
@@ -7342,8 +7377,7 @@ tell volt when to keep the draw thread alive
 				bounds.x + DisplayInfo::Get().to_cust(_blockProps.margin.left, bounds.w),
 				bounds.y + DisplayInfo::Get().to_cust(_blockProps.margin.top, bounds.h),
 				DisplayInfo::Get().to_cust(100.f - (_blockProps.margin.left + _blockProps.margin.right), bounds.w),
-				DisplayInfo::Get().to_cust(100.f - (_blockProps.margin.top + _blockProps.margin.bottom), bounds.h)
-				};
+				DisplayInfo::Get().to_cust(100.f - (_blockProps.margin.top + _blockProps.margin.bottom), bounds.h)};
 			bgColor = _blockProps.bgColor;
 			cornerRadius = _blockProps.cornerRadius;
 			maxCells = maxCells_;
@@ -7368,7 +7402,7 @@ tell volt when to keep the draw thread alive
 				cells.emplace_back()
 					.setContext(this)
 					.setIndex(cells.size() - 1)
-				.adaptiveVsync = &CellsAdaptiveVsync;
+					.adaptiveVsync = &CellsAdaptiveVsync;
 				preAddedCellSetUpCallback(cells.back());
 				maxCells++;
 				visibleCells.push_back(&cells.back());
@@ -7618,7 +7652,7 @@ tell volt when to keep the draw thread alive
 		// BUG: infinite recursion if you invoke this func inside a cell pressed callback
 		void Draw() override
 		{
-			if (not enabled)
+			if (not enabled or isHidden())
 				return;
 			update_cells_with_async_images();
 			if (SIMPLE_RE_DRAW)
@@ -7905,7 +7939,9 @@ tell volt when to keep the draw thread alive
 	{
 	public:
 		using IView::getView;
-		using IView::hidden;
+		using IView::hide;
+		using IView::isHidden;
+		using IView::show;
 
 	public:
 		Menu &Build(Context *_context, const int &NumVerticalModules, const MenuProps &_menuProps)
@@ -7972,4 +8008,4 @@ tell volt when to keep the draw thread alive
 
 } // namespace MYLIB
 
- //#endif //VOLT_H
+// #endif //VOLT_H
