@@ -44,18 +44,6 @@ namespace Volt
 					shared_database_ = CreateSharedSQLite3(_path.data());
 					if(nullptr != shared_database_)
 						result = true;
-					 /*
-	  int rc = sqlite3_open(_path.data(), &database_);
-	  if (rc != SQLITE_OK)
-	  {
-		  std::cout<<"error loading database: "<<_path<<std::endl;
-		  sqlite3_close(database_);
-		  result= false;
-	  }
-	  else {
-		  result =true;
-	  }*/
-
 					return result;
 				}
 
@@ -99,6 +87,10 @@ namespace Volt
     			    query_ += " ORDER_BY " + table;
     			    return *this;
     			}
+
+				void setQuery(std::string _query) { query_ = _query; }
+
+				std::string getQuery() { return query_; }
 
 				void execute(){
 					char* errMsg;
