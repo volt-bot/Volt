@@ -398,6 +398,7 @@ namespace Volt
 		bool prevent_default_behaviour = false;
 
 		bool hidden = false;
+		bool disabled = false;
 		std::function<void()> onHideCallback = nullptr;
 		// IView *prev, *next;
 	public:
@@ -426,19 +427,26 @@ namespace Volt
 			onHideCallback = _onHideCallback;
 		}
 
-		void hide()
+		IView* hide()
 		{
 			hidden = true;
 			if (onHideCallback)
 				onHideCallback();
+			return this;
 		}
 
 		bool isHidden() { return hidden; }
 
-		void show()
+		IView* show()
 		{
 			hidden = false;
+			return this;
 		}
+
+		IView* disable() { disabled = true; return this; }
+		IView* enable() { disabled = false; return this; }
+		bool isDisabled() { return disabled; }
+
 
 		virtual bool handleEvent() = 0;
 
@@ -1851,6 +1859,10 @@ namespace Volt
 		SDL_FRect inner_rect{};
 
 	public:
+		using IView::getView;
+		using IView::isHidden;
+		using IView::show;
+		using IView::hide;
 		SDL_FRect rect{};
 		SDL_Color color{}, outline_color{};
 		float corner_rad = 0.f, outline = 0.f;
@@ -4836,7 +4848,7 @@ namespace Volt
 				break;
 			case SDL_EVENT_MOUSE_BUTTON_DOWN:
 				if (onClick(event->button.x, event->button.y))
-					mouse_in_bound_ = true;
+					mouse_in_bound_ = true, result=true;
 				else
 					mouse_in_bound_ = false;
 				break;
@@ -6977,6 +6989,7 @@ namespace Volt
 		bool handleEvent() override
 		{
 			bool result = false;
+			auto p_ = SDL_FPoint{ -1.f, -1.f};
 			if (customEventHandlerCallback != nullptr)
 			{
 				bool temp_res = customEventHandlerCallback(*this);
@@ -6987,6 +7000,7 @@ namespace Volt
 					return temp_res;
 				}
 			}
+
 			if (event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
 			{
 				bounds =
@@ -6996,11 +7010,50 @@ namespace Volt
 						DisplayInfo::Get().toUpdatedWidth(bounds.w),
 						DisplayInfo::Get().toUpdatedHeight(bounds.h),
 					};
-			} /*else if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN){
-				 if(type=="submit" and )
-			 }*/
+
+				for (auto& imgBtn : imageButton)
+					imgBtn.handleEvent();
+				for (auto& textBx : textBox)
+					textBx.handleEvent();
+				for (auto& _editBox : editBox)
+					_editBox.handleEvent();
+				return false;
+			} 
 			if (isHidden())
 				return result;
+
+			if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN){
+				p_ = SDL_FPoint{ event->button.x, event->button.y };
+				if (SDL_PointInRectFloat(&p_, &bounds))result |= true;
+				//std::cout << result << ", downx:" << p_.x << ", y:" << p_.y << std::endl;
+			}
+			else if (event->type == SDL_EVENT_MOUSE_BUTTON_UP) {
+				p_ = SDL_FPoint{ event->button.x, event->button.y };
+				if (SDL_PointInRectFloat(&p_, &bounds))result |= true;
+				//std::cout << result << ", upx:" << p_.x << ", y:" << p_.y << std::endl;
+			}
+			else if (event->type == SDL_EVENT_FINGER_DOWN) {
+				p_ = SDL_FPoint{ event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.y * DisplayInfo::Get().RenderH };
+				if (SDL_PointInRectFloat(&p_, &bounds))result |= true;
+				//std::cout << "mouse" << ", x:" << event->tfinger.x << ", y:" << event->tfinger.y << std::endl;
+			}
+			else if (event->type == SDL_EVENT_FINGER_UP) {
+				p_ = SDL_FPoint{ event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.y * DisplayInfo::Get().RenderH };
+				if (SDL_PointInRectFloat(&p_, &bounds))result |= true;
+				//std::cout << "mouse" << ", x:" << event->tfinger.x << ", y:" << event->tfinger.y << std::endl;
+			}
+			else if (event->type == SDL_EVENT_FINGER_MOTION)
+			{
+				p_ = SDL_FPoint{ event->tfinger.x, event->tfinger.y };
+				if (SDL_PointInRectFloat(&p_, &bounds))result |= true;
+				//std::cout << "mouse" << ", x:" << event->tfinger.x << ", y:" << event->tfinger.y << std::endl;
+			}
+			else if (event->type == SDL_EVENT_MOUSE_MOTION)
+			{
+				p_ = SDL_FPoint{ event->motion.x, event->motion.y };
+				if (SDL_PointInRectFloat(&p_, &bounds))result |= true;
+				//std::cout << "mouse" << ", x:" << event->motion.x << ", y:" << event->motion.y << std::endl;
+			}
 
 			for (auto &imgBtn : imageButton)
 				result |= imgBtn.handleEvent();
@@ -7008,6 +7061,9 @@ namespace Volt
 				result |= textBx.handleEvent();
 			for (auto &_editBox : editBox)
 				_editBox.handleEvent();
+
+			//std::cout << ", w:" << bounds.w << ", h:" << bounds.h << std::endl;
+
 			return result;
 		}
 
