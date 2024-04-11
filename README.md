@@ -1,6 +1,6 @@
 **Volt GUI Library**
 ----
-__Please Note:__ This Project is WIP
+__Please Note:__ This is WIP
 
 Volt is an ambitious cross-platform C++ GUI & utilities library aimed at simplifying the creation of modern and visually striking graphical user interfaces (GUI) in software applications. While still in its early stages of development, Volt GUI holds immense potential to revolutionize GUI design across desktop, mobile, and web platforms.
 
