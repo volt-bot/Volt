@@ -396,15 +396,25 @@ namespace Volt
 		bool required = false;
 		bool is_form = false;
 		bool prevent_default_behaviour = false;
-
 		bool hidden = false;
 		bool disabled = false;
 		std::function<void()> onHideCallback = nullptr;
-		// IView *prev, *next;
+		IView *child=nullptr;
 	public:
 		IView *getView()
 		{
 			return this;
+		}
+
+		IView* getChildView()
+		{
+			return child;
+		}
+		
+		IView* setChildView(IView* _child)
+		{
+			child = _child;
+			return child;
 		}
 
 		SDL_FRect &getBoundsBox()
@@ -429,6 +439,9 @@ namespace Volt
 
 		IView* hide()
 		{
+			if (child) {
+				child->hide();
+			}
 			hidden = true;
 			if (onHideCallback)
 				onHideCallback();
@@ -443,8 +456,19 @@ namespace Volt
 			return this;
 		}
 
-		IView* disable() { disabled = true; return this; }
-		IView* enable() { disabled = false; return this; }
+		IView* disable() {
+			if (child) {
+				child->disable();
+			}
+			disabled = true; return this;
+		}
+		IView* enable() {
+			if (child) {
+				child->enable();
+			}
+			disabled = false; return this;
+		}
+
 		bool isDisabled() { return disabled; }
 
 
@@ -1180,8 +1204,8 @@ namespace Volt
 			draw_ring_bottom_left_quadrant(_renderer, _x, _y, _inner_r, _outer_r, _color);
 		else if (_quadrant == QUADRANT::BOTTOM_RIGHT)
 			draw_ring_bottom_right_quadrand(_renderer, _x, _y, _inner_r, _outer_r, _color);
-		std::chrono::duration<double> dt = (std::chrono::high_resolution_clock::now() - tm_start_);
-		SDL_Log("CDF: %f", dt.count());
+		//std::chrono::duration<double> dt = (std::chrono::high_resolution_clock::now() - tm_start_);
+		//SDL_Log("CDF: %f", dt.count());
 	}
 
 	void draw_filled_circle(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
@@ -1504,7 +1528,7 @@ namespace Volt
 		// const SDL_Color& ___color = { 0, 0xff, 0, 0xff };
 		// SDL_SetRenderDrawColor(_renderer, ___color.r, ___color.g, ___color.b, ___color.a);
 		// SDL_RenderDrawRectF(_renderer, &_dest);
-		draw_filled_circle_4quad(_renderer, _dest.x + final_rad, _dest.y + final_rad, _dest.w - (final_rad * 2.f), _dest.h - (final_rad * 2.f), final_rad, _color);
+		draw_filled_circle_4quad(_renderer, _dest.x + final_rad-1.f, _dest.y + final_rad, _dest.w - (final_rad * 2.f), _dest.h - (final_rad * 2.f), final_rad, _color);
 		// draw_filled_circle_4quad2(_renderer, _dest.x, _dest.y, _dest.w, _dest.h, final_rad, _color);
 		// std::chrono::duration<double> dt = (std::chrono::high_resolution_clock::now() - tm_start_);
 		// SDL_Log("CDF: %f", dt.count());
@@ -6772,6 +6796,8 @@ namespace Volt
 		using Context::pv;
 		using IView::bounds;
 		using IView::getView;
+		using IView::getChildView;
+		using IView::setChildView;
 		// using IView::type;
 		using IView::action;
 		using IView::hide;
@@ -7001,6 +7027,17 @@ namespace Volt
 				}
 			}
 
+			if (hidden)return result;
+
+			if (child) {
+				if (child->handleEvent()) {
+					return true;
+				}
+				else {
+					child->hide()->disable();
+				}
+			}
+
 			if (event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
 			{
 				bounds =
@@ -7087,6 +7124,8 @@ namespace Volt
 					_editBox.Draw();
 				for (auto &_rtext : runningText)
 					_rtext.Draw();
+				if (child)
+					child->Draw();
 			}
 			else
 			{
@@ -7110,7 +7149,10 @@ namespace Volt
 	public:
 		using Context::event;
 		using IView::bounds;
+		using IView::child;
 		using IView::getView;
+		using IView::getChildView;
+		using IView::setChildView;
 		// using IView::type;
 		using IView::hide;
 		using IView::isHidden;
@@ -7458,7 +7500,7 @@ namespace Volt
 				cells.emplace_back()
 					.setContext(this)
 					.setIndex(cells.size() - 1)
-					.adaptiveVsync = &CellsAdaptiveVsync;
+					.adaptiveVsync = adaptiveVsync;
 				preAddedCellSetUpCallback(cells.back());
 				maxCells++;
 				visibleCells.push_back(&cells.back());
@@ -7475,7 +7517,7 @@ namespace Volt
 					.setIndex(cells.size() - 1)
 					.bg_color = cell_bg_color;
 				cells.back().pv = this;
-				cells.back().adaptiveVsync = &CellsAdaptiveVsync;
+				cells.back().adaptiveVsync = adaptiveVsync;
 				fillNewCellDataCallback(cells.back());
 				visibleCells.emplace_back(&cells.back());
 				ACTION_UP = true;
@@ -7509,8 +7551,17 @@ namespace Volt
 		bool handleEvent() override
 		{
 			bool result = false;
-			if (not enabled)
-				return result; // *this;
+			if (not enabled or hidden)
+				return result;
+			if (child) {
+				if (child->handleEvent()) {
+					updateHighlightedCell(-1);
+					return result;
+				}
+				else {
+					child->hide();
+				}
+			}
 			if (event->type == SDL_EVENT_RENDER_TARGETS_RESET)
 			{
 				// SDL_Log("targets reset. must recreate texts textures");
@@ -7720,6 +7771,9 @@ namespace Volt
 			{
 				fillRoundedRectF(renderer, {bounds.x, bounds.y, bounds.w, bounds.h}, cornerRadius, bgColor);
 				SDL_RenderTexture(renderer, texture.get(), nullptr, &margin);
+				if (child) {
+					child->Draw();
+				}
 				adaptiveVsyncHD.stopRedrawSession();
 				// goto simple_re_draw;
 				return;
@@ -7817,6 +7871,9 @@ namespace Volt
 			}
 			crt_.release(renderer);
 			SDL_RenderTexture(renderer, texture.get(), nullptr, &margin);
+			if (child) {
+				child->Draw();
+			}
 			adaptiveVsyncHD.stopRedrawSession();
 			if (CellsAdaptiveVsync.hasRequests() or scrollAnimInterpolator.isAnimating())
 			{
