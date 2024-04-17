@@ -437,6 +437,18 @@ namespace Volt
 			onHideCallback = _onHideCallback;
 		}
 
+		IView* toggleView() {
+			if (hidden) {
+				hidden = false;
+				disabled = false;
+			}
+			else {
+				hidden = true;
+				disabled = true;
+			}
+			return this;
+		}
+
 		IView* hide()
 		{
 			if (child) {
@@ -7033,9 +7045,6 @@ namespace Volt
 				if (child->handleEvent()) {
 					return true;
 				}
-				else {
-					child->hide()->disable();
-				}
 			}
 
 			if (event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
@@ -7556,10 +7565,8 @@ namespace Volt
 			if (child) {
 				if (child->handleEvent()) {
 					updateHighlightedCell(-1);
-					return result;
-				}
-				else {
-					child->hide();
+					SIMPLE_RE_DRAW = true;
+					return true;
 				}
 			}
 			if (event->type == SDL_EVENT_RENDER_TARGETS_RESET)
@@ -7596,6 +7603,11 @@ namespace Volt
 						   event->tfinger.y * DisplayInfo::Get().RenderH};
 				if (isPosInbound(cf.x, cf.y))
 				{
+					if (child and not child->hidden)
+					{
+						child->hide();
+						return true;
+					}
 					SIMPLE_RE_DRAW = true;
 					KEYDOWN = true, scrollAnimInterpolator.setIsAnimating(false);
 					visibleCellsHandleEvent();
