@@ -1595,7 +1595,7 @@ namespace Volt
 													 {_rect.x + _rect.w - outline_sz_, _rect.y + final_rad, outline_sz_, _rect.h - (final_rad * 2.f)}};
 		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
 		SDL_RenderFillRects(_renderer, side_rects.data(), side_rects.size());
-		draw_ring_4quad(_renderer, _rect.x + final_rad, _rect.y + final_rad, side_rects[0].w, side_rects[3].h, final_rad - outline_sz_, final_rad, _color);
+		draw_ring_4quad(_renderer, _rect.x + final_rad-1, _rect.y + final_rad, side_rects[0].w, side_rects[3].h, final_rad - outline_sz_, final_rad, _color);
 	}
 
 	void DrawCircle(SDL_Renderer *renderer, float x, float y, float r,
