@@ -419,6 +419,14 @@ std::string getDateAndTimeStr(){
     return dateTimeAdded.str();
 }
 
+//get date YYYY-MM-DD from string
+std::chrono::year_month_day stringToYmd(const std::string& dateTimeStr) {
+    std::istringstream ss(dateTimeStr);
+    std::tm tm = {};
+    ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
+    std::chrono::system_clock::time_point tp = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+    return std::chrono::year_month_day{ std::chrono::floor<std::chrono::days>(tp) };
+}
 
 
 // the number of characters in a multibyte string is the sum of mblen()'s
