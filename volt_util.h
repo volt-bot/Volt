@@ -39,11 +39,13 @@
 #include <typeindex>
 #ifdef _MSC_VER
 #include <ranges>
+//#define _CRT_SECURE_NO_WARNINGS
 #endif
 #if defined(__linux__)
 #include <dirent.h>
 #include <sys/stat.h>
 #endif
+#include <ctime>
 
 //#define FMT_HEADER_ONLY
 
@@ -388,8 +390,34 @@ namespace Dict{
     }
 }
 
+//get date as string yy-mm-dd
+std::string getDateStr() {
+    const std::chrono::time_point<std::chrono::system_clock> now{ std::chrono::system_clock::now() };
+    // Get the year, month, and day
+    const std::chrono::year_month_day ymd{ std::chrono::floor<std::chrono::days>(now) };
+    std::stringstream dateTimeAdded;
+    dateTimeAdded << ymd;
+    return dateTimeAdded.str();
+}
 
+//get date and time as string yy-mm-dd hh:mm:sec
+std::string getDateAndTimeStr(){
+    const std::chrono::time_point<std::chrono::system_clock> now{ std::chrono::system_clock::now() };
+    // Get the year, month, and day
+    const std::chrono::year_month_day ymd{ std::chrono::floor<std::chrono::days>(now) };
 
+    // Get the time
+    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    std::tm* tm = std::localtime(&tt);
+    std::stringstream timeAdded;
+    timeAdded << std::setfill('0') << std::setw(2) << tm->tm_hour << ":"
+              << std::setfill('0') << std::setw(2) << tm->tm_min << ":"
+              << std::setfill('0') << std::setw(2) << tm->tm_sec;
+    // Combine date and time
+    std::stringstream dateTimeAdded;
+    dateTimeAdded << ymd << " " << timeAdded.str();
+    return dateTimeAdded.str();
+}
 
 
 
