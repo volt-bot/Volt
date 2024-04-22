@@ -390,7 +390,7 @@ namespace Dict{
     }
 }
 
-//get date as string yy-mm-dd
+//get current date YYYY-MM-DD
 std::string getDateStr() {
     const std::chrono::time_point<std::chrono::system_clock> now{ std::chrono::system_clock::now() };
     // Get the year, month, and day
@@ -400,7 +400,7 @@ std::string getDateStr() {
     return dateTimeAdded.str();
 }
 
-//get date and time as string yy-mm-dd hh:mm:sec
+//get current date YYYY-MM-DD HH:MM:SS
 std::string getDateAndTimeStr(){
     const std::chrono::time_point<std::chrono::system_clock> now{ std::chrono::system_clock::now() };
     // Get the year, month, and day
