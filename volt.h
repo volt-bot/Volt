@@ -7178,6 +7178,11 @@ namespace Volt
 			return bounds;
 		}
 
+	 SDL_FRect& getBounds()
+		{
+			return bounds;
+		}
+
 		const float &getCellWidth() const noexcept
 		{
 			return this->cellWidth;
