@@ -7243,6 +7243,11 @@ namespace Volt
 			return cells[_index];
 		}
 
+		Cell &getSelectedCell()
+		{
+			return cells[SELECTED_CELL];
+		}
+
 		CellBlock &setSelectedItem(const int64_t _selectedCell)
 		{
 			updateSelectedCell(_selectedCell);
