@@ -6454,10 +6454,8 @@ namespace Volt
 			v_padding = (to_cust(5.f, bounds.h));
 			h_padding = to_cust(2.f, bounds.w);
 			knob_r = to_cust(45.f, bounds.h);
-			knob_x_unchecked =
-				bounds.x + h_padding + to_cust(2.f, bounds.h);
-			knob_x_checked = bounds.x + bounds.w + h_padding -
-							 to_cust(98.f, bounds.h);
+			knob_x_unchecked = bounds.x + h_padding + to_cust(2.f, bounds.h);
+			knob_x_checked = bounds.x + bounds.w + h_padding - to_cust(98.f, bounds.h);
 			knob.Build(checked ? knob_x_checked : knob_x_unchecked,
 					   bounds.y + v_padding, knob_r, knob_color);
 		}
@@ -6662,7 +6660,6 @@ namespace Volt
 
 		void create(const std::string &name, const SDL_FRect &rc)
 		{
-			// texture = CreateSharedTextureFromSurface(renderer, surface);
 			if (rc.w <= 0.f || rc.h <= 0.f)
 			{
 				SDL_Log("Error Loading Icon - Invalid Rect Values");
@@ -6766,16 +6763,17 @@ namespace Volt
 	{
 	public:
 		template <typename T>
-		explicit cellblock_visitor(const T &_t) : object{&_t} //,
-															  //	getMaxVerticalCells_{ [](const void* obj) {
-															  //	return static_cast<const T*>(obj)->getMaxVerticalCells();
-															  //} },
-															  /*getCellSpacing_{ [](const void* obj) {
-																  return static_cast<const T*>(obj)->getCellSpacing();
-															  } },
-															  getCellWidth_{ [](const void* obj) {
-																  return static_cast<const T*>(obj)->getCellWidth();
-															  } }*/
+		explicit cellblock_visitor(const T &_t) : object{&_t}
+			//,
+			//	getMaxVerticalCells_{ [](const void* obj) {
+			//	return static_cast<const T*>(obj)->getMaxVerticalCells();
+			//} },
+			/*getCellSpacing_{ [](const void* obj) {
+			  return static_cast<const T*>(obj)->getCellSpacing();
+			} },
+			getCellWidth_{ [](const void* obj) {
+			  return static_cast<const T*>(obj)->getCellWidth();
+			} }*/
 		{
 		}
 
@@ -8067,6 +8065,187 @@ namespace Volt
 		std::size_t pressed_cell_index = 0;
 		Interpolator scrollAnimInterpolator;
 	};
+
+
+
+	struct SelectProps {
+		SDL_FRect rect{ 0.f,0.f,0.f,0.f };
+		SDL_FRect inner_block_rect{ 0.f,0.f,0.f,0.f };
+		SDL_FRect text_margin{ 0.f,0.f,0.f,0.f };
+		SDL_Color text_color{ 0x00,0x00,0x00,0xff };
+		SDL_Color bg_color{ 0xff,0xff,0xff,0xff };
+		SDL_Color on_hover_color{};
+		float border_size = 1.f;
+		float corner_radius = 1.f;
+		int maxValues = 1;
+	};
+
+
+	class Select : Context, IView {
+	public:
+		using IView::getBoundsBox;
+		using IView::getView;
+		using IView::hide;
+		using IView::label;
+		using IView::show;
+	public:
+		struct Value {
+			std::size_t id = 0;
+			std::string value = "";
+
+		};
+	public:
+		CellBlock* getInnerBlock() { return &valuesBlock; }
+		Cell* getInnerCell() { return &viewValue; }
+	public:
+		Select& Build(Context* _context, SelectProps _props, std::vector<Value> _values, std::string _default) {
+			Context::setContext(_context);
+			bounds = _props.rect;
+			_props.inner_block_rect.x = bounds.x;
+			_props.inner_block_rect.y = bounds.y + bounds.h + 2.f;
+			values_ = _values;
+			std::size_t _max_values = _values.size();
+			//if all values rect dimensions arent set we defaut
+			if (_props.inner_block_rect.w <= 0.f or _props.inner_block_rect.w <= 0.f) {
+				float tmpH = _max_values >= 4 ? 4.f : static_cast<float>(_max_values);
+				_props.inner_block_rect = { bounds.x, bounds.y + bounds.h + 1.f, bounds.w, bounds.h * tmpH };
+			}
+
+			viewValue.setContext(_context);
+			viewValue.bg_color = _props.bg_color;
+			viewValue.corner_radius = _props.corner_radius;
+			viewValue.bounds = bounds;
+			viewValue.addTextBox(
+				{
+					//.mem_font = Font::OpenSansSemiBold,
+					.rect = {5.f,5.f,90.f,90.f},
+					.textAttributes = { values_.front().value, {0,0,0,0xff}, {0, 0, 0, 0}},
+					.gravity = Gravity::LEFT
+				}
+			);
+
+			viewValue.registerCustomEventHandlerCallback([this](Cell& _cell)->bool {
+				if (_cell.event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+					auto p_ = SDL_FPoint{ _cell.event->button.x, _cell.event->button.y };
+					auto p2 = SDL_PointInRectFloat(&p_, &valuesBlock.getBounds());
+					if (SDL_PointInRectFloat(&p_, &_cell.bounds) or p2) {
+						if (not showList)
+							showList = true;
+						else {
+							if (not p2)showList = false;
+						}
+						return true;
+					}
+					else
+					{
+						showList = false;
+					}
+				}
+				return false;
+				});
+
+			valuesBlock.setOnFillNewCellData(
+				[this](Cell& _cell) {
+					valuesBlock.setCellRect(_cell, 1, bounds.h, 0.f, 1.f);
+					_cell.bg_color = viewValue.bg_color;
+					_cell.onHoverBgColor = { 180,180,180,0xff };
+					_cell.highlightOnHover = true;
+					_cell.addTextBox(
+						{
+							//.mem_font = Font::OpenSansSemiBold,
+							.rect = {5.f,5.f,90.f,90.f},
+							.textAttributes = { values_[_cell.index].value, {0,0,0,0xff}, {0, 0, 0, 0}},
+							.gravity = Gravity::LEFT
+						}
+					);
+
+					_cell.textBox[0].addOnclickedCallback([this, &_cell](TextBox* _textbox) {
+						viewValue.textBox.pop_back();
+						selectedVal = _cell.index;
+						viewValue.addTextBox(
+							{
+								//.mem_font = Font::OpenSansSemiBold,
+								.rect = {5.f,5.f,90.f,90.f},
+								.textAttributes = { values_[selectedVal].value, {0,0,0,0xff}, {0, 0, 0, 0} },
+								.gravity = Gravity::LEFT
+							}
+						);
+						showList = false;
+						//valuesBlock.hide();
+						});
+				});
+			valuesBlock.Build(_context, _max_values, 1,
+				{
+				.rect = _props.inner_block_rect,
+				.cornerRadius = _props.corner_radius,
+				.bgColor = _props.bg_color
+				}
+			);
+
+			return *this;
+		}
+
+		Select& Build(Context* _context, SelectProps _props, int _max_values, const int& _numVerticalGrid, std::function<void(Cell&)> _valueCellOnCreateCallback) {
+			Context::setContext(_context);
+			bounds = _props.rect;
+			//if all values rect dimensions arent set we defaut
+			if (_props.inner_block_rect.w <= 0.f or _props.inner_block_rect.w) {
+				float tmpH = _max_values >= 4 ? 4.f : static_cast<float>(_max_values);
+				_props.inner_block_rect = { bounds.x, bounds.y + bounds.h, bounds.w, bounds.h * tmpH };
+			}
+
+			viewValue.setContext(_context);
+			viewValue.bg_color = _props.bg_color;
+			viewValue.corner_radius = _props.corner_radius;
+			viewValue.bounds = bounds;
+
+			valuesBlock.setOnFillNewCellData(_valueCellOnCreateCallback);
+			valuesBlock.Build(_context, _max_values, _numVerticalGrid,
+				{
+				.rect = _props.inner_block_rect,
+				.bgColor = _props.bg_color
+				}
+			);
+
+			return *this;
+		}
+
+		void addValue(Value newVal) {
+
+		}
+
+		void setValue(Value _value) {
+
+		}
+
+		Value& getValue() {
+			return values_[selectedVal];
+		}
+
+		bool handleEvent()override {
+			switch (event->type) {
+
+			}
+			valuesBlock.handleEvent();
+			viewValue.handleEvent();
+			return false;
+		}
+
+		void Draw()override {
+			viewValue.Draw();
+			if (showList)
+				valuesBlock.Draw();
+		}
+
+	private:
+		Cell viewValue;
+		CellBlock valuesBlock;
+		std::vector<Value> values_;
+		bool showList = false;
+		std::size_t selectedVal = 0;
+	};
+
+
 
 	using MenuProps = CellBlockProps;
 
