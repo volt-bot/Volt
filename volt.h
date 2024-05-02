@@ -54,9 +54,9 @@ namespace Volt
 	SDL_BlendMode blendMode = SDL_BLENDMODE_BLEND;
 
 	/*
-	 * notice the use of std::mutext instead of using std::atomic for var"must_not_sleep_requests"
-	 * this is because CellBlock relies on AdaptiveVsync alot but CellBlock must be copy constructible
-	 * and std::atomic's are not;
+	 * notice the use of std::mutext instead of using std::atomic
+	 * this is because class CellBlock relies on AdaptiveVsync alot but CellBlock must be copy constructible
+	 * and std::atomic's are'nt;
 	 */
 	std::mutex AdaptiveVsyncMux;
 
@@ -87,9 +87,9 @@ namespace Volt
 	};
 
 	/*
-	Volt is an event driven sys and only draws upon request.
+	Volt is an event driven sys and only draws upon request("only when necessary").
 	if you have an object/drawable that needs the drawing thread to stay alive eg animation, you must use this class to
-	tell volt when to keep the draw thread alive
+	tell volt when not to hybernate the drawing thread
 	*/
 	class AdaptiveVsyncHandler
 	{
@@ -148,15 +148,6 @@ namespace Volt
 		SDL_Texture *targetCache;
 	};
 
-	/*static SDL_Texture* rTargetCache;
-	auto CacheRenderTarget = [](SDL_Renderer* renderer) {
-		rTargetCache = SDL_GetRenderTarget(renderer);
-	};
-
-	auto RestoreCachedRenderTarget = [](SDL_Renderer* renderer) {
-		SDL_SetRenderTarget(renderer, rTargetCache);
-	};*/
-
 	SDL_Color CACHE_COLOR;
 	auto CacheRenderColor = [](SDL_Renderer *renderer)
 	{
@@ -169,9 +160,6 @@ namespace Volt
 		SDL_SetRenderDrawColor(renderer, CACHE_COLOR.r, CACHE_COLOR.g, CACHE_COLOR.b,
 							   CACHE_COLOR.a);
 	};
-
-	std::random_device ran_gen;
-	// std::uniform_int int_distro( -1, 1);
 
 	class ScopeTimer
 	{
@@ -198,7 +186,6 @@ namespace Volt
 	};
 
 	/// TODO: windows&renderer id's class or smn'
-	//
 	struct ResourceDeleter
 	{
 		void operator()(SDL_Window *window_) const
@@ -230,7 +217,6 @@ namespace Volt
 
 	using UniqueTexture = std::unique_ptr<SDL_Texture, ResourceDeleter>;
 	using SharedTexture = std::shared_ptr<SDL_Texture>;
-	// using SRenderer = std::shared_ptr<SDL_Renderer>;
 
 	std::unique_ptr<SDL_Window, ResourceDeleter>
 	CreateUniqueWindow(const char *title, Width<int> w,
@@ -572,16 +558,11 @@ namespace Volt
 
 		using Context::setContext;
 
-		static DisplayInfo &Get()
+		static DisplayInfo& Get()
 		{
 			static DisplayInfo instance;
 			return instance;
 		}
-		/*
-		static DisplayInfo& Get(Context* _context) {
-			static DisplayInfo instance(_context);
-			return instance;
-		}*/
 
 		DeviceDisplayType GetDeviceDisplayType()
 		{
@@ -635,13 +616,6 @@ namespace Volt
 #else
 			std::cout << "Not on a Windows environment." << std::endl;
 #endif
-			// Get drawable size
-			// SDL_GL_GetDrawableSize(window, &drawableWidth, &drawableHeight);
-
-			// Calculate DPI scale
-			// float dpiScale = (float)drawableWidth / (float)windowWidth;
-			// mode
-			// SDL_GetDisplayDPI(display_index, &DDPI, &H_DPI, &V_DPI);
 		}
 
 		void handleEvent()
@@ -704,13 +678,6 @@ namespace Volt
 			DrawableH = 0, DrawableW = 0;
 			RenderH = RenderW = DPRenderH = DPRenderW = DDPI = H_DPI = V_DPI = V_DPI_R = H_DPI_R = 1.f;
 		}
-		/*
-		DisplayInfo(Context* _context) {
-			setContext(_context);
-			display_type = DeviceDisplayType::UNKOWN;
-			DrawableH = 0, DrawableW = 0;
-			RenderH = RenderW = DPRenderH = DPRenderW = DDPI = H_DPI = V_DPI = V_DPI_R = H_DPI_R = 1.f;
-		}*/
 	};
 
 	class Application : protected Context, IView
@@ -721,9 +688,6 @@ namespace Volt
 
 	public:
 		SDL_Event RedrawTriggeredEvent_;
-		// std::unique_ptr<SDL_Renderer, ResourceDeleter> renderer;
-		// std::unique_ptr<SDL_Window, ResourceDeleter> window;
-		// DisplayMetrics DispMetrics;
 		UniqueTexture texture;
 		std::string PrefLocale, CurrentLocale;
 
@@ -736,18 +700,12 @@ namespace Volt
 		using Context::getContext;
 		using Context::renderer;
 		using Context::window;
-		// using Context::RedrawTriggeredEvent;
-
 		using IView::bounds;
 		using IView::ph;
 		using IView::pw;
 		using IView::to_cust;
 		bool quit = false;
 		bool show_fps = false;
-		/*virtual bool Init(){
-				SDL_Init(SDL_INIT_EVERYTHING);
-				return true;
-		}*/
 
 	public:
 		short Create(const char *title, int ww, int wh,
@@ -849,22 +807,8 @@ namespace Volt
 			return fps;
 		}
 
-		// void drawFPS(const SDL_FRect& _box, const SDL_Color& _textColor, const SDL_Color& _bgColor) {
-		//	TextBox fps_txt;
-		//	fps_txt.Build(getContext(), {
-		//		.rect = _box,
-		//		.textAttributes = {"FPS:" + std::to_string(getFPS() /*/ (SDL_GetTicks() / 1000)*/),_textColor,_bgColor},
-		//		//.margin = {0.f,25.f,100.f,50.f},
-		//		.gravity = Gravity::LEFT,
-		//		//.conerRadius = 100.f
-		//		});
-		//	fps_txt.Draw();
-		// }
-
 		~Application()
 		{
-			// renderer.reset();
-			// window.reset();
 			SDL_DestroyRenderer(renderer);
 			SDL_DestroyWindow(window);
 			renderer = nullptr;
@@ -1237,8 +1181,6 @@ namespace Volt
 				res = x * x + y * y;
 				if (res <= r2_)
 				{
-					// if (res > r2_ - (0.09f * r2_))bias = ((1.f - (res / r2_)) * 10.f);//, SDL_Log("Bias: %f", bias);
-					// bias = (1.f - (res / r2_)) * (_r/2);
 					bias = std::clamp(((1.f - (res / r2_)) * r_4), 0.f, 1.f);
 
 					points_.emplace_back(SDL_FPoint{(_x - x), (_y - y)});
@@ -1520,10 +1462,6 @@ namespace Volt
 			draw_filled_circle(_renderer, _dest.x + final_rad, _dest.y + final_rad, final_rad, _color);
 			return;
 		}
-
-		/*const SDL_FRect mid_rect_ = { _dest.x, _dest.y + final_rad, _dest.w, _dest.h - (final_rad * 2.f) };
-		const SDL_FRect top_rect_ = { _dest.x + final_rad, _dest.y, _dest.w - (final_rad * 2.f), final_rad };
-		const SDL_FRect bottom_rect_ = { _dest.x + final_rad, _dest.y + _dest.h - final_rad, _dest.w - (final_rad * 2.f), final_rad };*/
 
 		const std::array<const SDL_FRect, 3> rects_ = {SDL_FRect{(_dest.x), (_dest.y + final_rad), (_dest.w), (_dest.h - (final_rad * 2.f))},
 													   {(_dest.x + final_rad), (_dest.y), (_dest.w - (final_rad * 2.f)), (final_rad)},
@@ -6794,7 +6732,7 @@ namespace Volt
 		_t.getCellWidth();
 	};
 
-	// class CellBlock;
+	//class Select : Context, IView;
 
 	class Cell : public Context, IView
 	{
@@ -8209,18 +8147,23 @@ namespace Volt
 
 			return *this;
 		}
+		
+		//void addValueFront(Value newVal) { }
 
 		void addValue(Value newVal) {
-
+			values_.emplace_back(newVal);
 		}
+		
 
-		void setValue(Value _value) {
-
-		}
-
-		Value& getValue() {
+		Value& getSelectedValue() {
 			return values_[selectedVal];
 		}
+
+		std::vector<Value> getAllValues() { return values_; }
+
+		bool hasValues() { return not values_.empty(); }
+
+		void reset() { values_ = {}; }
 
 		bool handleEvent()override {
 			switch (event->type) {
