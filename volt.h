@@ -6753,6 +6753,7 @@ namespace Volt
 		using IView::isHidden;
 		using IView::prevent_default_behaviour;
 		using IView::show;
+		using IView::child;
 
 		using FormData = std::unordered_map<std::string, std::string>;
 
@@ -7075,6 +7076,10 @@ namespace Volt
 			else
 			{
 				customDrawCallback(*this);
+			}
+
+			if (child) {
+				child->Draw();
 			}
 		}
 	};
@@ -8004,8 +8009,6 @@ namespace Volt
 		Interpolator scrollAnimInterpolator;
 	};
 
-
-
 	struct SelectProps {
 		SDL_FRect rect{ 0.f,0.f,0.f,0.f };
 		SDL_FRect inner_block_rect{ 0.f,0.f,0.f,0.f };
@@ -8019,26 +8022,34 @@ namespace Volt
 	};
 
 
-	class Select : Context, IView {
-	public:
-		using IView::getBoundsBox;
-		using IView::getView;
-		using IView::hide;
-		using IView::label;
-		using IView::show;
+	class Select : Context {
 	public:
 		struct Value {
 			std::size_t id = 0;
 			std::string value = "";
-
 		};
 	public:
 		CellBlock* getInnerBlock() { return &valuesBlock; }
 		Cell* getInnerCell() { return &viewValue; }
+
+		IView* getView()
+		{
+			return viewValue.getView();
+		}
+
+		IView* show()
+		{
+			return viewValue.show();
+		}
+
+		IView* hide()
+		{
+			return viewValue.hide();
+		}
 	public:
-		Select& Build(Context* _context, SelectProps _props, std::vector<Value> _values, std::string _default) {
+		Select& Build(Context* _context, SelectProps _props, std::vector<Value> _values, std::size_t _default=0) {
 			Context::setContext(_context);
-			bounds = _props.rect;
+			const auto bounds = _props.rect;
 			_props.inner_block_rect.x = bounds.x;
 			_props.inner_block_rect.y = bounds.y + bounds.h + 2.f;
 			values_ = _values;
@@ -8057,33 +8068,44 @@ namespace Volt
 				{
 					//.mem_font = Font::OpenSansSemiBold,
 					.rect = {5.f,5.f,90.f,90.f},
-					.textAttributes = { values_.front().value, {0,0,0,0xff}, {0, 0, 0, 0}},
+					.textAttributes = { values_[_default].value, {0,0,0,0xff}, {0, 0, 0, 0}},
 					.gravity = Gravity::LEFT
 				}
 			);
 
 			viewValue.registerCustomEventHandlerCallback([this](Cell& _cell)->bool {
-				if (_cell.event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
-					auto p_ = SDL_FPoint{ _cell.event->button.x, _cell.event->button.y };
-					auto p2 = SDL_PointInRectFloat(&p_, &valuesBlock.getBounds());
-					if (SDL_PointInRectFloat(&p_, &_cell.bounds) or p2) {
-						if (not showList)
-							showList = true;
-						else {
-							if (not p2)showList = false;
-						}
+				if (viewValue.child->handleEvent()) {
+					return true;
+				}
+				//if we listen for both events(FINGER_DOWN && MOUSE_DOWN), both of them will 
+				//be triggered respectively becarefull not to run your logic twicw
+				/*if (_cell.event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+					mp = SDL_FPoint{ _cell.event->button.x, _cell.event->button.y };
+					//auto p2 = SDL_PointInRectFloat(&p_, &valuesBlock.getBounds());
+					clicked = true;
+				}*/
+				if (event->type == SDL_EVENT_FINGER_DOWN){
+					//mouse point
+					auto mp = SDL_FPoint{ event->tfinger.x * DisplayInfo::Get().RenderW,
+							   event->tfinger.y * DisplayInfo::Get().RenderH };
+					if (SDL_PointInRectFloat(&mp, &_cell.bounds)/* or p2*/) {
+						viewValue.child->toggleView();
 						return true;
 					}
 					else
 					{
-						showList = false;
+						if (not valuesBlock.isHidden()) {
+							valuesBlock.hide();
+							return true;
+						}
+						valuesBlock.hide();
 					}
 				}
 				return false;
 				});
 
 			valuesBlock.setOnFillNewCellData(
-				[this](Cell& _cell) {
+				[this, bounds](Cell& _cell) {
 					valuesBlock.setCellRect(_cell, 1, bounds.h, 0.f, 1.f);
 					_cell.bg_color = viewValue.bg_color;
 					_cell.onHoverBgColor = { 180,180,180,0xff };
@@ -8108,8 +8130,7 @@ namespace Volt
 								.gravity = Gravity::LEFT
 							}
 						);
-						showList = false;
-						//valuesBlock.hide();
+						valuesBlock.hide();
 						});
 				});
 			valuesBlock.Build(_context, _max_values, 1,
@@ -8119,13 +8140,14 @@ namespace Volt
 				.bgColor = _props.bg_color
 				}
 			);
+			viewValue.setChildView(valuesBlock.getView()->hide());
 
 			return *this;
 		}
 
 		Select& Build(Context* _context, SelectProps _props, int _max_values, const int& _numVerticalGrid, std::function<void(Cell&)> _valueCellOnCreateCallback) {
 			Context::setContext(_context);
-			bounds = _props.rect;
+			auto bounds = _props.rect;
 			//if all values rect dimensions arent set we defaut
 			if (_props.inner_block_rect.w <= 0.f or _props.inner_block_rect.w) {
 				float tmpH = _max_values >= 4 ? 4.f : static_cast<float>(_max_values);
@@ -8165,26 +8187,21 @@ namespace Volt
 
 		void reset() { values_ = {}; }
 
-		bool handleEvent()override {
+		bool handleEvent() {
 			switch (event->type) {
 
 			}
-			valuesBlock.handleEvent();
-			viewValue.handleEvent();
-			return false;
+			return viewValue.handleEvent();
 		}
 
-		void Draw()override {
+		void Draw() {
 			viewValue.Draw();
-			if (showList)
-				valuesBlock.Draw();
 		}
 
 	private:
 		Cell viewValue;
 		CellBlock valuesBlock;
 		std::vector<Value> values_;
-		bool showList = false;
 		std::size_t selectedVal = 0;
 	};
 
