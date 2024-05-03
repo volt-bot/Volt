@@ -8064,26 +8064,21 @@ namespace Volt
 			viewValue.bg_color = _props.bg_color;
 			viewValue.corner_radius = _props.corner_radius;
 			viewValue.bounds = bounds;
-			viewValue.addTextBox(
-				{
-					//.mem_font = Font::OpenSansSemiBold,
-					.rect = {5.f,5.f,90.f,90.f},
-					.textAttributes = { values_[_default].value, {0,0,0,0xff}, {0, 0, 0, 0}},
-					.gravity = Gravity::LEFT
-				}
-			);
+			if (_values.size()) {
+				viewValue.addTextBox(
+					{
+						//.mem_font = Font::OpenSansSemiBold,
+						.rect = {5.f,5.f,90.f,90.f},
+						.textAttributes = { values_[_default].value, {0,0,0,0xff}, {0, 0, 0, 0}},
+						.gravity = Gravity::LEFT
+					}
+				);
+			}
 
 			viewValue.registerCustomEventHandlerCallback([this](Cell& _cell)->bool {
 				if (viewValue.child->handleEvent()) {
 					return true;
 				}
-				//if we listen for both events(FINGER_DOWN && MOUSE_DOWN), both of them will 
-				//be triggered respectively becarefull not to run your logic twicw
-				/*if (_cell.event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
-					mp = SDL_FPoint{ _cell.event->button.x, _cell.event->button.y };
-					//auto p2 = SDL_PointInRectFloat(&p_, &valuesBlock.getBounds());
-					clicked = true;
-				}*/
 				if (event->type == SDL_EVENT_FINGER_DOWN){
 					//mouse point
 					auto mp = SDL_FPoint{ event->tfinger.x * DisplayInfo::Get().RenderW,
@@ -8173,7 +8168,20 @@ namespace Volt
 		//void addValueFront(Value newVal) { }
 
 		void addValue(Value newVal) {
+			if (values_.empty()) {
+				viewValue.addTextBox(
+					{
+						//.mem_font = Font::OpenSansSemiBold,
+						.rect = {5.f,5.f,90.f,90.f},
+						.textAttributes = { newVal.value, {0,0,0,0xff}, {0, 0, 0, 0}},
+						.gravity = Gravity::LEFT
+					}
+				);
+			}
 			values_.emplace_back(newVal);
+			valuesBlock.updateNoMaxCells(values_.size()+1);
+			//valuesBlock.clearAndReset();
+			//viewValue.setChildView(valuesBlock.getView()->hide());
 		}
 		
 
