@@ -8179,8 +8179,8 @@ namespace Volt
 				);
 			}
 			values_.emplace_back(newVal);
-			valuesBlock.updateNoMaxCells(values_.size()+1);
-			//valuesBlock.clearAndReset();
+			valuesBlock.updateNoMaxCells(values_.size());
+			valuesBlock.clearAndReset();
 			//viewValue.setChildView(valuesBlock.getView()->hide());
 		}
 		
