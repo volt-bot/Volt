@@ -6830,6 +6830,20 @@ namespace Volt
 			return *this;
 		}
 
+		Cell& addTextBoxFront(TextBoxAttributes _TextBoxAttr) noexcept
+		{
+			_TextBoxAttr.rect = { bounds.x + pv->to_cust(_TextBoxAttr.rect.x, bounds.w),
+								 bounds.y + pv->to_cust(_TextBoxAttr.rect.y, bounds.h),
+								 pv->to_cust(_TextBoxAttr.rect.w, bounds.w),
+								 pv->to_cust(_TextBoxAttr.rect.h, bounds.h) };
+			textBox.emplace_front()
+				.Build(this, _TextBoxAttr);
+
+			// if (is_form and _TextBoxAttr.type="submit"){
+			// textBox.back().setonsubmithandler }
+			return *this;
+		}
+
 		Cell &addTextBoxVertArray(TextBoxAttributes _TextBoxAttr, float percentageMargin, std::vector<std::string> _texts)
 		{
 			const auto yStep = _TextBoxAttr.rect.h + percentageMargin;
@@ -6885,6 +6899,18 @@ namespace Volt
 			return *this;
 		}
 
+		Cell& addEditBoxFront(EditBoxAttributes _EditBoxAttr)
+		{
+			_EditBoxAttr.rect = {
+				bounds.x + pv->to_cust(_EditBoxAttr.rect.x, bounds.w),
+				bounds.y + pv->to_cust(_EditBoxAttr.rect.y, bounds.h),
+				pv->to_cust(_EditBoxAttr.rect.w, bounds.w),
+				pv->to_cust(_EditBoxAttr.rect.h, bounds.h) };
+			editBox.emplace_front()
+				.Build(this, _EditBoxAttr);
+			return *this;
+		}
+
 		template <is_cellblock T>
 		Cell &addImageButton(T &parent_block, ImageButtonAttributes imageButtonAttributes, const PixelSystem &pixel_system = PixelSystem::PERCENTAGE)
 		{
@@ -6924,6 +6950,26 @@ namespace Volt
 			else
 			{
 				imageButton.back().Build(imageButtonAttributes);
+			}
+			return *this;
+		}
+
+		Cell& addImageButtonFront(ImageButtonAttributes imageButtonAttributes, const PixelSystem& pixel_system = PixelSystem::PERCENTAGE)
+		{
+			imageButton.emplace_front().setContext(this);
+			if (pixel_system == PixelSystem::PERCENTAGE)
+			{
+				imageButtonAttributes.rect = SDL_FRect{
+					bounds.x + pv->to_cust(imageButtonAttributes.rect.x, bounds.w),
+					bounds.y + pv->to_cust(imageButtonAttributes.rect.y, bounds.h),
+					pv->to_cust(imageButtonAttributes.rect.w, bounds.w),
+					pv->to_cust(imageButtonAttributes.rect.h, bounds.h) };
+
+				imageButton.front().Build(imageButtonAttributes);
+			}
+			else
+			{
+				imageButton.front().Build(imageButtonAttributes);
 			}
 			return *this;
 		}
@@ -7187,6 +7233,11 @@ namespace Volt
 		Cell &getSelectedCell()
 		{
 			return cells[SELECTED_CELL];
+		}
+
+		auto getSelectedCellIndex()
+		{
+			return SELECTED_CELL;
 		}
 
 		CellBlock &setSelectedItem(const int64_t _selectedCell)
