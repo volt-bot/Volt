@@ -185,7 +185,6 @@ namespace Volt
 		std::chrono::steady_clock::time_point m_start;
 	};
 
-	/// TODO: windows&renderer id's class or smn'
 	struct ResourceDeleter
 	{
 		void operator()(SDL_Window *window_) const
@@ -210,7 +209,6 @@ namespace Volt
 			{
 				SDL_DestroyTexture(texture_);
 				texture_ = nullptr;
-				// SDL_Log("Texture Destroyed!");
 			}
 		}
 	};
@@ -294,78 +292,6 @@ namespace Volt
 		}
 	};
 
-	/*
-	 * Display Metrics
-	 */
-	// class DisplayMetrics {
-	// public:
-	//	DisplayMetrics() {
-	//		display_type = DeviceDisplayType::UNKOWN;
-	//		DrawableH = 0, DrawableW = 0;
-	//	    RenderH = RenderW = DPRenderH = DPRenderW = DDPI = H_DPI = V_DPI = V_DPI_R = H_DPI_R = 0;
-	//	}
-	//	float RenderH, RenderW, DPRenderH, DPRenderW, DDPI, H_DPI, V_DPI, V_DPI_R, H_DPI_R;
-	//	int DrawableH, DrawableW;
-	//	SDL_DisplayMode mode;
-	//	DeviceDisplayType display_type;
-
-	//	//float x, y, w, h;
-	//	//convert %val to Height
-	//	template<typename T>
-	//	constexpr inline T toH(const T& val) const { return ((val * RenderH) / static_cast<decltype(val)>(100)); }
-
-	//	//convert %val to width
-	//	template<typename T>
-	//	constexpr inline T toW(const T& val) const {
-	//		return ((val * RenderW) / static_cast<decltype(val)>(100));
-	//	}
-
-	//	template<typename T>
-	//	constexpr inline T dpToPx(const T& dp) const {
-	//		return (DDPI * dp) / 160.f;
-	//	}
-
-	//	//convert %val to width
-	//	template<typename T>
-	//	constexpr inline T to_w_dp(const T& val) const {
-	//		return ((val * DPRenderW) / 100);
-	//	}
-
-	//	//convert %val to width
-	//	template<typename T>
-	//	constexpr inline T to_h_dp(const T& val) const {
-	//		return ((val * DPRenderH) / 100);
-	//	}
-
-	//	template<typename T>
-	//	constexpr inline T to_min(const T& val, const T& a, const T& b) {
-	//		if (a < b || a == b) {
-	//			return toCust(val, a);
-	//			//return ((val * a) / 100);
-	//		}
-	//		else if (a > b) {
-	//			return toCust(val, b);
-	//			//return ((val * b) / 100);
-	//		}
-	//	}
-
-	//	template<typename T>
-	//	constexpr inline T toCust(const T& val, const T& ref) const {
-	//		return ((val * ref) / static_cast<decltype(val)>(100));
-	//	}
-
-	//	void initDisplaySystem(const float& display_index = 0.f) {
-	//		SDL_GetDisplayDPI(display_index, &DDPI, &H_DPI, &V_DPI);
-	//	}
-
-	//	inline const std::pair<int, int> getDeviceSize() noexcept {
-	//		SDL_DisplayMode tmpMode;
-	//		SDL_GetDisplayMode(0, 0, &tmpMode);
-	//		return { tmpMode.w, tmpMode.h };
-	//	}
-
-	// private:
-	// };
 
 	class IView
 	{
@@ -577,7 +503,6 @@ namespace Volt
 			SDL_GetRendererInfo(renderer, &rendererInfo);
 			SDL_Log("MaxTextureW:%d MaxTextureH:%d", rendererInfo.max_texture_width, rendererInfo.max_texture_height);
 
-			// Get window size
 			SDL_GetWindowSize(window, &windowWidth, &windowHeight);
 			SDL_Log("WINDOW_SIZE H: %d W: %d", windowHeight, windowWidth);
 			RenderW = windowWidth;
@@ -585,9 +510,7 @@ namespace Volt
 			int dispCounts, dc2;
 			auto dm = SDL_GetCurrentDisplayMode(1);
 			auto ads = SDL_GetDisplays(&dispCounts);
-
 			auto dcs = SDL_GetDisplayContentScale(1);
-			// auto dm=SDL_GetDesktopDisplayMode(0);
 			auto pd = SDL_GetWindowPixelDensity(window);
 			auto ds = SDL_GetWindowDisplayScale(window);
 			auto fdm = SDL_GetFullscreenDisplayModes(1, &dc2);
@@ -628,8 +551,6 @@ namespace Volt
 				SDL_GetWindowSize(window, &newW, &newH);
 				RenderW = static_cast<float>(newW);
 				RenderH = static_cast<float>(newH);
-				// SDL_RenderSetLogicalSize(renderer, newW, newH);
-				// std::cout << "WR: OW:" << OldRenderW << " OH:" << OldRenderH << " NW:" << RenderW << " NH:" << RenderH << std::endl;
 			}
 		}
 
@@ -685,11 +606,11 @@ namespace Volt
 	private:
 		AdaptiveVsync adaptiveVsync_;
 		SDL_Event event_;
-
 	public:
 		SDL_Event RedrawTriggeredEvent_;
 		UniqueTexture texture;
 		std::string PrefLocale, CurrentLocale;
+		std::string BasePath{}, PrefPath{};
 
 		Application()
 		{
@@ -712,68 +633,32 @@ namespace Volt
 					 int window_flags = SDL_WINDOW_HIGH_PIXEL_DENSITY,
 					 int renderer_flags = SDL_RENDERER_ACCELERATED /*| SDL_RENDERER_PRESENTVSYNC*/)
 		{
-			// SDL_Log("Compile Date: %s %s", __DATE__, __TIME__);
-			// Init();
-			// SDL_GetDisplayMode(0, 0, &DisplayInfo::Get().mode);
-			// SDL_Log("DEVICE_SIZE H: %d W: %d", DisplayInfo::Get().mode.h, DisplayInfo::Get().mode.w);
 			window = SDL_CreateWindow(title, ww, wh, window_flags);
-			// SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN);
-			// SDL_SetWindowFullscreen(window, 0);
-			// SDL_Delay(1500);
 			SDL_Rect usb_b{0};
-			/*const int display_index = SDL_GetWindowDisplayIndex(window);
-			const int num_modes = SDL_GetNumDisplayModes(display_index);
-			SDL_DisplayMode mode;
-			if (0 != SDL_GetDisplayMode(display_index, 0, &mode)) {
-				SDL_Log("Couldn't get display mode");
-			}
-			else {
-				SDL_SetWindowDisplayMode(window, &mode);
-			}*/
-
-			// SDL_SetWindowSize(window, ww,wh);
-			// SDL_SetWindowSize(window, mode.w, mode.h);
-			// SDL_Log("num modes: %d", num_modes);
 			SDL_GetWindowSize(window, &usb_b.w, &usb_b.h);
-			SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
+			// SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
 			// SDL_SetHint(SDL_HINT_RENDER_DRIVER, "direct3d");
 			renderer = SDL_CreateRenderer(window, NULL, renderer_flags);
-			// SDL_RenderSetLogicalSize(renderer, ww, wh);
-			// SDL_RenderSetIntegerScale(renderer, SDL_TRUE);
 			DisplayInfo::Get().setContext(this);
 			DisplayInfo::Get().initDisplaySystem(0);
-			// SDL_Log("DPI: %f H_DPI: %f V_DPI: %f", DisplayInfo::Get().DDPI, DisplayInfo::Get().H_DPI, DisplayInfo::Get().V_DPI);
-			// SDL_Log("WINDOW_SIZE H: %d W: %d", usb_b.h, usb_b.w);
-			// DisplayInfo::Get().RenderH = static_cast<float>(usb_b.h), DisplayInfo::Get().RenderW = static_cast<float>(usb_b.w);
-			/*DisplayInfo::Get().V_DPI_R = usb_b.h / DisplayInfo::Get().DDPI, DisplayInfo::Get().H_DPI_R = usb_b.w / DisplayInfo::Get().DDPI;
-			DisplayInfo::Get().DPRenderH = (DisplayInfo::Get().RenderH * 160.f) / DisplayInfo::Get().DDPI;
-			DisplayInfo::Get().DPRenderW = (DisplayInfo::Get().RenderW * 160.f) / DisplayInfo::Get().DDPI;
-			//if (SDL_IsTablet())DisplayMetrics::Get().RenderW=(3/4)*DisplayMetrics::Get().RenderW;
-			SDL_Log("WindowWidth: %f WindowHeight: %f", DisplayInfo::Get().RenderW, DisplayInfo::Get().RenderH);
-			SDL_Log("WindowWidthDP: %f WindowHeightDP: %f", DisplayInfo::Get().DPRenderW, DisplayInfo::Get().DPRenderH);
-			SDL_Log("H_DPI_R: %f V_DPI_R: %f", DisplayInfo::Get().H_DPI_R, DisplayInfo::Get().V_DPI_R);
-			//SDL_GetRendererOutputSize(renderer, &usb_b.w, &usb_b.h);
-			SDL_Log("RENDER_OUTPUT_SIZE H: %d W: %d", usb_b.h, usb_b.w);
-			SDL_Log("FrameRate: %d", DisplayInfo::Get().mode.refresh_rate);*/
-
 			bounds.w = DisplayInfo::Get().RenderW;
 			bounds.h = DisplayInfo::Get().RenderH;
 			pv = this;
-			int GL_VER;
-			// SDL_GL_GetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, &GL_VER);
-			// SDL_Log("MAJOR_GL_VERSION_USED: %d", GL_VER);
 
 			SDL_SetHint(SDL_HINT_RENDER_LINE_METHOD, "1");
-			// SDL_SetHint(SDL_HINT_RENDER_LINE_METHOD, "3");
-			//  SDL_Log("Frame Rate: %d", SDL_GL_GetSwapInterval());
+			//SDL_SetHint(SDL_HINT_RENDER_LINE_METHOD, "3");
 
-			// smartFrame_;
 			adaptiveVsync = &adaptiveVsync_;
 			event = &event_;
 			RedrawTriggeredEvent = &RedrawTriggeredEvent_;
 			RedrawTriggeredEvent->type = SDL_RegisterEvents(1);
 			SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
 			DisplayInfo::Get().setContext(this);
+
+			BasePath = SDL_GetBasePath();
+			PrefPath = SDL_GetPrefPath("Volt", title);
+			std::cout << "BasePath:" << BasePath << "\n";
+			std::cout << "PrefPath:" << PrefPath << "\n";
 			return 1;
 		}
 
@@ -799,7 +684,6 @@ namespace Volt
 			return false;
 		}
 
-		/// @brief
 		virtual void Draw() = 0;
 
 		auto getFPS()
@@ -883,17 +767,13 @@ namespace Volt
 				p3 = (p2 + 1) % points.size();
 				p0 = p1 >= 1 ? p1 - 1 : points.size() - 1;
 			}
-
 			t = t - static_cast<int>(t);
-
 			const float tt = t * t;
 			const float ttt = tt * t;
-
 			const float q1 = -ttt + 2.0f * tt - t;
 			const float q2 = 3.0f * ttt - 5.0f * tt + 2.0f;
 			const float q3 = -3.0f * ttt + 4.0f * tt + t;
 			const float q4 = ttt - tt;
-
 			const float tx = 0.5f * (points[p0].x * q1 + points[p1].x * q2 + points[p2].x * q3 +
 									 points[p3].x * q4);
 			const float ty = 0.5f * (points[p0].y * q1 + points[p1].y * q2 + points[p2].y * q3 +
@@ -918,17 +798,12 @@ namespace Volt
 				p3 = (p2 + 1) % points.size();
 				p0 = p1 >= 1 ? p1 - 1 : points.size() - 1;
 			}
-
 			t = t - (int)t;
-
 			const float tt = t * t;
-			//[[unused]] const float ttt = tt * t;
-
 			const float q1 = -3.0f * tt + 4.0f * t - 1.0f;
 			const float q2 = 9.0f * tt - 10.0f * t;
 			const float q3 = -9.0f * tt + 8.0f * t + 1.0f;
 			const float q4 = 3.0f * tt - 2.0f * t;
-
 			const float tx = 0.5f * (points[p0].x * q1 + points[p1].x * q2 + points[p2].x * q3 +
 									 points[p3].x * q4);
 			const float ty = 0.5f * (points[p0].y * q1 + points[p1].y * q2 + points[p2].y * q3 +
@@ -961,7 +836,6 @@ namespace Volt
 
 	void draw_ring(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r, const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
 	{
-		// const std::chrono::steady_clock::time_point tm_start_ = std::chrono::high_resolution_clock::now();
 		const float outer_r2_ = _outer_r * _outer_r;
 		const float inner_r2_ = _inner_r * _inner_r;
 		const float mid1 = inner_r2_ + ((outer_r2_ - inner_r2_) / 2.f);
@@ -1043,7 +917,6 @@ namespace Volt
 	void draw_ring_top_left_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r,
 									 const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
 	{
-		// const std::chrono::steady_clock::time_point tm_start_ = std::chrono::high_resolution_clock::now();
 		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
 		const float outer_r2_ = _outer_r * _outer_r;
 		const float inner_r2_ = _inner_r * _inner_r;
@@ -1064,15 +937,11 @@ namespace Volt
 				}
 			}
 		}
-
-		// std::chrono::duration<double> dt = (std::chrono::high_resolution_clock::now() - tm_start_);
-		// SDL_Log("CDF: %f", dt.count());
 	}
 
 	void draw_ring_top_right_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r,
 									  const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
 	{
-		// const std::chrono::steady_clock::time_point tm_start_ = std::chrono::high_resolution_clock::now();
 		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
 		const float outer_r2_ = _outer_r * _outer_r;
 		const float inner_r2_ = _inner_r * _inner_r;
@@ -1093,9 +962,6 @@ namespace Volt
 				}
 			}
 		}
-
-		// std::chrono::duration<double> dt = (std::chrono::high_resolution_clock::now() - tm_start_);
-		// SDL_Log("CDF: %f", dt.count());
 	}
 
 	void draw_ring_bottom_left_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r,
@@ -1151,7 +1017,6 @@ namespace Volt
 	void draw_ring_quadrand(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r,
 							const QUADRANT &_quadrant, const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
 	{
-		const std::chrono::steady_clock::time_point tm_start_ = std::chrono::high_resolution_clock::now();
 		if (_quadrant == QUADRANT::TOP_LEFT)
 			draw_ring_top_left_quadrant(_renderer, _x, _y, _inner_r, _outer_r, _color);
 		else if (_quadrant == QUADRANT::TOP_RIGHT)
@@ -1160,14 +1025,11 @@ namespace Volt
 			draw_ring_bottom_left_quadrant(_renderer, _x, _y, _inner_r, _outer_r, _color);
 		else if (_quadrant == QUADRANT::BOTTOM_RIGHT)
 			draw_ring_bottom_right_quadrand(_renderer, _x, _y, _inner_r, _outer_r, _color);
-		//std::chrono::duration<double> dt = (std::chrono::high_resolution_clock::now() - tm_start_);
-		//SDL_Log("CDF: %f", dt.count());
 	}
 
 	void draw_filled_circle(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
 							const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff}) noexcept
 	{
-		// const std::chrono::steady_clock::time_point tm_start_ = std::chrono::high_resolution_clock::now();
 		float bias = 1.f;
 		float prev_bias = 1.f;
 		float res = 1.f;
@@ -1202,14 +1064,11 @@ namespace Volt
 				}
 			}
 		}
-		// std::chrono::duration<double> dt = (std::chrono::high_resolution_clock::now() - tm_start_);
-		// SDL_Log("CDF: %f", dt.count());
 	}
 
 	void draw_filled_circle_4quad(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_w, const float &_h, const float &_r,
 								  const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff}) noexcept
 	{
-		// const std::chrono::steady_clock::time_point tm_start_ = std::chrono::high_resolution_clock::now();
 		float bias = 1.f;
 		float prev_bias = 1.f;
 		float res = 1.f;
@@ -1243,14 +1102,11 @@ namespace Volt
 				}
 			}
 		}
-		// std::chrono::duration<double> dt = (std::chrono::high_resolution_clock::now() - tm_start_);
-		// SDL_Log("CDF: %f", dt.count());
 	}
 
 	void draw_filled_circle_4quad2(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_w, const float &_h, const float &_r,
 								   const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff}) noexcept
 	{
-		// const std::chrono::steady_clock::time_point tm_start_ = std::chrono::high_resolution_clock::now();
 		float bias = 1.f;
 		float prev_bias = 1.f;
 		float res = 1.f;
@@ -1284,17 +1140,12 @@ namespace Volt
 				}
 			}
 		}
-		// std::chrono::duration<double> dt = (std::chrono::high_resolution_clock::now() - tm_start_);
-		// SDL_Log("CDF: %f", dt.count());
 	}
 
 	void draw_circle(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
 					 const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff}) noexcept
 	{
-		// const std::chrono::steady_clock::time_point tm_start_ = std::chrono::high_resolution_clock::now();
 		draw_ring(_renderer, _x, _y, _r - 1.f, _r + 1.f, _color);
-		// std::chrono::duration<double> dt = (std::chrono::high_resolution_clock::now() - tm_start_);
-		// SDL_Log("CDF: %f", dt.count());
 	}
 
 	void draw_filled_topleft_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
@@ -1384,7 +1235,6 @@ namespace Volt
 	void draw_filled_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r, const QUADRANT &_quadrant,
 							  const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
 	{
-		// const std::chrono::steady_clock::time_point tm_start_ = std::chrono::high_resolution_clock::now();
 		if (_quadrant == QUADRANT::TOP_LEFT)
 			draw_filled_topleft_quadrant(_renderer, _x, _y, _r, _color);
 		else if (_quadrant == QUADRANT::TOP_RIGHT)
@@ -1393,9 +1243,6 @@ namespace Volt
 			draw_filled_bottomleft_quadrant(_renderer, _x, _y, _r, _color);
 		else if (_quadrant == QUADRANT::BOTTOM_RIGHT)
 			draw_filled_bottomright_quadrant(_renderer, _x, _y, _r, _color);
-
-		// std::chrono::duration<double> dt = (std::chrono::high_resolution_clock::now() - tm_start_);
-		// SDL_Log("CDF: %f", dt.count());
 	}
 
 	void draw_topleft_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
@@ -1425,7 +1272,6 @@ namespace Volt
 	void draw_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r, const QUADRANT &_quadrant,
 					   const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
 	{
-		// const std::chrono::steady_clock::time_point tm_start_ = std::chrono::high_resolution_clock::now();
 		if (_quadrant == QUADRANT::TOP_LEFT)
 			draw_topleft_quadrant(_renderer, _x, _y, _r, _color);
 		else if (_quadrant == QUADRANT::TOP_RIGHT)
@@ -1434,15 +1280,11 @@ namespace Volt
 			draw_bottomleft_quadrant(_renderer, _x, _y, _r, _color);
 		else if (_quadrant == QUADRANT::BOTTOM_RIGHT)
 			draw_bottomright_quadrant(_renderer, _x, _y, _r, _color);
-
-		// std::chrono::duration<double> dt = (std::chrono::high_resolution_clock::now() - tm_start_);
-		// SDL_Log("CDF: %f", dt.count());
 	}
 
 	void fillRoundedRectF(SDL_Renderer *_renderer, SDL_FRect _dest, float _rad,
 						  const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff}) noexcept
 	{
-		// const std::chrono::steady_clock::time_point tm_start_ = std::chrono::high_resolution_clock::now();
 		_dest = {roundf(_dest.x), roundf(_dest.y), roundf(_dest.w), roundf(_dest.h)};
 		_rad = std::clamp(_rad, 0.f, 99.5f);
 		float final_rad = 1.f;
@@ -1467,21 +1309,9 @@ namespace Volt
 													   {(_dest.x + final_rad), (_dest.y), (_dest.w - (final_rad * 2.f)), (final_rad)},
 													   {(_dest.x + final_rad), (_dest.y + _dest.h - final_rad), (_dest.w - (final_rad * 2.f)), (final_rad)}};
 
-		// SDL_SetRenderDrawBlendMode(_renderer, SDL_BLENDMODE_BLEND);
 		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
-		/*SDL_RenderFillRect(_renderer, &mid_rect_);
-		SDL_RenderFillRect(_renderer, &top_rect_);
-		SDL_RenderFillRect(_renderer, &bottom_rect_);*/
 		SDL_RenderFillRects(_renderer, rects_.data(), rects_.size());
-
-		// const SDL_Color& __color = { 0xff, 0, 0, 100 };
-		// const SDL_Color& ___color = { 0, 0xff, 0, 0xff };
-		// SDL_SetRenderDrawColor(_renderer, ___color.r, ___color.g, ___color.b, ___color.a);
-		// SDL_RenderDrawRectF(_renderer, &_dest);
-		draw_filled_circle_4quad(_renderer, _dest.x + final_rad-1.f, _dest.y + final_rad, _dest.w - (final_rad * 2.f), _dest.h - (final_rad * 2.f), final_rad, _color);
-		// draw_filled_circle_4quad2(_renderer, _dest.x, _dest.y, _dest.w, _dest.h, final_rad, _color);
-		// std::chrono::duration<double> dt = (std::chrono::high_resolution_clock::now() - tm_start_);
-		// SDL_Log("CDF: %f", dt.count());
+		draw_filled_circle_4quad(_renderer, _dest.x + final_rad, _dest.y + final_rad, _dest.w - (final_rad * 2.f), _dest.h - (final_rad * 2.f), final_rad, _color);
 	}
 
 	void drawRoundedRectF(SDL_Renderer *_renderer, const SDL_FRect &_dest, const float &_rad,
@@ -1533,38 +1363,27 @@ namespace Volt
 													 {_rect.x + _rect.w - outline_sz_, _rect.y + final_rad, outline_sz_, _rect.h - (final_rad * 2.f)}};
 		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
 		SDL_RenderFillRects(_renderer, side_rects.data(), side_rects.size());
-		draw_ring_4quad(_renderer, _rect.x + final_rad-1, _rect.y + final_rad, side_rects[0].w, side_rects[3].h, final_rad - outline_sz_, final_rad, _color);
+		draw_ring_4quad(_renderer, _rect.x + final_rad, _rect.y + final_rad, side_rects[0].w, side_rects[3].h, final_rad - outline_sz_, final_rad, _color);
 	}
 
 	void DrawCircle(SDL_Renderer *renderer, float x, float y, float r,
 					SDL_Color color = {0xff, 0xff, 0xff, 0xff})
 	{
-		// auto start = std::chrono::high_resolution_clock::now();
 		draw_circle(renderer, x, y, r, color);
-		// SDL_SetRenderDrawColor(renderer, cache_color_r, cache_color_g, cache_color_b, cache_color_a);
-		// std::chrono::duration<double> dt = (std::chrono::high_resolution_clock::now() - start);
-		// SDL_Log("T: %f", dt.count());
 	}
 
 	void FillCircle(SDL_Renderer *renderer, float x, float y, float r,
 					SDL_Color color = {0xff, 0xff, 0xff, 0xff}, Uint8 quadrant = 0)
 	{
-		// auto start = std::chrono::high_resolution_clock::now();
 		draw_filled_circle(renderer, x, y, r, color);
-		// filledEllipse(renderer, x, y, r,r, color, quadrant);
-		// SDL_SetRenderDrawColor(renderer, cache_color_r, cache_color_g, cache_color_b, cache_color_a);
-		// std::chrono::duration<double> dt = (std::chrono::high_resolution_clock::now() - start);
-		// SDL_Log("T: %f", dt.count());
 	}
 
 	void renderClear(SDL_Renderer *renderer, const uint8_t &red, const uint8_t &green,
 					 const uint8_t &blue,
 					 const uint8_t &alpha = 0xFF)
 	{
-		// SDL_GetRenderDrawColor(renderer, &CACHE_COL.r, &CACHE_COL.g, &CACHE_COL.g, &CACHE_COL.a);
 		SDL_SetRenderDrawColor(renderer, red, green, blue, alpha);
 		SDL_RenderClear(renderer);
-		// SDL_SetRenderDrawColor(renderer, CACHE_COL.r, CACHE_COL.g, CACHE_COL.g, CACHE_COL.a);
 	}
 
 	namespace Experimental
@@ -1669,8 +1488,6 @@ namespace Volt
 						SDL_RenderPoint(renderer, _rect.x + x, _rect.y + y);
 					}
 				}
-				// SDL_Log("%d,%d,%d : %d,%d,%d", _left.r, _left.g, _left.b, _right.r, _right.g, _right.b);
-				// SDL_Log("%f", _angle);
 			}
 
 			void fillGradientTexture(SDL_Renderer *renderer, SDL_Texture *_texture, const float &_angle, const SDL_Color &_left, const SDL_Color &_right)
@@ -1709,8 +1526,6 @@ namespace Volt
 				}
 
 				SDL_UnlockTexture(_texture);
-				// SDL_Log("%d,%d,%d : %d,%d,%d", _left.r, _left.g, _left.b, _right.r, _right.g, _right.b);
-				// SDL_Log("%f", _angle);
 			}
 		};
 
@@ -1733,15 +1548,9 @@ namespace Volt
 				{
 					CD.ui32data = data[(y * dw) + x];
 					color = CD.ui32data;
-					// SDL_GetRGBA() is a method for getting color
-					// components from a 32 bit color
-					// Uint8 r = CD.c[1], g = CD.c[2], b = CD.c[3], a = CD.c[0];
-					// SDL_GetRGBA(color, SDL_PIXELFORMAT_RGBA8888, &r, &g, &b, &a);
-
 					rb = 0, gb = 0, bb = 0, ab = 0;
 
 					// Within the two for-loops below, colors of adjacent pixels are added up
-
 					for (int yo = -blur_extent; yo <= blur_extent; yo++)
 					{
 						for (int xo = -blur_extent; xo <= blur_extent; xo++)
@@ -1899,11 +1708,8 @@ namespace Volt
 
 		void Draw() override
 		{
-			// Uint8 r_, g_, b_, a_;
-			// SDL_GetRenderDrawColor(renderer, &r_, &g_, &b_, &a_);
 			fillRoundedRectF(renderer, rect, corner_rad, color);
 			fillRoundedRectOutline(renderer, rect, corner_rad, outline, outline_color);
-			// SDL_SetRenderDrawColor(renderer, r_, g_, b_, a_);
 		}
 	};
 
@@ -1953,7 +1759,7 @@ namespace Volt
 		Interpolator &start(float initial_velocity)
 		{
 			vO = initial_velocity;
-			MAX_LEN = 100.f * ((vO * vO) / (2 * std::fabs(ADG)));
+			MAX_LEN = 100.f * ((vO * vO) / (2.f * std::fabs(ADG)));
 			value = 0.f, prev_dy = 0.f;
 			update_physics = true;
 			tm_start = SDL_GetTicks();
@@ -1982,7 +1788,6 @@ namespace Volt
 			dy = ((vO * t) + ((0.5f * ADG) * (t * t))) * 100.f;
 			value = dy - prev_dy;
 			prev_dy = dy;
-			// SDL_Log("%f", value);
 			if (dy >= MAX_LEN - 1.f)
 				update_physics = false;
 			return *this;
@@ -2009,8 +1814,10 @@ namespace Volt
 	protected:
 		uint32_t tm_start = 0;
 		bool update_physics = false;
+		//acceleration due to gravity
 		float ADG = -9.8f;
 		float MAX_LEN = 0.f;
+		//initial velocity
 		float vO = 0.f;
 		float dy = 0.f;
 		float prev_dy = 0.f;
@@ -2380,15 +2187,13 @@ namespace Volt
 			{
 				if (!(fonts[key] = TTF_OpenFont(font.first.c_str(), font.second)))
 				{
-					// SDL_Log("%s",/* key.c_str(),*/ TTF_GetError());
-					SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", /* key.c_str(),*/ TTF_GetError());
+					SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", TTF_GetError());
 					fonts.erase(key);
-					// TTF_OpenFontDPI()
 					return nullptr;
 				}
 				else
 				{
-					// SDL_Log("NEW FONT: %s", key.c_str());
+					SDL_Log("NEW FONT: %s", key.c_str());
 					// TTF_SetFontSDF(fonts[key], SDL_TRUE);
 					// TTF_SetFontOutline(fonts[key], m_font_outline);
 					// TTF_SetFontKerning(fonts[key], 1);
@@ -2405,13 +2210,10 @@ namespace Volt
 			if (fonts.count(key) == 0)
 			{
 				SDL_RWops *rw_ = SDL_RWFromConstMem(mem_font.font_data, mem_font.font_data_size);
-				// if (!rw_)SDL_Log("failed to rwops");
 				if (!(fonts[key] = TTF_OpenFontRW(rw_, SDL_TRUE, mem_font.font_size)))
 				{
-					// SDL_Log("%s",/* key.c_str(),*/ TTF_GetError());
-					SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", /* key.c_str(),*/ TTF_GetError());
+					SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", TTF_GetError());
 					fonts.erase(key);
-					// TTF_OpenFontDPI()
 					return nullptr;
 				}
 				else
@@ -2441,14 +2243,13 @@ namespace Volt
 
 		TTF_Font *operator[](const std::pair<std::u8string, int> &font)
 		{
-			const std::u8string key = font.first; // +std::to_string(font.second);
+			const std::u8string key = font.first;
 			if (fonts.count(key) == 0)
 			{
 				if (!(fonts[key] = TTF_OpenFont((char *)font.first.c_str(), font.second)))
 				{
 					SDL_Log("couldn't open font: %s %s", key.c_str(), TTF_GetError());
 					fonts.erase(key);
-					// TTF_OpenFontDPI()
 					return nullptr;
 				}
 				else
@@ -2472,8 +2273,6 @@ namespace Volt
 		FontSystem(const FontSystem &) = delete;
 
 		FontSystem(const FontSystem &&) = delete;
-
-		// SDL_Texture* uniTex;
 
 		static FontSystem &Get()
 		{
@@ -2522,22 +2321,11 @@ namespace Volt
 
 		TTF_Font *getFont(const std::string &font_file, const int &font_size)
 		{
-			/*MemFont consolab_;
-			consolab_.font_data = ff_consolab_ttf_data;
-			consolab_.font_data_size = ff_consolab_ttf_len;
-			consolab_.font_name = "consolab.ttf";
-			consolab_.font_size = font_size;*/
 			return fontStore[{font_file, font_size}];
-			// return fontStore[consolab_];
 		}
 
 		TTF_Font *getFont(const MemFont &_mem_ft)
 		{
-			/*MemFont consolab_;
-			consolab_.font_data = ff_consolab_ttf_data;
-			consolab_.font_data_size = ff_consolab_ttf_len;
-			consolab_.font_name = "consolab.ttf";
-			consolab_.font_size = font_size;*/
 			return fontStore[_mem_ft];
 		}
 
@@ -2546,19 +2334,14 @@ namespace Volt
 			if (!genTextCommon())
 				return {};
 			SDL_Surface *textSurf = TTF_RenderUTF8_Blended(m_font, text, text_color);
-			// SDL_SetSurfaceBlendMode(textSurf, SDL_BLENDMODE_BLEND);
 			if (!textSurf)
 				SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", SDL_GetError());
 			auto result = CreateUniqueTextureFromSurface(renderer, textSurf);
-			// SDL_SetTextureBlendMode(uniTex, SDL_BLENDMODE_BLEND);
 			if (!result.get())
 				SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", SDL_GetError());
-			// SDL_Rect messageRect = {(int) x, (int) y, textSurf->w, textSurf->h};
-			// SDL_DestroySurface(textSurf);
 			Async::GThreadPool.enqueue([](SDL_Surface *surface)
 									   {SDL_DestroySurface(surface); surface = nullptr; },
 									   textSurf);
-			// textSurf = nullptr;
 			return result;
 		}
 
@@ -2567,19 +2350,14 @@ namespace Volt
 			if (!genTextCommon())
 				return {};
 			SDL_Surface *textSurf = TTF_RenderUTF8_Blended(m_font, text, text_color);
-			// SDL_SetSurfaceBlendMode(textSurf, SDL_BLENDMODE_BLEND);
 			if (!textSurf)
 				SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", SDL_GetError());
 			auto result = CreateSharedTextureFromSurface(renderer, textSurf);
-			// SDL_SetTextureBlendMode(uniTex, SDL_BLENDMODE_BLEND);
 			if (!result.get())
 				SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", SDL_GetError());
-			// SDL_Rect messageRect = {(int) x, (int) y, textSurf->w, textSurf->h};
-			// SDL_DestroySurface(textSurf);
 			Async::GThreadPool.enqueue([](SDL_Surface *surface)
 									   {SDL_DestroySurface(surface); surface = nullptr; },
 									   textSurf);
-			// textSurf = nullptr;
 			return result;
 		}
 
@@ -4067,8 +3845,6 @@ namespace Volt
 		{
 			build_with_async_ = true;
 			build_comon(nullptr, _rect, _percentage_img_rect, _corner_radius, _bg_color);
-			// async_then = std::chrono::high_resolution_clock::now();
-			// async_load_future_ = std::async(std::launch::async, &ImageButton::async_img_Load, this, _img_path);
 			async_load_future_ = executor_.enqueue(&ImageButton::async_img_Load, this, _img_path);
 			adaptiveVsyncHD.startRedrawSession();
 			return *this;
@@ -4080,8 +3856,6 @@ namespace Volt
 		{
 			build_with_async_ = true;
 			build_comon(nullptr, _rect, _percentage_img_rect, _corner_radius, _bg_color);
-			// async_then = std::chrono::high_resolution_clock::now();
-			// async_load_future_ = std::async(std::launch::async, _customSurfaceLoader);
 			async_load_future_ = executor_.enqueue(_customSurfaceLoader);
 			adaptiveVsyncHD.startRedrawSession();
 			return *this;
@@ -4093,7 +3867,6 @@ namespace Volt
 		{
 			build_with_async_ = true;
 			build_comon(_custom_texture, _rect, _percentage_img_rect, _corner_radius, _bg_color);
-			// async_then = std::chrono::high_resolution_clock::now();
 			async_load_future_ = std::async(std::launch::async, &ImageButton::async_img_Load, this, _img_path);
 			adaptiveVsyncHD.startRedrawSession();
 			return *this;
@@ -4106,7 +3879,6 @@ namespace Volt
 		{
 			build_with_async_ = true;
 			build_comon(_custom_texture, _rect, _percentage_img_rect, _corner_radius, _bg_color);
-			// async_then = std::chrono::high_resolution_clock::now();
 			async_load_future_ = std::async(std::launch::async, _customSurfaceLoader);
 			adaptiveVsyncHD.startRedrawSession();
 			return *this;
@@ -4127,24 +3899,20 @@ namespace Volt
 		bool isAsyncLoadComplete() const noexcept
 		{
 			return is_async_load_done();
-			// return !build_with_async_;
 		}
 
 		bool handleEvent() override
 		{
 			if (!enabled)
 				return false;
-			// SDL_Log("HECKNYEAH");
 			bool result = false;
 			if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN)
 			{
 				if (isPointInBound(event->button.x, event->button.y))
 				{
-					// if(type=="submit")
 					touch_down_ = true;
 					shrinkButton();
 					result = true;
-					// SDL_Log("touch down");
 				}
 			}
 			else if (event->type == SDL_EVENT_FINGER_DOWN)
@@ -4154,7 +3922,6 @@ namespace Volt
 					touch_down_ = true;
 					result = true;
 					shrinkButton();
-					// SDL_Log("touch down");
 				}
 			}
 			else if (event->type == SDL_EVENT_MOUSE_MOTION)
@@ -4166,7 +3933,6 @@ namespace Volt
 				unshrinkButton();
 				if (isPointInBound(event->button.x, event->button.y) && touch_down_ /* && !motion_occured_*/)
 				{
-					// SDL_Log("released");
 					if (onClickedCallBack_ != nullptr)
 						onClickedCallBack_();
 					result = true;
@@ -4179,7 +3945,6 @@ namespace Volt
 				unshrinkButton();
 				if (isPointInBound(event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.y * DisplayInfo::Get().RenderH) && touch_down_ /* && !motion_occured_*/)
 				{
-					// SDL_Log("released");
 					if (onClickedCallBack_ != nullptr)
 						onClickedCallBack_();
 					result = true;
@@ -4229,7 +3994,6 @@ namespace Volt
 			{
 				int rw, rh;
 				SDL_QueryTexture(_texture, nullptr, nullptr, &rw, &rh);
-				// adjust_image_rect(rw, rh);
 			}
 
 			corner_radius_ = _corner_radius;
@@ -4243,7 +4007,6 @@ namespace Volt
 			SDL_SetRenderTarget(renderer, texture_.get());
 			renderClear(renderer, 0, 0, 0, 0);
 			fillRoundedRectF(renderer, {0.f, 0.f, bounds.w, bounds.h}, corner_radius_, bg_color_);
-			// renderClear(renderer, _bg_color.r, _bg_color.g, _bg_color.b, _bg_color.a);
 			SDL_RenderTexture(renderer, _texture, nullptr, &img_rect_);
 			cache_r_target.release(renderer);
 			configureShrinkSize();
@@ -4255,7 +4018,7 @@ namespace Volt
 			// one in the draw call && the other on check_and_process_async
 			if (!build_with_async_)
 				return true;
-			if (/*async_load_future_._Is_ready()*/ async_load_future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+			if (async_load_future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
 				return true;
 			return false;
 		}
@@ -4274,31 +4037,20 @@ namespace Volt
 				}
 				SDL_Texture *async_res_tex_ = SDL_CreateTextureFromSurface(renderer, async_res_);
 				const int rw = async_res_->w, rh = async_res_->h;
-				// adjust_image_rect(rw, rh);
 				adjust_image_rect_to_fit(rw, rh);
 				async_free1_ = executor_.enqueue(SDL_DestroySurface, async_res_);
 				CacheRenderTarget crt_(renderer);
 				SDL_SetRenderTarget(renderer, texture_.get());
-				// SDL_SetRenderDrawColor(renderer, bg_color_.r, bg_color_.g, bg_color_.b, bg_color_.a);
-				// SDL_SetRenderDrawColor(renderer, 0xff, 0, 0, 0xff);
-				// SDL_RenderFillRect(renderer, &img_rect_);
 				renderClear(renderer, bg_color_.r, bg_color_.g, bg_color_.b, bg_color_.a);
 				SDL_RenderTexture(renderer, async_res_tex_, nullptr, &img_rect_);
 				crt_.release(renderer);
 				SDL_DestroyTexture(async_res_tex_);
-				// async_free2_ = executor_.enqueue(DestroyTextureSafe, async_res_tex_);
-				// async_free2_ = std::async(std::launch::async, SDL_DestroyTexture, async_res_tex_);
 				build_with_async_ = false;
-				// std::chrono::duration<double> dt = (std::chrono::high_resolution_clock::now() - async_then);
-				// SDL_Log("ASYNC_LOAD_TM: %f", dt.count());
 			}
 		}
 
 		const bool isPointInBound(float x, float y) const noexcept
 		{
-			/*const SDL_FPoint tp_ = { x,y };
-			return SDL_PointInRectFloat(&tp_, &rect_);*/
-			// SDL_Log("pvx: %f, pvy: %f, pvw: %f", pv->rect.x, pv->rect.y, pv->rect.w);
 			if (x > pv->bounds.x + bounds.x && x < (pv->bounds.x + bounds.x + bounds.w) && y > pv->bounds.y + bounds.y && y < pv->bounds.y + bounds.y + bounds.h)
 				return true;
 
@@ -4389,14 +4141,10 @@ namespace Volt
 		{
 			if (shrinked_)
 				return;
-			// SDL_Log("Shrinking %f", shrink_size_);
-			// SDL_Log("BF_Shrinking %f", rect_.w);
 			bounds.x += shrink_size_;
 			bounds.y += shrink_size_;
 			bounds.w -= shrink_size_ * 2.f;
 			bounds.h -= shrink_size_ * 2.f;
-			// SDL_Log("shrink");
-			// SDL_Log("AF_Shrinking %f", rect_.w);
 			shrinked_ = true;
 		}
 
@@ -4409,7 +4157,6 @@ namespace Volt
 			bounds.w += shrink_size_ * 2.f;
 			bounds.h += shrink_size_ * 2.f;
 			shrinked_ = false;
-			// SDL_Log("un shrink");
 		}
 
 		void configureShrinkSize() noexcept
@@ -4429,7 +4176,6 @@ namespace Volt
 			SDL_Surface *surface;
 			if (!(surface = IMG_Load(_path.c_str())))
 				SDL_Log("%s", IMG_GetError());
-			// SDL_Delay(10000);
 			return surface;
 		}
 
@@ -4437,7 +4183,6 @@ namespace Volt
 		uint32_t async_start;
 		SharedTexture texture_;
 		SDL_FRect img_rect_;
-		// SDL_FRect rect_;
 		float corner_radius_ = 0.f;
 		float shrink_size_ = 0.f, shrink_perc_ = 10.f;
 		SDL_Color bg_color_;
@@ -6911,6 +6656,18 @@ namespace Volt
 			return *this;
 		}
 
+		/*Cell& addEditBoxVertArray(EditBoxAttributes _TextBoxAttr, float percentageMargin, std::vector<std::string> _texts)
+		{
+			const auto yStep = _TextBoxAttr.rect.h + percentageMargin;
+			for (auto& _txt : _texts)
+			{
+				_TextBoxAttr.textAttributes.text = _txt;
+				addTextBox(_TextBoxAttr);
+				_TextBoxAttr.rect.y += yStep;
+			}
+			return *this;
+		}*/
+
 		template <is_cellblock T>
 		Cell &addImageButton(T &parent_block, ImageButtonAttributes imageButtonAttributes, const PixelSystem &pixel_system = PixelSystem::PERCENTAGE)
 		{
@@ -8159,7 +7916,7 @@ namespace Volt
 					_cell.addTextBox(
 						{
 							//.mem_font = Font::OpenSansSemiBold,
-							.rect = {5.f,5.f,90.f,90.f},
+							.rect = {5.f,2.5f,90.f,95.f},
 							.textAttributes = { values_[_cell.index].value, {0,0,0,0xff}, {0, 0, 0, 0}},
 							.gravity = Gravity::LEFT
 						}
