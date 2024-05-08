@@ -20,12 +20,27 @@ namespace Volt
 		};
 
 		std::shared_ptr<sqlite3>
-		CreateSharedSQLite3(const char *_path)
+		CreateSharedSQLite3(std::string_view _path)
 		{
 			sqlite3* tmp_db_ = nullptr;
-			if (SQLITE_OK != sqlite3_open(_path, &tmp_db_))
+			if (SQLITE_OK != sqlite3_open(_path.data(), &tmp_db_))
 			{
 				std::cout<<"error loading database: "<<_path<<std::endl;
+				sqlite3_close(tmp_db_);
+				return nullptr;
+			}
+			else {
+				return std::shared_ptr<sqlite3>(tmp_db_, SQLiteResourceDeleter());
+			}
+		}
+
+		std::shared_ptr<sqlite3>
+		CreateSharedSQLite3V2(std::string_view _path)
+		{
+			sqlite3* tmp_db_ = nullptr;
+			if (SQLITE_OK != sqlite3_open_v2(_path.data(), &tmp_db_, SQLITE_OPEN_READWRITE, NULL))
+			{
+				std::cout << "v2 error loading database: " << _path << std::endl;
 				sqlite3_close(tmp_db_);
 				return nullptr;
 			}
@@ -41,8 +56,17 @@ namespace Volt
 				virtual bool loadDatabase(std::string _path)
 				{
 					bool result = false;
-					shared_database_ = CreateSharedSQLite3(_path.data());
+					shared_database_ = CreateSharedSQLite3(_path);
 					if(nullptr != shared_database_)
+						result = true;
+					return result;
+				}
+
+				virtual bool loadDatabase_v2(std::string _path)
+				{
+					bool result = false;
+					shared_database_ = CreateSharedSQLite3V2(_path);
+					if (nullptr != shared_database_)
 						result = true;
 					return result;
 				}
