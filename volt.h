@@ -6522,6 +6522,7 @@ namespace Volt
 		bool selected = false;
 		bool isHighlighted = false;
 		bool highlightOnHover = false;
+		bool ignoreTextEvents = true;
 
 	public:
 		Cell &setContext(Context *context_) noexcept
@@ -6967,6 +6968,10 @@ namespace Volt
 			return cells.front();
 		};
 
+		void eraseCell(std::size_t _cell_index) {
+			toBeErasedCells.emplace_back(_cell_index);
+		}
+
 		void triggerRedrawSession()
 		{
 			adaptiveVsyncHD.startRedrawSession();
@@ -7027,9 +7032,9 @@ namespace Volt
 				return *this;
 			const float df = height - bounds.h;
 			if (df >= 0.f)
-				dy = df, ACTION_UP = true;
+				dy = df, scrlAction = ScrollAction::Up;
 			else
-				dy = 0.f, ACTION_DOWN = true;
+				dy = 0.f, scrlAction = ScrollAction::Down;
 			this->bounds.h = height;
 			this->margin.h += df;
 			if (texture.get() != nullptr)
@@ -7104,6 +7109,7 @@ namespace Volt
 			cellsWithAsyncImages.clear();
 			visibleCells.clear();
 			cells.clear();
+			toBeErasedCells.clear();
 
 			// pre added cells
 			const int originalMaxCells = maxCells;
@@ -7133,7 +7139,7 @@ namespace Volt
 				cells.back().pv = this;
 				fillNewCellDataCallback(cells.back());
 				visibleCells.emplace_back(&cells.back());
-				ACTION_UP = true;
+				scrlAction = ScrollAction::Up;
 			}
 			adaptiveVsyncHD.startRedrawSession();
 			update_top_and_bottom_cells();
@@ -7167,7 +7173,6 @@ namespace Volt
 			}
 			else
 			{
-				// update_top_and_bottom_cells();
 				auto &new_cell = cells.emplace_back()
 									 .setContext(this)
 									 .setIndex(cells.size() - 1);
@@ -7178,9 +7183,7 @@ namespace Volt
 				if (new_cell.bounds.y <= margin.h)
 				{
 					visibleCells.push_back(&cells.back());
-					//++backIndex;
 				}
-				// ACTION_DOWN = true;
 				SIMPLE_RE_DRAW = true;
 				update_top_and_bottom_cells();
 			}
@@ -7197,7 +7200,6 @@ namespace Volt
 		{
 			if (getMaxVerticalCells() - consumedCells < numVerticalModules)
 				lineCount++, _cell.bounds.y += margin_y;
-			// if (rect.w - consumedWidth < numVerticalModules)lineCount++;
 			auto lbc = getLowestBoundCell().bounds;
 			if (cells.size() > 1)
 			{
@@ -7276,8 +7278,6 @@ namespace Volt
 				update_top_and_bottom_cells();
 			}
 
-			// preAddedCellsSetUpCallbacks.clear();
-
 			if (originalMaxCells > 0)
 			{
 				cells.emplace_back()
@@ -7288,14 +7288,32 @@ namespace Volt
 				cells.back().adaptiveVsync = adaptiveVsync;
 				fillNewCellDataCallback(cells.back());
 				visibleCells.emplace_back(&cells.back());
-				ACTION_UP = true;
+
+				while (visibleCells.back()->bounds.y < margin.h and
+					visibleCells.back()->index < (maxCells - 1))
+				{
+					update_top_and_bottom_cells();
+					if (FIRST_LOAD and (cells.back().index == visibleCells.back()->index) and cells.back().index < (maxCells - 1))
+					{
+						cells.emplace_back();
+						cells.back().setContext(this).setIndex(cells[cells.size() - 2].index + 1).bg_color = cell_bg_color;
+						cells.back().adaptiveVsync = &CellsAdaptiveVsync;
+						cells.back().pv = this;
+						fillNewCellDataCallback(cells.back());
+					}
+					++backIndex;
+					visibleCells.push_back(&cells[backIndex]);
+				}
+				while (visibleCells[0]->bounds.y + visibleCells[0]->bounds.h < 0.f)
+					visibleCells.pop_front(), frontIndex = visibleCells.front()->index;
+
+				scrlAction = ScrollAction::Up;
 			}
 			else
 			{
-				SDL_Log("empty layout");
+				SDL_Log("empty cellblock");
 			}
 			BuildWasCalled = true;
-			// buildFrameHD.startRedrawSession();
 			return *this;
 		}
 
@@ -7330,7 +7348,7 @@ namespace Volt
 			}
 			if (event->type == SDL_EVENT_RENDER_TARGETS_RESET)
 			{
-				// SDL_Log("targets reset. must recreate texts textures");
+				SDL_Log("targets reset. must recreate textures");
 				allCellsHandleEvent();
 				SIMPLE_RE_DRAW = true;
 			}
@@ -7352,7 +7370,6 @@ namespace Volt
 					};
 				cellWidth = margin.w / static_cast<float>(numVerticalCells);
 				resetTexture();
-				// clearAndReset();
 				allCellsHandleEvent();
 				SIMPLE_RE_DRAW = true;
 			}
@@ -7417,7 +7434,8 @@ namespace Volt
 											   [this, &cf_trans, &cellFound](Cell *cell)
 											   {
 												   if (cf_trans.y >= cell->bounds.y and
-													   cf_trans.y <= cell->bounds.y + cell->bounds.h and cf_trans.x >= cell->bounds.x and
+													   cf_trans.y <= cell->bounds.y + cell->bounds.h and
+													   cf_trans.x >= cell->bounds.x and
 													   cf_trans.x <= cell->bounds.x + cell->bounds.w)
 												   {
 													   cell->handleEvent();
@@ -7459,14 +7477,16 @@ namespace Volt
 											   [this, &cf_trans](Cell *cell)
 											   {
 												   if (cf_trans.y >= cell->bounds.y and
-													   cf_trans.y <= cell->bounds.y + cell->bounds.h and cf_trans.x >= cell->bounds.x and
+													   cf_trans.y <= cell->bounds.y + cell->bounds.h and
+													   cf_trans.x >= cell->bounds.x and
 													   cf_trans.x <= cell->bounds.x + cell->bounds.w)
 												   {
 													   updateSelectedCell(cell->index);
-													   cell->handleEvent();
-													   CELL_PRESSED = true;
-													   pressed_cell_index = cell->index;
-													   updateHighlightedCell(-1);
+													   if (not cell->handleEvent()) {
+														   CELL_PRESSED = true;
+														   pressed_cell_index = cell->index;
+														   updateHighlightedCell(-1);
+													   }
 													   return true;
 												   }
 												   return false;
@@ -7514,6 +7534,9 @@ namespace Volt
 			{
 				adaptiveVsyncHD.startRedrawSession();
 			}
+
+			if (not toBeErasedCells.empty())
+				SIMPLE_RE_DRAW = false;
 			return result; // *this;
 		}
 
@@ -7536,9 +7559,9 @@ namespace Volt
 			if (SIMPLE_RE_DRAW)
 			{
 				SIMPLE_RE_DRAW = false;
-				goto simple_re_draw;
+				simpleDraw();
 			}
-			if (not ACTION_DOWN and not ACTION_UP and not ANIM_ACTION_DN and not ANIM_ACTION_UP and not CELL_PRESSED and not adaptiveVsyncHD.shouldReDrawFrame())
+			if (scrlAction==ScrollAction::None and not ANIM_ACTION_DN and not ANIM_ACTION_UP and not CELL_PRESSED and not adaptiveVsyncHD.shouldReDrawFrame())
 			{
 				fillRoundedRectF(renderer, {bounds.x, bounds.y, bounds.w, bounds.h}, cornerRadius, bgColor);
 				SDL_RenderTexture(renderer, texture.get(), nullptr, &margin);
@@ -7546,7 +7569,6 @@ namespace Volt
 					child->Draw();
 				}
 				adaptiveVsyncHD.stopRedrawSession();
-				// goto simple_re_draw;
 				return;
 			}
 
@@ -7555,18 +7577,28 @@ namespace Volt
 				scrollAnimInterpolator.update();
 				if (ANIM_ACTION_DN)
 				{
-					dy = scrollAnimInterpolator.getValue(), ACTION_DOWN = true;
-					if (cells.front().bounds.y + dy > 0.f /*&& cells.front().index <= 0*/)
-						dy = 0.f - (cells.front().bounds.y), scrollAnimInterpolator.setIsAnimating(false), ACTION_UP = false, ACTION_DOWN = false;
+					dy = scrollAnimInterpolator.getValue();
+					scrlAction = ScrollAction::Down;
+					if (cells.front().bounds.y + dy > 0.f) {
+						if (cells.front().bounds.y > 0.f)
+							dy = 0.f - (cells.front().bounds.y);
+						else
+							dy = std::fabs(cells.front().bounds.y);
+						scrollAnimInterpolator.setIsAnimating(false);
+					}
 				}
 				else if (ANIM_ACTION_UP)
 				{
-					dy = 0.f - scrollAnimInterpolator.getValue(), ACTION_UP = true;
+					dy = 0.f - scrollAnimInterpolator.getValue();
+					scrlAction = ScrollAction::Up;
 					if (cells.back().bounds.y + cells.back().bounds.h + dy < margin.h and
-						cells.back().index >= (maxCells - 1))
-						dy = margin.h - cells.back().bounds.y -
-							 cells.back().bounds.h,
-						scrollAnimInterpolator.setIsAnimating(false), ACTION_UP = false, ACTION_DOWN = false;
+						cells.back().index >= (maxCells - 1)) {
+						if (cells.back().bounds.y + cells.back().bounds.h < margin.h)
+							dy = margin.h - cells.back().bounds.y - cells.back().bounds.h;
+						else
+							dy = cells.back().bounds.y + cells.back().bounds.h-margin.h, std::cout <<"mh:"<<margin.h<<" "<<"cy:"<<cells.back().bounds.y+ cells.back().bounds.h << "dy:" << dy << ", ";
+						scrollAnimInterpolator.setIsAnimating(false);
+					}
 				}
 			}
 			else
@@ -7592,51 +7624,47 @@ namespace Volt
 				if (cells.back().index >= maxCells - 1)
 					FIRST_LOAD = false;
 
-				if (ACTION_UP)
+				switch (scrlAction)
+				{
+				case ScrollAction::Up:
 				{
 					// auto beg = std::chrono::steady_clock::now();
-					while (visibleCells.back()->bounds.y < margin.h and
-						   visibleCells.back()->index < (maxCells - 1))
-					{
-						update_top_and_bottom_cells();
-						if (FIRST_LOAD and (cells.back().index == visibleCells.back()->index) and cells.back().index < (maxCells - 1))
-						{
-							cells.emplace_back();
-							cells.back().setContext(this).setIndex(cells[cells.size() - 2].index + 1).bg_color = cell_bg_color;
-							cells.back().adaptiveVsync = &CellsAdaptiveVsync;
-							cells.back().pv = this;
-							fillNewCellDataCallback(cells.back());
-						}
-						++backIndex;
-						visibleCells.push_back(&cells[backIndex]);
-					}
-					while (visibleCells[0]->bounds.y + visibleCells[0]->bounds.h < 0.f)
-						visibleCells.pop_front(), frontIndex = visibleCells.front()->index;
+					scrollUp();
+					break;
 				}
-
-				if (ACTION_DOWN)
+				case ScrollAction::Down:
 				{
 					// auto beg = std::chrono::steady_clock::now();
-					while (visibleCells[0]->index > cells.front().index and visibleCells[0]->bounds.y + visibleCells[0]->bounds.h > 0.f)
-					{
-						--frontIndex;
-						visibleCells.push_front(&cells[frontIndex]);
-						update_top_and_bottom_cells();
-					}
-					while (visibleCells.back()->bounds.y > margin.h)
-						visibleCells.pop_back(), backIndex = visibleCells.back()->index, update_top_and_bottom_cells(); /*, SDL_Log("back pop rs: %d", cells_tmp.size())*/
+					scrollDown();
+					break;
+				}
+				case ScrollAction::None:
+					break;
 				}
 
 				dy = 0.f;
-				ACTION_DOWN = ACTION_UP = false;
+				scrlAction = ScrollAction::None;
 			}
+			simpleDraw();
 
-		simple_re_draw:
-			fillRoundedRectF(renderer, {bounds.x, bounds.y, bounds.w, bounds.h}, cornerRadius, bgColor);
+			if (not toBeErasedCells.empty()) {
+				for (auto i : toBeErasedCells) {
+					cells.erase(cells.begin() + i);
+				}
+				updateHighlightedCell(-1);
+				updateSelectedCell(0);
+				maxCells -= toBeErasedCells.size();
+				toBeErasedCells.clear();
+			}
+		}
+
+	protected:
+		void simpleDraw() {
+			fillRoundedRectF(renderer, { bounds.x, bounds.y, bounds.w, bounds.h }, cornerRadius, bgColor);
 			CacheRenderTarget crt_(renderer);
 			SDL_SetRenderTarget(renderer, texture.get());
 			renderClear(renderer, 0, 0, 0, 0);
-			for (auto &cell : visibleCells)
+			for (auto& cell : visibleCells)
 			{
 				cell->Draw();
 			}
@@ -7652,7 +7680,37 @@ namespace Volt
 			}
 		}
 
-	protected:
+		void scrollUp() {
+			while (visibleCells.back()->bounds.y < margin.h and
+				visibleCells.back()->index < (maxCells - 1))
+			{
+				update_top_and_bottom_cells();
+				if (FIRST_LOAD and (cells.back().index == visibleCells.back()->index) and cells.back().index < (maxCells - 1))
+				{
+					cells.emplace_back();
+					cells.back().setContext(this).setIndex(cells[cells.size() - 2].index + 1).bg_color = cell_bg_color;
+					cells.back().adaptiveVsync = &CellsAdaptiveVsync;
+					cells.back().pv = this;
+					fillNewCellDataCallback(cells.back());
+				}
+				++backIndex;
+				visibleCells.push_back(&cells[backIndex]);
+			}
+			while (visibleCells[0]->bounds.y + visibleCells[0]->bounds.h < 0.f)
+				visibleCells.pop_front(), frontIndex = visibleCells.front()->index;
+		}
+
+		void scrollDown() {
+			while (visibleCells[0]->index > cells.front().index and visibleCells[0]->bounds.y + visibleCells[0]->bounds.h > 0.f)
+			{
+				--frontIndex;
+				visibleCells.push_front(&cells[frontIndex]);
+				update_top_and_bottom_cells();
+			}
+			while (visibleCells.back()->bounds.y > margin.h)
+				visibleCells.pop_back(), backIndex = visibleCells.back()->index, update_top_and_bottom_cells(); /*, SDL_Log("back pop rs: %d", cells_tmp.size())*/
+		}
+
 		void update_cells_with_async_images()
 		{
 			if (cellsWithAsyncImages.empty())
@@ -7750,8 +7808,7 @@ namespace Volt
 					if (cells.back().bounds.y + cells.back().bounds.h + dy < margin.h &&
 						cells.back().index >= (maxCells - 1))
 						dy = margin.h - cells.back().bounds.y - cells.back().bounds.h;
-					// SDL_Log("DY: %f", dy);
-					ACTION_UP = true, ACTION_DOWN = false;
+					scrlAction = ScrollAction::Up;
 				}
 			}
 			// ACTION_DOWN
@@ -7762,20 +7819,26 @@ namespace Volt
 				{
 					dy += 0.f;
 				}
-				// else if (cfy > bottomBar.dest.y) { dy += 0; }
 				else
 				{
-					// scrollBar.set_then(SDL_GetTicks());
 					dy += (cf.y - pf.y);
 					if (cells.front().bounds.y + dy > 0 && cells.front().index <= 0)
 						dy = SDL_fabsf(cells.front().bounds.y);
-					ACTION_DOWN = true, ACTION_UP = false;
+					scrlAction = ScrollAction::Down;
 				}
 			}
-			// dy *= 2.f;
 			pf = cf;
 		}
 
+	private:
+		enum class ScrollAction {
+			None,
+			Up,
+			Down,
+			Left,
+			Right
+		};
+		ScrollAction scrlAction;
 	private:
 		std::function<void(Cell &)> onCellClickedCallback = nullptr;
 		std::function<void(Cell &)> fillNewCellDataCallback = nullptr;
@@ -7783,6 +7846,7 @@ namespace Volt
 		std::deque<Cell *> visibleCells;
 		std::deque<ImageButton *> cellsWithAsyncImages;
 		std::deque<std::function<void(Cell &)>> preAddedCellsSetUpCallbacks;
+		std::vector<std::size_t> toBeErasedCells;
 		Cell header_cell, footer_cell;
 		AdaptiveVsyncHandler adaptiveVsyncHD;
 		AdaptiveVsync CellsAdaptiveVsync;
@@ -7806,7 +7870,7 @@ namespace Volt
 		SDL_Color bgColor = {0, 0, 0, 0xff};
 		std::size_t backIndex = 0, frontIndex = 0;
 		std::size_t topCell = 0, bottomCell = 0;
-		bool enabled = true, ACTION_UP = false, ACTION_DOWN = false, CELL_PRESSED = false, CELL_HIGHLIGHTED = false, KEYDOWN = false;
+		bool enabled = true, CELL_PRESSED = false, CELL_HIGHLIGHTED = false, KEYDOWN = false;
 		bool MOTION_OCCURED = false, ANIM_ACTION_UP = false, ANIM_ACTION_DN = false, FIRST_LOAD = true;
 		bool SIMPLE_RE_DRAW = false;
 		bool BuildWasCalled = false;
