@@ -7758,6 +7758,7 @@ namespace Volt
 		{
 			// clear the prev highlighted cell
 			if (HIGHLIGHTED_CELL >= 0)
+				if(HIGHLIGHTED_CELL<cells.size())
 				cells[HIGHLIGHTED_CELL].isHighlighted = false;
 			// PREV_HIGHLIGHTED_CELL = HIGHLIGHTED_CELL;
 			HIGHLIGHTED_CELL = _highlightedCell;
@@ -7925,6 +7926,7 @@ namespace Volt
 			_props.inner_block_rect.x = bounds.x;
 			_props.inner_block_rect.y = bounds.y + bounds.h + 2.f;
 			values_ = _values;
+			defaultVal = _default;
 			std::size_t _max_values = _values.size();
 			//if all values rect dimensions arent set we defaut
 			if (_props.inner_block_rect.w <= 0.f or _props.inner_block_rect.w <= 0.f) {
@@ -8053,7 +8055,28 @@ namespace Volt
 			values_.emplace_back(newVal);
 			valuesBlock.updateNoMaxCells(values_.size());
 			valuesBlock.clearAndReset();
-			//viewValue.setChildView(valuesBlock.getView()->hide());
+		}
+
+
+		void removeValue(std::size_t val_index) {
+			if (not values_.empty()) {
+				values_.erase(values_.begin() + val_index);
+			}
+			valuesBlock.updateNoMaxCells(values_.size());
+			valuesBlock.clearAndReset();
+
+			//update viewValue
+			if (val_index == selectedVal) {
+				viewValue.textBox.pop_back();
+				viewValue.addTextBox(
+					{
+						//.mem_font = Font::OpenSansSemiBold,
+						.rect = {5.f,5.f,90.f,90.f},
+						.textAttributes = { values_[defaultVal].value, {0,0,0,0xff}, {0, 0, 0, 0}},
+						.gravity = Gravity::LEFT
+					}
+				);
+			}
 		}
 		
 
@@ -8083,6 +8106,7 @@ namespace Volt
 		CellBlock valuesBlock;
 		std::vector<Value> values_;
 		std::size_t selectedVal = 0;
+		std::size_t defaultVal = 0;
 	};
 
 
