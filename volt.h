@@ -311,22 +311,33 @@ namespace Volt
 		bool hidden = false;
 		bool disabled = false;
 		std::function<void()> onHideCallback = nullptr;
-		IView *child=nullptr;
+		//IView *child=nullptr;
+		std::vector<IView*> childViews;
 	public:
 		IView *getView()
 		{
 			return this;
 		}
 
-		IView* getChildView()
+		IView* getChildView(std::size_t child_index=0)
 		{
-			return child;
+			return childViews[child_index];
 		}
 		
-		IView* setChildView(IView* _child)
+		IView* addChildView(IView* _child)
 		{
-			child = _child;
-			return child;
+			return childViews.emplace_back(_child);
+		}
+
+		IView* clearAndAddChildView(IView* _child)
+		{
+			childViews.clear();
+			return childViews.emplace_back(_child);
+		}
+
+		IView& clearChildViews() {
+			childViews.clear();
+			return *this;
 		}
 
 		SDL_FRect &getBoundsBox()
@@ -363,8 +374,9 @@ namespace Volt
 
 		IView* hide()
 		{
-			if (child) {
-				child->hide();
+			if (not childViews.empty()) {
+				for (auto child : childViews)
+					child->hide();
 			}
 			hidden = true;
 			if (onHideCallback)
@@ -381,14 +393,16 @@ namespace Volt
 		}
 
 		IView* disable() {
-			if (child) {
-				child->disable();
+			if (not childViews.empty()) {
+				for (auto child : childViews)
+					child->disable();
 			}
 			disabled = true; return this;
 		}
 		IView* enable() {
-			if (child) {
-				child->enable();
+			if (not childViews.empty()) {
+				for (auto child : childViews)
+					child->enable();
 			}
 			disabled = false; return this;
 		}
@@ -6490,7 +6504,7 @@ namespace Volt
 		using IView::bounds;
 		using IView::getView;
 		using IView::getChildView;
-		using IView::setChildView;
+		using IView::addChildView;
 		// using IView::type;
 		using IView::action;
 		using IView::hide;
@@ -6498,7 +6512,7 @@ namespace Volt
 		using IView::isHidden;
 		using IView::prevent_default_behaviour;
 		using IView::show;
-		using IView::child;
+		using IView::childViews;
 
 		using FormData = std::unordered_map<std::string, std::string>;
 
@@ -6782,9 +6796,10 @@ namespace Volt
 
 			if (hidden)return result;
 
-			if (child) {
-				if (child->handleEvent()) {
-					return true;
+			if (not childViews.empty()) {
+				for (auto child : childViews)
+					if (child->handleEvent()) {
+						return true;
 				}
 			}
 
@@ -6874,17 +6889,15 @@ namespace Volt
 					_editBox.Draw();
 				for (auto &_rtext : runningText)
 					_rtext.Draw();
-				if (child)
-					child->Draw();
 			}
 			else
 			{
 				customDrawCallback(*this);
 			}
 
-			if (child) {
-				child->Draw();
-			}
+			if (not childViews.empty())
+				for (auto child : childViews)
+					child->Draw();
 		}
 	};
 
@@ -6903,11 +6916,11 @@ namespace Volt
 	public:
 		using Context::event;
 		using IView::bounds;
-		using IView::child;
+		using IView::childViews;
 		using IView::getView;
 		using IView::getChildView;
-		using IView::setChildView;
-		// using IView::type;
+		using IView::addChildView;
+		using IView::clearAndAddChildView;
 		using IView::hide;
 		using IView::isHidden;
 		using IView::prevent_default_behaviour;
@@ -7339,11 +7352,13 @@ namespace Volt
 			bool result = false;
 			if (not enabled or hidden)
 				return result;
-			if (child) {
-				if (child->handleEvent()) {
-					updateHighlightedCell(-1);
-					SIMPLE_RE_DRAW = true;
-					return true;
+			if (not childViews.empty()) {
+				for (auto child : childViews) {
+					if (child->handleEvent()) {
+						updateHighlightedCell(-1);
+						SIMPLE_RE_DRAW = true;
+						return true;
+					}
 				}
 			}
 			if (event->type == SDL_EVENT_RENDER_TARGETS_RESET)
@@ -7379,10 +7394,14 @@ namespace Volt
 						   event->tfinger.y * DisplayInfo::Get().RenderH};
 				if (isPosInbound(cf.x, cf.y))
 				{
-					if (child and not child->hidden)
+					if (not childViews.empty())
 					{
-						child->hide();
-						return true;
+						for (auto child : childViews) {
+							if (not child->hidden) {
+								child->hide();
+								return true;
+							}
+						}
 					}
 					SIMPLE_RE_DRAW = true;
 					KEYDOWN = true, scrollAnimInterpolator.setIsAnimating(false);
@@ -7565,8 +7584,9 @@ namespace Volt
 			{
 				fillRoundedRectF(renderer, {bounds.x, bounds.y, bounds.w, bounds.h}, cornerRadius, bgColor);
 				SDL_RenderTexture(renderer, texture.get(), nullptr, &margin);
-				if (child) {
-					child->Draw();
+				if (not childViews.empty()) {
+					for (auto child : childViews)
+						child->Draw();
 				}
 				adaptiveVsyncHD.stopRedrawSession();
 				return;
@@ -7670,8 +7690,9 @@ namespace Volt
 			}
 			crt_.release(renderer);
 			SDL_RenderTexture(renderer, texture.get(), nullptr, &margin);
-			if (child) {
-				child->Draw();
+			if (not childViews.empty()) {
+				for (auto child : childViews)
+					child->Draw();
 			}
 			adaptiveVsyncHD.stopRedrawSession();
 			if (CellsAdaptiveVsync.hasRequests() or scrollAnimInterpolator.isAnimating())
@@ -7950,15 +7971,15 @@ namespace Volt
 			}
 
 			viewValue.registerCustomEventHandlerCallback([this](Cell& _cell)->bool {
-				if (viewValue.child->handleEvent()) {
-					return true;
-				}
+				if (viewValue.childViews[0]->handleEvent()) {
+						return true;
+					}
 				if (event->type == SDL_EVENT_FINGER_DOWN){
 					//mouse point
 					auto mp = SDL_FPoint{ event->tfinger.x * DisplayInfo::Get().RenderW,
 							   event->tfinger.y * DisplayInfo::Get().RenderH };
 					if (SDL_PointInRectFloat(&mp, &_cell.bounds)/* or p2*/) {
-						viewValue.child->toggleView();
+						viewValue.childViews[0]->toggleView();
 						return true;
 					}
 					else
@@ -8009,7 +8030,7 @@ namespace Volt
 				.bgColor = _props.bg_color
 				}
 			);
-			viewValue.setChildView(valuesBlock.getView()->hide());
+			viewValue.addChildView(valuesBlock.getView()->hide());
 
 			return *this;
 		}
@@ -8066,7 +8087,7 @@ namespace Volt
 			valuesBlock.clearAndReset();
 
 			//update viewValue
-			if (val_index == selectedVal) {
+			if (val_index == selectedVal and not values_.empty()) {
 				viewValue.textBox.pop_back();
 				viewValue.addTextBox(
 					{
