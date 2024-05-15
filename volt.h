@@ -8100,9 +8100,12 @@ namespace Volt
 			}
 		}
 		
-
 		Value& getSelectedValue() {
 			return values_[selectedVal];
+		}
+
+		std::size_t getSelectedValueIndex() {
+			return selectedVal;
 		}
 
 		std::vector<Value> getAllValues() { return values_; }
