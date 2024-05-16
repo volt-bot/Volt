@@ -374,10 +374,8 @@ namespace Volt
 
 		IView* hide()
 		{
-			if (not childViews.empty()) {
-				for (auto child : childViews)
-					child->hide();
-			}
+			for (auto child : childViews)
+				child->hide();
 			hidden = true;
 			if (onHideCallback)
 				onHideCallback();
@@ -393,17 +391,13 @@ namespace Volt
 		}
 
 		IView* disable() {
-			if (not childViews.empty()) {
-				for (auto child : childViews)
-					child->disable();
-			}
+			for (auto child : childViews)
+				child->disable();
 			disabled = true; return this;
 		}
 		IView* enable() {
-			if (not childViews.empty()) {
-				for (auto child : childViews)
-					child->enable();
-			}
+			for (auto child : childViews)
+				child->enable();
 			disabled = false; return this;
 		}
 
@@ -2905,19 +2899,7 @@ namespace Volt
 		AdaptiveVsyncHandler animSwitchAdaptiveVsyncHD, slideAdaptiveVsyncHD;
 	};
 
-	struct RunningTextAttributes
-	{
-		SDL_FRect rect{0.f, 0.f, 0.f, 0.f};
-		SDL_Color text_color{255, 255, 255, 255};
-		SDL_Color bg_color{0, 0, 0, 0};
-		Font mem_font = Font::ConsolasBold;
-		FontStyle font_style = FontStyle::NORMAL;
-		std::string font_file;
-		uint32_t pause_duration = 3000;
-		uint32_t speed = 5000;
-		// transition speed in 0.f%-100.f%
-		float transition_speed = 2.f;
-	};
+	
 
 	class RunningText : public Context, IView
 	{
@@ -2926,14 +2908,27 @@ namespace Volt
 		using IView::getView;
 
 	public:
+		struct Attr
+		{
+			SDL_FRect rect{ 0.f, 0.f, 0.f, 0.f };
+			SDL_Color text_color{ 255, 255, 255, 255 };
+			SDL_Color bg_color{ 0, 0, 0, 0 };
+			Font mem_font = Font::ConsolasBold;
+			FontStyle font_style = FontStyle::NORMAL;
+			std::string font_file;
+			uint32_t pause_duration = 3000;
+			uint32_t speed = 5000;
+			// transition speed in 0.f%-100.f%
+			float transition_speed = 2.f;
+		};
 	public:
 		RunningText() = default;
-		RunningText(Context *_context, const RunningTextAttributes &_attr)
+		RunningText(Context *_context, const RunningText::Attr &_attr)
 		{
 			Build(_context, _attr);
 		}
 
-		RunningText &Build(Context *_context, const RunningTextAttributes &_attr)
+		RunningText &Build(Context *_context, const RunningText::Attr &_attr)
 		{
 			setContext(_context);
 			adaptiveVsyncHD.setAdaptiveVsync(adaptiveVsync);
@@ -3046,7 +3041,7 @@ namespace Volt
 		}
 
 	private:
-		RunningTextAttributes attr;
+		Attr attr;
 		SharedTexture texture;
 		SharedTexture text_texture;
 		SDL_FRect txt_rect{0.f, 0.f, 0.f, 0.f};
@@ -5314,6 +5309,9 @@ namespace Volt
 				cusor.Draw();
 			}
 
+			if (onFocusView and hasFocus)
+				onFocusView->Draw();
+
 			// return *this;
 		}
 
@@ -5332,11 +5330,39 @@ namespace Volt
 			return internalText;
 		}
 
+		EditBox& setOnFocusView(IView* _onFocusView) {
+			onFocusView = _onFocusView;
+			return *this;
+		}
+
+		IView* getOnFocusView() {
+			return onFocusView;
+		}
+
+		bool isFocused() {
+			return hasFocus;
+		}
+
+		EditBox& killFocus() {
+			if (SDL_TextInputActive())
+				SDL_StopTextInput();
+			adaptiveVsyncHD.stopRedrawSession();
+			hasFocus = false;
+			outlineRect.outline_color = outlineColor;
+			outlineRect.color = textAttributes.bg_color;
+			if (onFocusView)
+				onFocusView->hide();
+			return *this;
+		}
+
 		bool handleEvent() override
 		{
 			bool result_ = false;
 			if (hasFocus and not SDL_TextInputActive())
 				SDL_StartTextInput();
+
+			if (onFocusView and hasFocus)
+				if (onFocusView->handleEvent()) return true;
 			switch (event->type)
 			{
 			case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
@@ -5386,6 +5412,8 @@ namespace Volt
 					hasFocus = true;
 					adaptiveVsyncHD.startRedrawSession();
 					SDL_StartTextInput();
+					if (onFocusView)
+						onFocusView->show();
 				}
 				else
 				{
@@ -5397,6 +5425,8 @@ namespace Volt
 							outlineRect.outline_color = outlineColor;
 							outlineRect.color = textAttributes.bg_color;
 						}
+						if (onFocusView)
+							onFocusView->hide();
 					}
 				}
 			}
@@ -5586,7 +5616,8 @@ namespace Volt
 			cusor.setPosX(textRect.x + float(tmpW));
 			finalTextRect.w = tmpW;
 		}
-
+	protected:
+		IView* onFocusView = nullptr;
 	protected:
 		float cornerRadius = 0.f;
 		std::shared_ptr<SDL_Texture> txtTexture;
@@ -6626,7 +6657,7 @@ namespace Volt
 			return *this;
 		}
 
-		Cell &addRunningText(RunningTextAttributes _RTextAttr)
+		Cell &addRunningText(RunningText::Attr _RTextAttr)
 		{
 			_RTextAttr.rect = {bounds.x + pv->to_cust(_RTextAttr.rect.x, bounds.w),
 							   bounds.y + pv->to_cust(_RTextAttr.rect.y, bounds.h),
@@ -6796,10 +6827,9 @@ namespace Volt
 
 			if (hidden)return result;
 
-			if (not childViews.empty()) {
-				for (auto child : childViews)
-					if (child->handleEvent()) {
-						return true;
+			for (auto child : childViews) {
+				if (child->handleEvent()) {
+					return true;
 				}
 			}
 
@@ -6877,9 +6907,14 @@ namespace Volt
 			// the default draw func has no ordering
 			if (nullptr == customDrawCallback)
 			{
+				if(not highlightOnHover and not isHighlighted)
 				fillRoundedRectF(renderer,
 								 {bounds.x, bounds.y, bounds.w, bounds.h}, corner_radius,
 								 {bg_color.r, bg_color.g, bg_color.b, bg_color.a});
+				if (highlightOnHover and isHighlighted)
+					fillRoundedRectF(renderer,
+						{ bounds.x, bounds.y, bounds.w, bounds.h }, corner_radius,
+						{ onHoverBgColor.r, onHoverBgColor.g, onHoverBgColor.b, onHoverBgColor.a });
 
 				for (auto &imgBtn : imageButton)
 					imgBtn.Draw();
@@ -6895,9 +6930,8 @@ namespace Volt
 				customDrawCallback(*this);
 			}
 
-			if (not childViews.empty())
-				for (auto child : childViews)
-					child->Draw();
+			for (auto child : childViews)
+				child->Draw();
 		}
 	};
 
@@ -7352,13 +7386,11 @@ namespace Volt
 			bool result = false;
 			if (not enabled or hidden)
 				return result;
-			if (not childViews.empty()) {
-				for (auto child : childViews) {
-					if (child->handleEvent()) {
-						updateHighlightedCell(-1);
-						SIMPLE_RE_DRAW = true;
-						return true;
-					}
+			for (auto child : childViews) {
+				if (child->handleEvent()) {
+					updateHighlightedCell(-1);
+					SIMPLE_RE_DRAW = true;
+					return true;
 				}
 			}
 			if (event->type == SDL_EVENT_RENDER_TARGETS_RESET)
@@ -7394,15 +7426,13 @@ namespace Volt
 						   event->tfinger.y * DisplayInfo::Get().RenderH};
 				if (isPosInbound(cf.x, cf.y))
 				{
-					if (not childViews.empty())
-					{
-						for (auto child : childViews) {
-							if (not child->hidden) {
-								child->hide();
-								return true;
-							}
+					for (auto child : childViews) {
+						if (not child->hidden) {
+							child->hide();
+							result = true;
 						}
 					}
+					if (result)return result;
 					SIMPLE_RE_DRAW = true;
 					KEYDOWN = true, scrollAnimInterpolator.setIsAnimating(false);
 					visibleCellsHandleEvent();
@@ -7434,6 +7464,8 @@ namespace Volt
 					movedDistance += {event->tfinger.dx * DisplayInfo::Get().RenderW, event->tfinger.dy * DisplayInfo::Get().RenderH};
 					internal_handle_motion();
 					updateHighlightedCell(-1);
+					FingerUP_TM = SDL_GetTicks();
+					return true;
 				}
 				FingerUP_TM = SDL_GetTicks();
 			}
@@ -7970,6 +8002,7 @@ namespace Volt
 				);
 			}
 
+			viewValue.prevent_default_behaviour = true;
 			viewValue.registerCustomEventHandlerCallback([this](Cell& _cell)->bool {
 				if (viewValue.childViews[0]->handleEvent()) {
 						return true;
