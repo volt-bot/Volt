@@ -311,7 +311,6 @@ namespace Volt
 		bool hidden = false;
 		bool disabled = false;
 		std::function<void()> onHideCallback = nullptr;
-		//IView *child=nullptr;
 		std::vector<IView*> childViews;
 	public:
 		IView *getView()
@@ -528,7 +527,7 @@ namespace Volt
 			V_DPI = dpiScale;
 
 			SDL_Log("PixelDensity:%f DispScale:%f DispContentScale:%f HDPI:%f VDPI:%f Mode.W:%d Mode.H:%d", pd, ds, dcs, H_DPI, V_DPI, dm->w, dm->h);
-			DDPI = 95.f;
+			DDPI = 130.f;
 #ifdef _WIN32
 			HDC screen = GetDC(0);
 			float dpiX = static_cast<float>(GetDeviceCaps(screen, LOGPIXELSX));
@@ -611,19 +610,11 @@ namespace Volt
 
 	class Application : protected Context, IView
 	{
-	private:
+		private:
 		AdaptiveVsync adaptiveVsync_;
 		SDL_Event event_;
-	public:
-		SDL_Event RedrawTriggeredEvent_;
-		UniqueTexture texture;
-		std::string PrefLocale, CurrentLocale;
-		std::string BasePath{}, PrefPath{};
 
-		Application()
-		{
-			std::setlocale(LC_CTYPE, "en_US.UTF-8");
-		}
+		public:
 		using Context::adaptiveVsync;
 		using Context::event;
 		using Context::getContext;
@@ -633,8 +624,20 @@ namespace Volt
 		using IView::ph;
 		using IView::pw;
 		using IView::to_cust;
+	
+	public:
+		SDL_Event RedrawTriggeredEvent_;
+		UniqueTexture texture;
+		std::string PrefLocale, CurrentLocale;
+		std::string BasePath{}, PrefPath{};
 		bool quit = false;
 		bool show_fps = false;
+
+	public:
+		Application()
+		{
+			std::setlocale(LC_CTYPE, "en_US.UTF-8");
+		}
 
 	public:
 		short Create(const char *title, int ww, int wh,
@@ -644,7 +647,7 @@ namespace Volt
 			window = SDL_CreateWindow(title, ww, wh, window_flags);
 			SDL_Rect usb_b{0};
 			SDL_GetWindowSize(window, &usb_b.w, &usb_b.h);
-			// SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
+			SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
 			// SDL_SetHint(SDL_HINT_RENDER_DRIVER, "direct3d");
 			renderer = SDL_CreateRenderer(window, NULL, renderer_flags);
 			DisplayInfo::Get().setContext(this);
@@ -670,7 +673,7 @@ namespace Volt
 			return 1;
 		}
 
-		void run()
+		void Run()
 		{
 			tmPrevFrame = SDL_GetTicks();
 			loop();
@@ -1319,7 +1322,7 @@ namespace Volt
 
 		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
 		SDL_RenderFillRects(_renderer, rects_.data(), rects_.size());
-		draw_filled_circle_4quad(_renderer, _dest.x + final_rad, _dest.y + final_rad, _dest.w - (final_rad * 2.f), _dest.h - (final_rad * 2.f), final_rad, _color);
+		draw_filled_circle_4quad(_renderer, _dest.x + final_rad-1.f, _dest.y + final_rad, _dest.w - (final_rad * 2.f), _dest.h - (final_rad * 2.f), final_rad, _color);
 	}
 
 	void drawRoundedRectF(SDL_Renderer *_renderer, const SDL_FRect &_dest, const float &_rad,
@@ -1371,7 +1374,7 @@ namespace Volt
 													 {_rect.x + _rect.w - outline_sz_, _rect.y + final_rad, outline_sz_, _rect.h - (final_rad * 2.f)}};
 		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
 		SDL_RenderFillRects(_renderer, side_rects.data(), side_rects.size());
-		draw_ring_4quad(_renderer, _rect.x + final_rad, _rect.y + final_rad, side_rects[0].w, side_rects[3].h, final_rad - outline_sz_, final_rad, _color);
+		draw_ring_4quad(_renderer, _rect.x + final_rad-1.f, _rect.y + final_rad, side_rects[0].w, side_rects[3].h, final_rad - outline_sz_, final_rad, _color);
 	}
 
 	void DrawCircle(SDL_Renderer *renderer, float x, float y, float r,
@@ -2064,14 +2067,15 @@ namespace Volt
 	class FontAttributes
 	{
 	public:
-		FontAttributes() = default;
-
-		FontAttributes(const std::string &a_font_file, const FontStyle &a_font_style,
-					   const uint8_t &a_font_size) : font_file(a_font_file), font_size(a_font_size), font_style(a_font_style) {}
-
 		std::string font_file;
 		uint8_t font_size = 0xff;
 		FontStyle font_style;
+
+		FontAttributes() = default;
+
+		FontAttributes(const std::string& a_font_file, const FontStyle& a_font_style,
+			const uint8_t& a_font_size) : font_file(a_font_file), font_size(a_font_size), font_style(a_font_style) {}
+
 
 		void setFontAttributes(const FontAttributes &font_attributes)
 		{
@@ -2201,7 +2205,7 @@ namespace Volt
 				}
 				else
 				{
-					SDL_Log("NEW FONT: %s", key.c_str());
+					SDL_Log("New FileFont Loaded: %s", key.c_str());
 					// TTF_SetFontSDF(fonts[key], SDL_TRUE);
 					// TTF_SetFontOutline(fonts[key], m_font_outline);
 					// TTF_SetFontKerning(fonts[key], 1);
@@ -2226,7 +2230,7 @@ namespace Volt
 				}
 				else
 				{
-					SDL_Log("NEW FONT: %s", key.c_str());
+					SDL_Log("New MemFont Loaded: %s", key.c_str());
 					// TTF_SetFontSDF(fonts[key], SDL_TRUE);
 					// TTF_SetFontOutline(fonts[key], m_font_outline);
 					// TTF_SetFontKerning(fonts[key], 1);
@@ -6887,12 +6891,13 @@ namespace Volt
 				//std::cout << "mouse" << ", x:" << event->motion.x << ", y:" << event->motion.y << std::endl;
 			}
 
-			for (auto &imgBtn : imageButton)
+			for (auto& imgBtn : imageButton)
 				result |= imgBtn.handleEvent();
 			for (auto &textBx : textBox)
 				result |= textBx.handleEvent();
 			for (auto &_editBox : editBox)
-				_editBox.handleEvent();
+				result or_eq _editBox.handleEvent();
+			
 
 			//std::cout << ", w:" << bounds.w << ", h:" << bounds.h << std::endl;
 
@@ -6959,6 +6964,7 @@ namespace Volt
 		using IView::isHidden;
 		using IView::prevent_default_behaviour;
 		using IView::show;
+		using IView::label;
 
 	public:
 		uint32_t prevLineCount = 0, consumedCells = 0, lineCount = 0, numPrevLineCells = 0;
@@ -7384,8 +7390,9 @@ namespace Volt
 		bool handleEvent() override
 		{
 			bool result = false;
-			if (not enabled or hidden)
+			if (not enabled or hidden) {
 				return result;
+			}
 			for (auto child : childViews) {
 				if (child->handleEvent()) {
 					updateHighlightedCell(-1);
@@ -7480,7 +7487,7 @@ namespace Volt
 					bool cellFound = false;
 					if (isPosInbound(event->motion.x, event->motion.y))
 					{
-						result or_eq true;
+						result = true;
 						auto fc = std::find_if(visibleCells.begin(), visibleCells.end(),
 											   [this, &cf_trans, &cellFound](Cell *cell)
 											   {
@@ -7523,7 +7530,7 @@ namespace Volt
 					const v2d_generic<float> cf_trans = {cf.x - margin.x, cf.y - margin.y};
 					if (isPosInbound(cf.x, cf.y))
 					{
-						result or_eq true;
+						result = true;
 						auto fc = std::find_if(visibleCells.begin(), visibleCells.end(),
 											   [this, &cf_trans](Cell *cell)
 											   {
@@ -7547,7 +7554,7 @@ namespace Volt
 
 				if (MOTION_OCCURED and isPosInbound(cf.x, cf.y) and isBlockScrollable())
 				{
-					result or_eq true;
+					result = true;
 					// SDL_Log("FU_TM: %d", finger_up_dt);
 					float dt = static_cast<float>(SDL_GetTicks() - FingerMotion_TM);
 					if (finger_up_dt > 45)
@@ -7599,6 +7606,9 @@ namespace Volt
 				ANIM_ACTION_UP = true;
 			SIMPLE_RE_DRAW = false;
 			scrollAnimInterpolator.startWithDistance(distance);
+			adaptiveVsyncHD.startRedrawSession();
+			wakeGui();
+			skip_event = true;
 		}
 
 		// BUG: infinite recursion if you invoke this func inside a cell pressed callback
@@ -7928,6 +7938,7 @@ namespace Volt
 		bool MOTION_OCCURED = false, ANIM_ACTION_UP = false, ANIM_ACTION_DN = false, FIRST_LOAD = true;
 		bool SIMPLE_RE_DRAW = false;
 		bool BuildWasCalled = false;
+		bool skip_event = false;
 		int64_t SELECTED_CELL = 0 - 1, PREV_SELECTED_CELL = 0 - 1;
 		int64_t HIGHLIGHTED_CELL = 0 - 1, PREV_HIGHLIGHTED_CELL = 0 - 1;
 		std::size_t sizeOfPreAddedCells = 0;
