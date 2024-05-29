@@ -504,6 +504,7 @@ namespace Volt
 
 		void initDisplaySystem(const float &display_index = 0.f)
 		{
+			//SDL_GetDisplayDPI() - not reliable across platforms, approximately replaced by multiplying `display_scale` in the structure returned by SDL_GetDesktopDisplayMode() times 160 on iPhone and Android, and 96 on other platforms.
 			auto *_mode = SDL_GetCurrentDisplayMode(0);
 			int windowWidth, windowHeight;
 			int drawableWidth, drawableHeight;
@@ -525,27 +526,14 @@ namespace Volt
 			H_DPI = dpiScale;
 			dpiScale = (float)dm->h / (float)windowHeight;
 			V_DPI = dpiScale;
+			auto* ddm= SDL_GetDesktopDisplayMode(1);
 
-			SDL_Log("PixelDensity:%f DispScale:%f DispContentScale:%f HDPI:%f VDPI:%f Mode.W:%d Mode.H:%d", pd, ds, dcs, H_DPI, V_DPI, dm->w, dm->h);
-			DDPI = 130.f;
+			DDPI = 160.f*ds;
 #ifdef _WIN32
-			HDC screen = GetDC(0);
-			float dpiX = static_cast<float>(GetDeviceCaps(screen, LOGPIXELSX));
-			float dpiY = static_cast<float>(GetDeviceCaps(screen, LOGPIXELSY));
-
-			float dpi = static_cast<float>((dpiX + dpiY) / 2);
-			DDPI = dpi;
-			V_DPI = dpiX;
-			H_DPI = dpiY;
-
-			std::cout << "General DPI: " << dpi << std::endl;
-			std::cout << "DPIX: " << dpiX << std::endl;
-			std::cout << "DPIY: " << dpiY << std::endl;
-
-			ReleaseDC(0, screen);
-#else
-			std::cout << "Not on a Windows environment." << std::endl;
+			DDPI = 96.f * ds;
 #endif
+			SDL_Log("PixelDensity:%f DispScale:%f DdmScale:%f DispContentScale:%f HDPI:%f VDPI:%f Mode.W:%d Mode.H:%d", DDPI, ds, ddm->pixel_density, dcs, H_DPI, V_DPI, dm->w, dm->h);
+
 		}
 
 		void handleEvent()
@@ -843,6 +831,10 @@ namespace Volt
 		const uint8_t alpha_ = static_cast<uint8_t>(_weight * static_cast<float>(_color.a));
 		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, alpha_);
 		SDL_RenderPoint(_renderer, _x, _y);
+	}
+
+	void drawFilledTriangle(SDL_Renderer* _renderer, std::vector<SDL_Vertex> _points) {
+		SDL_RenderGeometry(_renderer, NULL, _points.data(), 3, NULL, 3);
 	}
 
 	void draw_ring(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r, const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
@@ -2354,6 +2346,76 @@ namespace Volt
 			Async::GThreadPool.enqueue([](SDL_Surface *surface)
 									   {SDL_DestroySurface(surface); surface = nullptr; },
 									   textSurf);
+			return result;
+		}
+
+		std::optional<UniqueTexture> genTextTextureUniqueV2(SDL_Renderer* renderer, const char* text, const SDL_Color text_color, float _w, float _h, bool wordWrap=false)
+		{
+			if (!genTextCommon())
+				return {};
+			std::vector<std::pair<SDL_FRect, SDL_Texture*>> finalGlyphs{};
+			int maxW = 0, maxH=0;
+			int length = strlen(text);
+			int textOffsetY = 0;
+			int textOffsetX = 0;
+			int lineHeight = TTF_FontLineSkip(m_font);
+
+			for (int i = 0; i < length;) {
+				int wordWidth = 0;
+				int wordLength = 0;
+				int advance;
+				for (int j = i; j < length && text[j] != ' ' && text[j] != '\n'; ++j) {
+					TTF_GlyphMetrics(m_font, text[j], NULL, NULL, NULL, NULL, &advance);
+					wordWidth += advance;
+					++wordLength;
+				}
+
+				if (wordWrap && textOffsetX + wordWidth > _w) {
+					textOffsetX = 0;
+					textOffsetY += lineHeight;
+				}
+
+				for (int j = 0; j < wordLength; ++j) {
+					if (text[i + j] == '\n') {
+						textOffsetX = 0;
+						textOffsetY += lineHeight;
+						break;
+					}
+
+					TTF_GlyphMetrics(m_font, text[i + j], NULL, NULL, NULL, NULL, &advance);
+					SDL_Surface* textSurf = TTF_RenderGlyph_Blended(m_font, text[i + j], text_color);
+					SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, textSurf);
+					std::pair<SDL_FRect, SDL_Texture*> gl_{ { (float)textOffsetX,   (float)textOffsetY,  (float)textSurf->w,  (float)textSurf->h } ,texture };
+					finalGlyphs.emplace_back(gl_);
+					textOffsetX += advance;
+					if (textOffsetX + textSurf->w >= maxW)maxW = textOffsetX + textSurf->w;
+					Async::GThreadPool.enqueue([](SDL_Surface* surface)
+						{SDL_DestroySurface(surface); surface = nullptr; }, textSurf);
+				}
+
+				if (text[i + wordLength] == ' ') {
+					TTF_GlyphMetrics(m_font, ' ', NULL, NULL, NULL, NULL, &advance);
+					textOffsetX += advance;
+					++wordLength;
+				}
+
+				i += wordLength;
+			}
+
+
+			CacheRenderTarget crt_(renderer);
+			auto result = CreateUniqueTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, maxW, (int)_h);
+			SDL_SetTextureBlendMode(result.get(), SDL_BLENDMODE_BLEND);
+			SDL_SetRenderTarget(renderer, result.get());
+			renderClear(renderer, 0, 0, 0, 0);
+			for (auto& [grect, gtexture] : finalGlyphs) {
+				SDL_RenderTexture(renderer, gtexture, NULL, (const SDL_FRect*)&grect);
+				//SDL_DestroyTexture(gtexture);
+				Async::GThreadPool.enqueue([](SDL_Texture* dtex)
+					{SDL_DestroyTexture(dtex); dtex = nullptr; }, gtexture);
+			}
+			crt_.release(renderer);
+			
 			return result;
 		}
 
@@ -4672,6 +4734,17 @@ namespace Volt
 			FontSystem::Get().setFontAttributes(std::move(FontAttributes{font_attributes_.font_file.c_str(), font_attributes_.font_style, font_attributes_.font_size}), custom_fontstyle_);
 			for (auto const &line_ : wrapped_text_)
 			{
+				/*
+				auto start_ = std::chrono::system_clock::now();
+				{
+					auto textTex = FontSystem::Get().genTextTextureUnique(renderer, line_.c_str(), this->text_attributes_.text_color);
+					std::chrono::duration<double> dt = std::chrono::system_clock::now() - start_;
+					std::cout << "otlt:" << dt.count() << std::endl;
+				}
+				start_= std::chrono::system_clock::now();
+				auto textTex = FontSystem::Get().genTextTextureUniqueV2(renderer, line_.c_str(), this->text_attributes_.text_color,text_rect_.w, text_rect_.h,true);
+				std::chrono::duration<double> dt = std::chrono::system_clock::now() - start_;
+				std::cout << "ntlt:" << dt.count() << std::endl;*/
 				auto textTex = FontSystem::Get().genTextTextureUnique(renderer, line_.c_str(), this->text_attributes_.text_color);
 				if (textTex.has_value())
 				{
@@ -6497,8 +6570,8 @@ namespace Volt
 		template <typename T>
 		explicit cellblock_visitor(const T &_t) : object{&_t}
 			//,
-			//	getMaxVerticalCells_{ [](const void* obj) {
-			//	return static_cast<const T*>(obj)->getMaxVerticalCells();
+			//	getMaxVerticalGrids_{ [](const void* obj) {
+			//	return static_cast<const T*>(obj)->getMaxVerticalGrids();
 			//} },
 			/*getCellSpacing_{ [](const void* obj) {
 			  return static_cast<const T*>(obj)->getCellSpacing();
@@ -6511,7 +6584,7 @@ namespace Volt
 
 	private:
 		const void *object;
-		void (*getMaxVerticalCells_)(const void *);
+		void (*getMaxVerticalGrids_)(const void *);
 		void (*getCellSpacing_)(const float *);
 		void (*getCellWidth_)(const float *);
 		void (*getLowestBoundCell_)(const float *);
@@ -6519,8 +6592,8 @@ namespace Volt
 
 	template <typename T>
 	concept is_cellblock = requires(T _t) {
-		//{_t.getMaxVerticalCells()}->std::convertible_to<int>;
-		_t.getMaxVerticalCells();
+		//{_t.getMaxVerticalGrids()}->std::convertible_to<int>;
+		_t.getMaxVerticalGrids();
 		_t.getLowestBoundCell();
 		_t.getCellSpacing();
 		_t.getCellWidth();
@@ -6530,8 +6603,12 @@ namespace Volt
 
 	class Cell : public Context, IView
 	{
+	private:
+		//private helpers used by CellBlock
+		uint32_t num_vert_grids = 1;
+		float org_mx = 0.f, org_my = 0.f, mx = 0.f, my = 0.f;
 	public:
-		// friend class CellBlock;
+		friend class CellBlock;
 		using Context::adaptiveVsync;
 		using Context::event;
 		using Context::getContext;
@@ -6986,9 +7063,9 @@ namespace Volt
 			return this->cellWidth;
 		}
 
-		const uint32_t &getMaxVerticalCells() const noexcept
+		const uint32_t &getMaxVerticalGrids() const noexcept
 		{
-			return numVerticalCells;
+			return numVerticalGrids;
 		}
 
 		const float &getCellSpacing() const noexcept
@@ -7249,9 +7326,16 @@ namespace Volt
 		 * this approach is not only faster but fixes the bug introduced by adding cells manually
 		 * on a non empty block
 		 */
-		CellBlock &setCellRect(Cell &_cell, const uint32_t &numVerticalModules, const float &h, const float &margin_x = 0.f, const float &margin_y = 0.f)
+		CellBlock &setCellRect(Cell &_cell, uint32_t numVertGrids, const float h, const float margin_x = 0.f, const float margin_y = 0.f)
 		{
-			if (getMaxVerticalCells() - consumedCells < numVerticalModules)
+			numVertGrids = std::clamp(numVertGrids, uint32_t(0), numVerticalGrids);
+			if (numVertGrids == numVerticalGrids) isFlexible = false;
+			_cell.num_vert_grids = numVertGrids;
+			_cell.org_mx = margin_x;
+			_cell.org_my = margin_y;
+			_cell.mx = margin_x;
+			_cell.my = margin_y;
+			if (getMaxVerticalGrids() - consumedCells < numVertGrids)
 				lineCount++, _cell.bounds.y += margin_y;
 			auto lbc = getLowestBoundCell().bounds;
 			if (cells.size() > 1)
@@ -7265,14 +7349,143 @@ namespace Volt
 			if (lineCount != prevLineCount)
 				consumedCells = 0, _cell.bounds.y += lbc.h + CellSpacingY;
 			_cell.bounds.x = (consumedCells * (getCellWidth() + CellSpacingX)) + margin_x;
-			_cell.bounds.w = static_cast<float>(numVerticalModules) * (getCellWidth()) + (numVerticalModules);
+			_cell.bounds.w = static_cast<float>(numVertGrids) * (getCellWidth()) + (numVertGrids);
 			_cell.bounds.w -= margin_x * 2.f;
 			_cell.bounds.h = h - (margin_y * 2.f);
 			prevLineCount = lineCount;
-			consumedCells += numVerticalModules;
+			consumedCells += numVertGrids;
 			// consumedWidth += static_cast<float>(numVerticalModules) * (getCellWidth());
 			return *this;
 		}
+
+		// co_routine for getting a single row at a time
+		void getNextRow() {
+
+		}
+
+		Cell& getTallestCellInRow(std::vector<std::reference_wrapper<Cell>>& row) noexcept {
+			float largest = 0.f, tmp_largest = 0.f;
+			std::size_t tmp_bottom_cell = 0;
+			std::for_each(row.begin(), row.end(),
+				[&largest, &tmp_largest, &tmp_bottom_cell](const Cell& cell) {
+					tmp_largest = cell.bounds.y + cell.bounds.h;
+					if (tmp_largest >= largest)
+						largest = tmp_largest, tmp_bottom_cell = cell.index;
+					tmp_largest = 0.f;
+				});
+			return cells[tmp_bottom_cell];
+		}
+
+		auto getDistribution(std::vector<std::reference_wrapper<Cell>>& row, float totalDist) {
+			// Calculate the sum of all margins
+			float sumOfMargins = std::accumulate(row.begin(), row.end(), 0.0f,
+				[](float sum, const std::reference_wrapper<Cell>& cell) {
+					return sum + cell.get().mx;
+				});
+
+			// Create a vector to store the distribution result
+			std::vector<float> distribution(row.size());
+
+			// Distribute the total value among margins
+			for (size_t i = 0; i < row.size(); ++i) {
+				distribution[i] = ((row[i].get().mx) / sumOfMargins * totalDist);
+			}
+			return distribution;
+		}
+
+		void handleFlexResizeNew(const float dw){
+			if (dw == 0.f)return;
+			if (numVerticalGrids == 1) {
+				cellWidth = margin.w / static_cast<float>(numVerticalGrids);
+				allCellsHandleEvent();
+				return;
+			}
+			//check if we lost or gained vert grids
+			if (dw<0.f)
+			{
+				//handle lost grids
+				const float lostGrids = std::ceil(std::fabs(dw) / cellWidth); //round to the largest whole number
+				if ((float)numVerticalGrids - lostGrids > 1.f)
+					numVerticalGrids -= (uint32_t)lostGrids;
+				else return;
+				CellSpacingX += std::fabs(dw) / numVerticalGrids;
+			}
+			else if(dw>0.f){
+				//handle gained grids
+				const auto gainedGrids = static_cast<uint32_t>(std::ceil(dw / cellWidth)); //round to the largest whole number
+				numVerticalGrids += gainedGrids;
+				CellSpacingX -= std::fabs(dw) / numVerticalGrids;
+			}
+			clearAndReset();
+
+
+			//calculate the size shrunk but in numVertModules "lostCellMods"
+			//auto 
+			//then subtract "lostCellMods" from numVertCells
+			//adjust CellSpacingX, CellSpacingY
+			//clear and reset
+		}
+
+		void handleFlexResize(float dw) {
+			float sum_mx = 0.f;
+			float sum_org_mx = 0.f;
+			uint32_t tmp_consumed_cells = 0;
+			Cell* moved_cell = nullptr;
+			std::vector<std::reference_wrapper<Cell>> row;
+
+			for (auto& cell_ : cells) {
+				row.push_back(cell_);
+				tmp_consumed_cells += cell_.num_vert_grids;
+				sum_mx += cell_.mx;
+				sum_org_mx += cell_.org_mx;
+
+				// check if we're at the end of a row
+				if (tmp_consumed_cells >= numVerticalGrids) {
+					// check if dw is negative or pos
+					// if negative, push the last cell on the row to the next row
+					if (dw + sum_mx < sum_org_mx) {
+						if (isFlexible) {
+							// get the largest cell.h on the range row[0 to row.size-1]
+							auto& tallest_cell = getTallestCellInRow(row);
+							/*std::vector<std::reference_wrapper<Cell>> cellsToBeMoved;
+							for (auto cellToMove: cellsToBeMoved){
+								row.back().get().updatePosBy(0.f - row.back().get().bounds.x + row.back().get().mx, tallest_cell.bounds.h + tallest_cell.my);
+								cellToMove.updatePosBy(0.f - cellToMove.bounds.x + cellToMove.mx, tallest_cell.bounds.h + tallest_cell.my);
+							}*/
+							row.back().get().updatePosBy(0.f - row.back().get().bounds.x + row.back().get().mx, tallest_cell.bounds.h + tallest_cell.my);
+							if (moved_cell && row.size() > 2) {
+								std::for_each(row.begin()+1 , row.end() - 1,
+									[moved_cell](Cell& cell) {
+										cell.updatePosBy(moved_cell->bounds.w + moved_cell->mx,0.f);
+									});
+							}
+							// adjust positions of the cells on that row which is {row[0 to row.size-1]}
+							auto dist = getDistribution(row, row.back().get().bounds.w);
+							std::size_t rindex = 0;
+							std::for_each(row.begin(), row.end() - 1,
+								[&dist, &rindex](Cell& cell) {
+									cell.updatePosBy(std::fabs(dist[rindex]),0.f);
+									cell.mx += std::fabs(dist[rindex]);
+									++rindex;
+								});
+							// move the next row
+							moved_cell = &cells[row.back().get().index];
+						}
+						else {
+							// container not flexible so break and return
+							break;
+						}
+					}
+					// reset the row and go on to the next one
+					row.clear();
+					tmp_consumed_cells = 0;
+					sum_mx = sum_org_mx = 0.f;
+					if (moved_cell)
+						row.push_back(cells[moved_cell->index]);
+				}
+			}
+		}
+
 
 		void resetTexture()
 		{
@@ -7302,7 +7515,7 @@ namespace Volt
 			bgColor = _blockProps.bgColor;
 			cornerRadius = _blockProps.cornerRadius;
 			maxCells = maxCells_;
-			numVerticalCells = NumVerticalModules;
+			numVerticalGrids = NumVerticalModules;
 			CellSpacingX = _blockProps.cellSpacingX;
 			CellSpacingY = _blockProps.cellSpacingY;
 			cellWidth = ((margin.w - (_blockProps.cellSpacingX * (NumVerticalModules - 1))) / static_cast<float>(NumVerticalModules));
@@ -7408,6 +7621,7 @@ namespace Volt
 			}
 			else if (event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
 			{
+				float dw = bounds.w;
 				bounds =
 					{
 						DisplayInfo::Get().toUpdatedWidth(bounds.x),
@@ -7415,6 +7629,7 @@ namespace Volt
 						DisplayInfo::Get().toUpdatedWidth(bounds.w),
 						DisplayInfo::Get().toUpdatedHeight(bounds.h),
 					};
+				dw = bounds.w - dw;
 				margin =
 					{
 						DisplayInfo::Get().toUpdatedWidth(margin.x),
@@ -7422,9 +7637,11 @@ namespace Volt
 						DisplayInfo::Get().toUpdatedWidth(margin.w),
 						DisplayInfo::Get().toUpdatedHeight(margin.h),
 					};
-				cellWidth = margin.w / static_cast<float>(numVerticalCells);
+				//cellWidth = margin.w / static_cast<float>(numVerticalGrids);
 				resetTexture();
-				allCellsHandleEvent();
+				//allCellsHandleEvent();
+				//handleFlexResize(dw);
+				handleFlexResizeNew(dw);
 				SIMPLE_RE_DRAW = true;
 			}
 			else if (event->type == SDL_EVENT_FINGER_DOWN)
@@ -7607,8 +7824,6 @@ namespace Volt
 			SIMPLE_RE_DRAW = false;
 			scrollAnimInterpolator.startWithDistance(distance);
 			adaptiveVsyncHD.startRedrawSession();
-			wakeGui();
-			skip_event = true;
 		}
 
 		// BUG: infinite recursion if you invoke this func inside a cell pressed callback
@@ -7928,7 +8143,7 @@ namespace Volt
 		v2d_generic<float> pf = {0.f, 0.f};
 		v2d_generic<float> movedDistance = {0.f, 0.f};
 		v2d_generic<float> movedDistanceSinceStart = {0.f, 0.f};
-		uint32_t numVerticalCells = 0;
+		uint32_t numVerticalGrids = 0;
 		Uint32 FingerMotion_TM = 0;
 		Uint32 FingerUP_TM = 0;
 		SDL_Color bgColor = {0, 0, 0, 0xff};
@@ -7938,7 +8153,7 @@ namespace Volt
 		bool MOTION_OCCURED = false, ANIM_ACTION_UP = false, ANIM_ACTION_DN = false, FIRST_LOAD = true;
 		bool SIMPLE_RE_DRAW = false;
 		bool BuildWasCalled = false;
-		bool skip_event = false;
+		bool isFlexible = true;
 		int64_t SELECTED_CELL = 0 - 1, PREV_SELECTED_CELL = 0 - 1;
 		int64_t HIGHLIGHTED_CELL = 0 - 1, PREV_HIGHLIGHTED_CELL = 0 - 1;
 		std::size_t sizeOfPreAddedCells = 0;
