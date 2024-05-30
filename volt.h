@@ -7348,144 +7348,126 @@ namespace Volt
 			_cell.bounds.y += lbc.y;
 			if (lineCount != prevLineCount)
 				consumedCells = 0, _cell.bounds.y += lbc.h + CellSpacingY;
-			_cell.bounds.x = (consumedCells * (getCellWidth() + CellSpacingX)) + margin_x;
+			_cell.bounds.x += CellSpacingX;
+			_cell.bounds.x += (consumedCells * (getCellWidth() + CellSpacingX)) + margin_x;
 			_cell.bounds.w = static_cast<float>(numVertGrids) * (getCellWidth()) + (numVertGrids);
 			_cell.bounds.w -= margin_x * 2.f;
 			_cell.bounds.h = h - (margin_y * 2.f);
 			prevLineCount = lineCount;
 			consumedCells += numVertGrids;
-			// consumedWidth += static_cast<float>(numVerticalModules) * (getCellWidth());
 			return *this;
 		}
 
-		// co_routine for getting a single row at a time
-		void getNextRow() {
+		float sumGainedGrids = 0.f;
 
-		}
-
-		Cell& getTallestCellInRow(std::vector<std::reference_wrapper<Cell>>& row) noexcept {
-			float largest = 0.f, tmp_largest = 0.f;
-			std::size_t tmp_bottom_cell = 0;
-			std::for_each(row.begin(), row.end(),
-				[&largest, &tmp_largest, &tmp_bottom_cell](const Cell& cell) {
-					tmp_largest = cell.bounds.y + cell.bounds.h;
-					if (tmp_largest >= largest)
-						largest = tmp_largest, tmp_bottom_cell = cell.index;
-					tmp_largest = 0.f;
-				});
-			return cells[tmp_bottom_cell];
-		}
-
-		auto getDistribution(std::vector<std::reference_wrapper<Cell>>& row, float totalDist) {
-			// Calculate the sum of all margins
-			float sumOfMargins = std::accumulate(row.begin(), row.end(), 0.0f,
-				[](float sum, const std::reference_wrapper<Cell>& cell) {
-					return sum + cell.get().mx;
-				});
-
-			// Create a vector to store the distribution result
-			std::vector<float> distribution(row.size());
-
-			// Distribute the total value among margins
-			for (size_t i = 0; i < row.size(); ++i) {
-				distribution[i] = ((row[i].get().mx) / sumOfMargins * totalDist);
-			}
-			return distribution;
-		}
-
-		void handleFlexResizeNew(const float dw){
+		void handleFlexResize(float dw){
 			if (dw == 0.f)return;
-			if (numVerticalGrids == 1) {
+			if (max_vert_grids <= 1) {
 				cellWidth = margin.w / static_cast<float>(numVerticalGrids);
 				allCellsHandleEvent();
 				return;
 			}
-			//check if we lost or gained vert grids
+
+			//check if we lost or gained width
 			if (dw<0.f)
 			{
 				//handle lost grids
-				const float lostGrids = std::ceil(std::fabs(dw) / cellWidth); //round to the largest whole number
-				if ((float)numVerticalGrids - lostGrids > 1.f)
-					numVerticalGrids -= (uint32_t)lostGrids;
-				else return;
-				CellSpacingX += std::fabs(dw) / numVerticalGrids;
-			}
-			else if(dw>0.f){
-				//handle gained grids
-				const auto gainedGrids = static_cast<uint32_t>(std::ceil(dw / cellWidth)); //round to the largest whole number
-				numVerticalGrids += gainedGrids;
-				CellSpacingX -= std::fabs(dw) / numVerticalGrids;
-			}
-			clearAndReset();
-
-
-			//calculate the size shrunk but in numVertModules "lostCellMods"
-			//auto 
-			//then subtract "lostCellMods" from numVertCells
-			//adjust CellSpacingX, CellSpacingY
-			//clear and reset
-		}
-
-		void handleFlexResize(float dw) {
-			float sum_mx = 0.f;
-			float sum_org_mx = 0.f;
-			uint32_t tmp_consumed_cells = 0;
-			Cell* moved_cell = nullptr;
-			std::vector<std::reference_wrapper<Cell>> row;
-
-			for (auto& cell_ : cells) {
-				row.push_back(cell_);
-				tmp_consumed_cells += cell_.num_vert_grids;
-				sum_mx += cell_.mx;
-				sum_org_mx += cell_.org_mx;
-
-				// check if we're at the end of a row
-				if (tmp_consumed_cells >= numVerticalGrids) {
-					// check if dw is negative or pos
-					// if negative, push the last cell on the row to the next row
-					if (dw + sum_mx < sum_org_mx) {
-						if (isFlexible) {
-							// get the largest cell.h on the range row[0 to row.size-1]
-							auto& tallest_cell = getTallestCellInRow(row);
-							/*std::vector<std::reference_wrapper<Cell>> cellsToBeMoved;
-							for (auto cellToMove: cellsToBeMoved){
-								row.back().get().updatePosBy(0.f - row.back().get().bounds.x + row.back().get().mx, tallest_cell.bounds.h + tallest_cell.my);
-								cellToMove.updatePosBy(0.f - cellToMove.bounds.x + cellToMove.mx, tallest_cell.bounds.h + tallest_cell.my);
-							}*/
-							row.back().get().updatePosBy(0.f - row.back().get().bounds.x + row.back().get().mx, tallest_cell.bounds.h + tallest_cell.my);
-							if (moved_cell && row.size() > 2) {
-								std::for_each(row.begin()+1 , row.end() - 1,
-									[moved_cell](Cell& cell) {
-										cell.updatePosBy(moved_cell->bounds.w + moved_cell->mx,0.f);
-									});
+				const float lostGrids = std::fabs(dw) / cellWidth;
+				const float fLostGrids = std::floor(lostGrids);
+				std::cout << "LostGrids:" << lostGrids << "\n";
+				std::cout << "PrevCellSpacingX:" << CellSpacingX << "\n";
+				if (lostGrids >= 1.0f) {
+					if ((float)(numVerticalGrids) - fLostGrids >= 1.f) {
+						numVerticalGrids -= (uint32_t)fLostGrids;
+						CellSpacingX += std::fabs(fLostGrids*cellWidth) / (float)(numVerticalGrids+1);
+						if (lostGrids > fLostGrids) {
+							const float dx = ((lostGrids - fLostGrids) * cellWidth)/(floor)(numVerticalGrids+1);
+							if (CellSpacingX - dx >= 0.0) {
+								CellSpacingX += dx;
 							}
-							// adjust positions of the cells on that row which is {row[0 to row.size-1]}
-							auto dist = getDistribution(row, row.back().get().bounds.w);
-							std::size_t rindex = 0;
-							std::for_each(row.begin(), row.end() - 1,
-								[&dist, &rindex](Cell& cell) {
-									cell.updatePosBy(std::fabs(dist[rindex]),0.f);
-									cell.mx += std::fabs(dist[rindex]);
-									++rindex;
-								});
-							// move the next row
-							moved_cell = &cells[row.back().get().index];
-						}
-						else {
-							// container not flexible so break and return
-							break;
+							else {
+								if (numVerticalGrids - 1.f >= 1.f) {
+									--numVerticalGrids;
+									CellSpacingX += cellWidth / (float)(numVerticalGrids+1);
+								}
+							}
 						}
 					}
-					// reset the row and go on to the next one
-					row.clear();
-					tmp_consumed_cells = 0;
-					sum_mx = sum_org_mx = 0.f;
-					if (moved_cell)
-						row.push_back(cells[moved_cell->index]);
+					else {
+						return;
+					}
+				}
+				else {
+					const float dx = (lostGrids * cellWidth) / (floor)(numVerticalGrids+1);
+					if (CellSpacingX - dx >= 0.0f) {
+						CellSpacingX -= dx;
+					}
+					else {
+						if (numVerticalGrids - 1 >= 1) {
+							--numVerticalGrids;
+							CellSpacingX += cellWidth / (float)(numVerticalGrids+1);
+							CellSpacingX -= dx;
+						}
+						else {
+							std::cout << "can't shrink grids any more\n";
+							return;
+						}
+					}
 				}
 			}
-		}
+			else if(dw>0.f){
+				bool reg = false;
 
+				//redo_gained:
+				const float gainedGrids = dw / cellWidth;
+				const float fGainedGrids = std::floor(gainedGrids);
+				sumGainedGrids += gainedGrids;
+				std::cout << "ReGained:" << reg << "\n";
+				std::cout << "GainedGrids:" << gainedGrids << "\n";
+				std::cout << "PrevCellSpacingX:" << CellSpacingX << "\n";
+				std::cout << "sumGainedGrids:" << sumGainedGrids << "\n";
+				if (sumGainedGrids >= 1.f) {
+					numVerticalGrids += (uint32_t)std::floor(sumGainedGrids);
+					CellSpacingX = OrgCellSpacingX;
+					if (sumGainedGrids > std::floor(sumGainedGrids)) {
+						const float dx = ((sumGainedGrids - std::floor(sumGainedGrids)) * cellWidth) / (floor)(numVerticalGrids + 1);
+						CellSpacingX += dx;
+					}
+					sumGainedGrids = 0.f;
+				}
+				else {
+					const float dx = dw / (floor)(numVerticalGrids + 1);
+					CellSpacingX += dx;
+				}
+
+				/*if (gainedGrids >= 1.0f) {
+					numVerticalGrids += (uint32_t)fGainedGrids;
+					if (gainedGrids > fGainedGrids) {
+						const float dx = ((gainedGrids - fGainedGrids) * cellWidth) / (floor)(numVerticalGrids + 1);
+						CellSpacingX += dx;
+					}
+				}
+				else {
+					sumGainedGrids += gainedGrids;
+					if (sumGainedGrids >= 1.f) {
+						dw = sumGainedGrids * cellWidth;
+						sumGainedGrids = 0.f;
+						reg = true;
+						CellSpacingX = OrgCellSpacingX*2.f;
+						goto redo_gained;
+					}
+					else {
+						CellSpacingX += dw / (floor)(numVerticalGrids+1);
+					}
+				}*/
+			}
+			std::cout << "CellSpacingX:" << CellSpacingX << "\n";
+			clearAndReset();
+
+			/*
+			* std::for_each(cells.begin(), cells.end(), [this](Cell& cell) { setCellRect(cell, cell.num_vert_grids, cell.bounds.h, CellSpacingX); });
+			*/
+		}
 
 		void resetTexture()
 		{
@@ -7500,7 +7482,7 @@ namespace Volt
 			crt_.release(renderer);
 		}
 
-		CellBlock &Build(Context *context_, const int &maxCells_, const int &NumVerticalModules, const CellBlockProps &_blockProps, const ScrollDirection &scroll_direction = ScrollDirection::VERTICAL)
+		CellBlock &Build(Context *context_, const int &maxCells_, const int &_numVerticalGrids, const CellBlockProps &_blockProps, const ScrollDirection &scroll_direction = ScrollDirection::VERTICAL)
 		{
 			Context::setContext(context_);
 			Context::setView(this);
@@ -7515,10 +7497,12 @@ namespace Volt
 			bgColor = _blockProps.bgColor;
 			cornerRadius = _blockProps.cornerRadius;
 			maxCells = maxCells_;
-			numVerticalGrids = NumVerticalModules;
+			numVerticalGrids = _numVerticalGrids;
+			max_vert_grids = _numVerticalGrids;
 			CellSpacingX = _blockProps.cellSpacingX;
+			OrgCellSpacingX = _blockProps.cellSpacingX;
 			CellSpacingY = _blockProps.cellSpacingY;
-			cellWidth = ((margin.w - (_blockProps.cellSpacingX * (NumVerticalModules - 1))) / static_cast<float>(NumVerticalModules));
+			cellWidth = ((margin.w - (_blockProps.cellSpacingX * (_numVerticalGrids - 1))) / static_cast<float>(_numVerticalGrids));
 			if (texture.get() != nullptr)
 				texture.reset();
 			CacheRenderTarget crt_(renderer);
@@ -7637,11 +7621,8 @@ namespace Volt
 						DisplayInfo::Get().toUpdatedWidth(margin.w),
 						DisplayInfo::Get().toUpdatedHeight(margin.h),
 					};
-				//cellWidth = margin.w / static_cast<float>(numVerticalGrids);
 				resetTexture();
-				//allCellsHandleEvent();
-				//handleFlexResize(dw);
-				handleFlexResizeNew(dw);
+				handleFlexResize(dw);
 				SIMPLE_RE_DRAW = true;
 			}
 			else if (event->type == SDL_EVENT_FINGER_DOWN)
@@ -8134,7 +8115,7 @@ namespace Volt
 		SDL_Color cell_bg_color = {0x00, 0x00, 0x00, 0x00};
 		uint64_t maxCells = 0;
 		// SDL_FRect dest;
-		float cellWidth = 0.f, CellSpacing = 0.f, CellSpacingX = 0.f, CellSpacingY = 0.f;
+		float cellWidth = 0.f, CellSpacing = 0.f, CellSpacingX = 0.f, OrgCellSpacingX=0.f, CellSpacingY = 0.f;
 		float dy = 0.f;
 		float cornerRadius = 0.f;
 		/*current finger*/
@@ -8144,8 +8125,9 @@ namespace Volt
 		v2d_generic<float> movedDistance = {0.f, 0.f};
 		v2d_generic<float> movedDistanceSinceStart = {0.f, 0.f};
 		uint32_t numVerticalGrids = 0;
-		Uint32 FingerMotion_TM = 0;
-		Uint32 FingerUP_TM = 0;
+		uint32_t FingerMotion_TM = 0;
+		uint32_t FingerUP_TM = 0;
+		uint32_t max_vert_grids = 1;
 		SDL_Color bgColor = {0, 0, 0, 0xff};
 		std::size_t backIndex = 0, frontIndex = 0;
 		std::size_t topCell = 0, bottomCell = 0;
