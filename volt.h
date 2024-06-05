@@ -129,6 +129,68 @@ namespace Volt
 		AdaptiveVsync *adaptiveVsync = nullptr;
 	};
 
+	class Logger
+	{
+	public:
+		enum class LogLevel:uint8_t {
+			Info,
+			Debug,
+			Warning,
+			Error,
+		};
+	public:
+		Logger(const Logger&) = delete;
+		Logger(const Logger&&) = delete;
+
+		static Logger& Get()
+		{
+			static Logger instance;
+			return instance;
+		}
+
+		auto log(LogLevel level, std::string msg) {
+			logs[level].push_back(msg);
+			std::cout << "Log: ";
+			switch (level) {
+			case LogLevel::Info:
+				std::cout << "Info: ";
+				break;
+			case LogLevel::Debug:
+				std::cout << "Debug: ";
+				break;
+			case LogLevel::Warning:
+				std::cout << "Warning: ";
+				break;
+			case LogLevel::Error:
+				std::cout << "Error: ";
+				break;
+			}
+			std::cout << msg << std::endl;
+		}
+
+		auto setLoggerOutputFile(std::filesystem::path fp) {
+
+		}
+
+		auto getLastError() {
+			return logs[LogLevel::Error].back();
+		}
+
+		auto clearAll() {
+			logs.clear();
+		}
+
+		auto getAll() {
+			return logs;
+		}
+	private:
+		// Category and Log
+		std::unordered_map<LogLevel,std::vector<std::string>> logs{};
+	private:
+		Logger() {
+		}
+	};
+
 	class CacheRenderTarget
 	{
 	public:
@@ -6605,6 +6667,7 @@ namespace Volt
 	{
 	private:
 		//private helpers used by CellBlock
+		bool isHeader = false;
 		uint32_t num_vert_grids = 1;
 		float org_mx = 0.f, org_my = 0.f, mx = 0.f, my = 0.f;
 	public:
@@ -7284,8 +7347,21 @@ namespace Volt
 		{
 		}
 
+		std::optional<std::reference_wrapper<Cell>> getHeaderCell() {
+			if (fillNewCellDataCallbackHeader and not cells.empty()) {
+				return cells.front();
+			}
+			else
+			{
+				Logger::Get().log(Logger::LogLevel::Error, "CellBlock::getHeaderCell() failed. no header cell was found. call CellBlock::addHeaderCell() before CellBlock::getHeaderCell()");
+				return {};
+			}
+		}
+
+		// Note this method must be invoked before CellBlock::Build() and CellBlock::addCell
 		CellBlock &addHeaderCell(std::function<void(Cell &)> newCellSetUpCallback)
 		{
+			fillNewCellDataCallbackHeader =newCellSetUpCallback;
 			return *this;
 		}
 
@@ -7328,6 +7404,9 @@ namespace Volt
 		 */
 		CellBlock &setCellRect(Cell &_cell, uint32_t numVertGrids, const float h, const float margin_x = 0.f, const float margin_y = 0.f)
 		{
+			[[unlikely]] if (_cell.isHeader) {
+				numVertGrids = numVerticalGrids;
+			}
 			numVertGrids = std::clamp(numVertGrids, uint32_t(0), numVerticalGrids);
 			if (numVertGrids == numVerticalGrids) isFlexible = false;
 			_cell.num_vert_grids = numVertGrids;
@@ -7337,7 +7416,11 @@ namespace Volt
 			_cell.my = margin_y;
 			if (getMaxVerticalGrids() - consumedCells < numVertGrids)
 				lineCount++, _cell.bounds.y += margin_y;
-			auto lbc = getLowestBoundCell().bounds;
+			SDL_FRect lbc;
+			if (not _cell.isHeader)
+				lbc = getLowestBoundCell().bounds;
+			else
+				lbc = header_cell.bounds;
 			if (cells.size() > 1)
 			{
 				const auto &bck = cells[cells.size() - 2].bounds;
@@ -7350,11 +7433,15 @@ namespace Volt
 				consumedCells = 0, _cell.bounds.y += lbc.h + CellSpacingY;
 			_cell.bounds.x += CellSpacingX;
 			_cell.bounds.x += (consumedCells * (getCellWidth() + CellSpacingX)) + margin_x;
-			_cell.bounds.w = static_cast<float>(numVertGrids) * (getCellWidth()) + (numVertGrids);
+			_cell.bounds.w = static_cast<float>(numVertGrids) * getCellWidth();
 			_cell.bounds.w -= margin_x * 2.f;
 			_cell.bounds.h = h - (margin_y * 2.f);
 			prevLineCount = lineCount;
 			consumedCells += numVertGrids;
+			[[unlikely]] if (_cell.isHeader) {
+				_cell.bounds.x += bounds.x;
+				_cell.bounds.y += bounds.y;
+			}
 			return *this;
 		}
 
@@ -7503,6 +7590,22 @@ namespace Volt
 			OrgCellSpacingX = _blockProps.cellSpacingX;
 			CellSpacingY = _blockProps.cellSpacingY;
 			cellWidth = ((margin.w - (_blockProps.cellSpacingX * (_numVerticalGrids - 1))) / static_cast<float>(_numVerticalGrids));
+
+			if (fillNewCellDataCallbackHeader) {
+				update_top_and_bottom_cells();
+				header_cell = Cell{};
+				header_cell.isHeader = true;
+				header_cell.setContext(this)
+					.setIndex(0);
+				header_cell.pv = this;
+				header_cell.adaptiveVsync = adaptiveVsync;
+				fillNewCellDataCallbackHeader(header_cell);
+				header_h = header_cell.bounds.h;
+				margin.y += header_h+2.f;
+				margin.h -= header_h+2.f;
+				Logger::Get().log(Logger::LogLevel::Info, "CellBlock::addHeaderCell() Success Index:" + std::to_string(header_cell.index));
+			}
+
 			if (texture.get() != nullptr)
 				texture.reset();
 			CacheRenderTarget crt_(renderer);
@@ -7513,6 +7616,7 @@ namespace Volt
 			renderClear(renderer, 0, 0, 0, 0);
 			// fillRoundedRectF(renderer, { 0.f,0.f,rect.w,rect.h }, cornerRadius, bgColor);
 			crt_.release(renderer);
+
 			const int originalMaxCells = maxCells;
 			for (auto preAddedCellSetUpCallback : preAddedCellsSetUpCallbacks)
 			{
@@ -7622,7 +7726,8 @@ namespace Volt
 						DisplayInfo::Get().toUpdatedHeight(margin.h),
 					};
 				resetTexture();
-				handleFlexResize(dw);
+				//handleFlexResize(dw);
+				allCellsHandleEvent();
 				SIMPLE_RE_DRAW = true;
 			}
 			else if (event->type == SDL_EVENT_FINGER_DOWN)
@@ -7821,6 +7926,7 @@ namespace Volt
 			if (scrlAction==ScrollAction::None and not ANIM_ACTION_DN and not ANIM_ACTION_UP and not CELL_PRESSED and not adaptiveVsyncHD.shouldReDrawFrame())
 			{
 				fillRoundedRectF(renderer, {bounds.x, bounds.y, bounds.w, bounds.h}, cornerRadius, bgColor);
+				if (fillNewCellDataCallbackHeader)header_cell.Draw();
 				SDL_RenderTexture(renderer, texture.get(), nullptr, &margin);
 				if (not childViews.empty()) {
 					for (auto child : childViews)
@@ -7919,6 +8025,7 @@ namespace Volt
 	protected:
 		void simpleDraw() {
 			fillRoundedRectF(renderer, { bounds.x, bounds.y, bounds.w, bounds.h }, cornerRadius, bgColor);
+			if (fillNewCellDataCallbackHeader)header_cell.Draw();
 			CacheRenderTarget crt_(renderer);
 			SDL_SetRenderTarget(renderer, texture.get());
 			renderClear(renderer, 0, 0, 0, 0);
@@ -8039,6 +8146,7 @@ namespace Volt
 		bool allCellsHandleEvent()
 		{
 			bool result = false;
+			if (fillNewCellDataCallbackHeader)header_cell.handleEvent();
 			for (auto &_cell : cells)
 			{
 				_cell.handleEvent();
@@ -8101,7 +8209,8 @@ namespace Volt
 		ScrollAction scrlAction;
 	private:
 		std::function<void(Cell &)> onCellClickedCallback = nullptr;
-		std::function<void(Cell &)> fillNewCellDataCallback = nullptr;
+		std::function<void(Cell&)> fillNewCellDataCallback = nullptr;
+		std::function<void(Cell &)> fillNewCellDataCallbackHeader = nullptr;
 		std::deque<Cell> cells;
 		std::deque<Cell *> visibleCells;
 		std::deque<ImageButton *> cellsWithAsyncImages;
@@ -8118,6 +8227,7 @@ namespace Volt
 		float cellWidth = 0.f, CellSpacing = 0.f, CellSpacingX = 0.f, OrgCellSpacingX=0.f, CellSpacingY = 0.f;
 		float dy = 0.f;
 		float cornerRadius = 0.f;
+		float header_h = 0.f;
 		/*current finger*/
 		v2d_generic<float> cf = {0.f, 0.f};
 		/*previous finger*/
