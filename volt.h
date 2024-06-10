@@ -498,6 +498,118 @@ namespace Volt
 	private:
 	};
 
+
+
+	class ViewTree {
+	public:
+		auto addView(const std::string& label, IView* iview) {
+			indexer[label] = view_tree.size();
+			return view_tree.emplace_back(iview);
+		}
+
+		auto removeView(const std::string& label) {
+			if (indexer.contains(label)) {
+				view_tree.erase(view_tree.begin() + indexer[label]);
+				indexer.erase(label);
+			}
+		}
+
+		bool isEmpty() {
+			return view_tree.empty();
+		}
+
+		void toggleView(const std::string& label) {
+			if (indexer.contains(label)) {
+				if (view_tree[indexer[label]]->isHidden()) {
+					view_tree[indexer[label]]->show();
+					view_tree[indexer[label]]->enable();
+				}
+				else {
+					view_tree[indexer[label]]->hide();
+					view_tree[indexer[label]]->disable();
+				}
+			}
+		}
+
+		void showAndEnable(const std::string& label) {
+			if (indexer.contains(label)) {
+				view_tree[indexer[label]]->show();
+				view_tree[indexer[label]]->enable();
+			}
+		}
+
+		void hideAndDisable(const std::string& label) {
+			if (indexer.contains(label)) {
+				view_tree[indexer[label]]->hide();
+				view_tree[indexer[label]]->disable();
+			}
+		}
+
+		auto setViewHidden(const std::string& label, bool _hidden) {
+			if (indexer.contains(label))
+				_hidden ? view_tree[indexer[label]]->hide() : view_tree[indexer[label]]->show();
+		}
+
+
+		auto setViewDisabled(const std::string& label, bool _disabled) {
+			if (indexer.contains(label))
+				_disabled ? view_tree[indexer[label]]->disable() : view_tree[indexer[label]]->enable();
+		}
+
+		auto setTreeHidden(bool _hidden) {
+			hidden_ = _hidden;
+		}
+
+
+		auto setTreeDisabled(bool _disabled) {
+			disabled_ = _disabled;
+		}
+
+		void handleEvent() {
+			if (not hidden_ and not disabled_) {
+				for (auto view_index = view_tree.size(); view_index > 0; --view_index) {
+					if (not view_tree[view_index - 1]->isHidden())
+						if (view_tree[view_index - 1]->handleEvent())return;
+				}
+			}
+		}
+
+		void forceHandleEventAll() {
+			for (auto view_ : view_tree)
+				view_->handleEvent();
+		}
+
+		void forceDrawAll() {
+			for (auto view : view_tree)
+				view->Draw();
+		}
+
+		void Draw() {
+			if (not hidden_) {
+				for (int view_index = 0; view_index < view_tree.size(); ++view_index) {
+					auto& view = view_tree[view_index];
+					if (not view->isHidden())view->Draw();
+				}
+			}
+		}
+	public:
+		std::optional<IView*> operator[](const std::string& label) {
+			if (indexer.contains(label))
+				return view_tree[indexer[label]];
+			return {};
+		}
+
+	private:
+		std::unordered_map<std::string, size_t> indexer;
+		std::vector<IView*> view_tree;
+		bool hidden_ = false, disabled_;
+		//ViewTree child_tree();
+	};
+
+
+
+
+
 	class Context
 	{
 	public:
@@ -807,6 +919,13 @@ namespace Volt
 		T x, y;
 	};
 
+	struct Triangle {
+		SDL_FPoint center{};
+		float h = 0.f;
+		Direction direction;
+		SDL_Color color;
+	};
+
 	struct Spline
 	{
 		std::deque<Point<float>> points;
@@ -895,9 +1014,70 @@ namespace Volt
 		SDL_RenderPoint(_renderer, _x, _y);
 	}
 
-	void drawFilledTriangle(SDL_Renderer* _renderer, std::vector<SDL_Vertex> _points) {
-		SDL_RenderGeometry(_renderer, NULL, _points.data(), 3, NULL, 3);
+	// Function to rotate a point around the center
+	SDL_FPoint rotatePoint(SDL_FPoint point, SDL_FPoint center, double angle) {
+		double radians = angle * 3.1415926 / 180.0;
+		double s = std::sin(radians);
+		double c = std::cos(radians);
+
+		// Translate point back to origin
+		point.x -= center.x;
+		point.y -= center.y;
+
+		// Rotate point
+		double xnew = point.x * c - point.y * s;
+		double ynew = point.x * s + point.y * c;
+
+		// Translate point back
+		point.x = xnew + center.x;
+		point.y = ynew + center.y;
+
+		return point;
 	}
+
+
+	std::vector<SDL_Vertex> getTriangleVertices(Triangle _tri) {
+		// Calculate the side length of the equilateral triangle
+		double side = (2 * _tri.h) / std::sqrt(3);
+
+		// Calculate the vertices for the "up" direction
+		SDL_FPoint p1 = { _tri.center.x, _tri.center.y + (2.0 / 3.0) * _tri.h };
+		SDL_FPoint p2 = { _tri.center.x - side / 2, _tri.center.y - (1.0 / 3.0) * _tri.h };
+		SDL_FPoint p3 = { _tri.center.x + side / 2, _tri.center.y - (1.0 / 3.0) * _tri.h };
+
+		// Determine rotation angle based on direction
+		double angle = 0;
+		if (_tri.direction == Direction::Down) {
+			angle = 0;
+		}
+		else if (_tri.direction == Direction::Left) {
+			angle = 90;
+		}
+		else if (_tri.direction == Direction::Up) {
+			angle = 180;
+		}
+		else if (_tri.direction == Direction::Right) {
+			angle = -90;
+		}
+
+		// Rotate vertices based on the direction
+		p1 = rotatePoint(p1, _tri.center, angle);
+		p2 = rotatePoint(p2, _tri.center, angle);
+		p3 = rotatePoint(p3, _tri.center, angle);
+
+		// Create SDL_Vertex with colors
+		SDL_Vertex v1 = { p1, {50, 50, 50, 255} };
+		SDL_Vertex v2 = { p2, {50, 50, 50, 255} };
+		SDL_Vertex v3 = { p3, {50, 50, 50, 255} };
+		return std::vector{ v1,v2,v3 };
+	}
+
+	void drawFilledTriangle(SDL_Renderer* _renderer, Triangle &_tri) {
+		auto verts = getTriangleVertices(_tri);
+		SDL_RenderGeometry(_renderer, NULL, verts.data(), 3, NULL, 3);
+	}
+
+
 
 	void draw_ring(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r, const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
 	{
@@ -6626,6 +6806,96 @@ namespace Volt
 		std::function<SDL_Surface *()> CustomLazyImageLoaderCallBack_ = nullptr;
 	};
 
+
+	class Pointer: public Context, IView {
+	public:
+		Direction openDir;
+		Triangle tri;
+	public:
+		Pointer(Context* _context, Triangle &_tri, Direction openDirection) {
+			Build(_context, _tri, openDirection);
+		}
+
+		Pointer& setContext(Context* _context) {
+			Context::setContext(_context);
+			Context::setView(this);
+			return *this;
+		}
+
+		Pointer& Build(Context* _context, Triangle &_tri, Direction openDirection, bool isOpen=false) {
+			this->setContext(_context);
+			tri = _tri;
+			is_open = isOpen;
+			//auto trirect = getTriangleBounds(tri);
+
+			bounds = { 0.f,0.f,0.f,0.f };
+			return *this;
+		}
+
+		bool handleEvent() override{
+			bool result = false;
+			if (event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
+			{
+				bounds =
+				{
+					DisplayInfo::Get().toUpdatedWidth(bounds.x),
+					DisplayInfo::Get().toUpdatedHeight(bounds.y),
+					DisplayInfo::Get().toUpdatedWidth(bounds.w),
+					DisplayInfo::Get().toUpdatedHeight(bounds.h),
+				};
+				return false;
+			}
+			else if (event->type == SDL_EVENT_FINGER_DOWN) {
+				if (not motion_occured) {
+					auto cf= SDL_FPoint{ event->tfinger.x * DisplayInfo::Get().RenderW,
+						   event->tfinger.y * DisplayInfo::Get().RenderH };
+					if (isPosInbound(cf.x, cf.y))
+					{
+						if (is_open)
+							closeTri();
+						else
+							openTri();
+					}
+				}
+				motion_occured = false;
+			}
+			else if (event->type == SDL_EVENT_FINGER_UP) {
+				motion_occured = false;
+			}
+			else if (event->type == SDL_EVENT_FINGER_MOTION) {
+				motion_occured = true;
+			}
+			return result;
+		}
+
+		void Draw() override {
+			drawFilledTriangle(renderer, tri);
+		}
+	private:
+		bool motion_occured = false;
+		bool is_open = false;
+	private:
+		[[nodiscard]] bool isPosInbound(const float& valX, const float& valY) const noexcept
+		{
+			if (valX > bounds.x && valX < bounds.x + bounds.w && valY > bounds.y &&
+				valY < bounds.y + bounds.h)
+				return true;
+			return false;
+		}
+
+		void openTri() {
+
+		}
+
+		void closeTri() {
+
+		}
+	};
+
+
+
+
+
 	class cellblock_visitor
 	{
 	public:
@@ -7752,14 +8022,19 @@ namespace Volt
 			}
 			else if (event->type == SDL_EVENT_MOUSE_WHEEL)
 			{
-				// SDL_Log("mswm: %f", event.wheel.preciseY);
-				KEYDOWN = true;
 				MOTION_OCCURED = true;
-				if (KEYDOWN and maxCells > 0)
+				visibleCellsHandleEvent();
+				if (isPosInbound(event->wheel.mouseX, event->wheel.mouseY) and maxCells > 0)
 				{
-					// cf = { (event.wheel.preciseX), (event.wheel.preciseY) };
-					// moved_distance += {event.tfinger.dx* DisplayInfo::Get().RenderW, event.tfinger.dy* DisplayInfo::Get().RenderH};
+					pf = { event->wheel.mouseX,
+						  event->wheel.mouseY };
+					cf = { pf.x + (event->wheel.x*40.f),
+						  pf.y + (event->wheel.y*40.f) };
+					movedDistance += {event->wheel.x*5.f, event->wheel.y*5.f};
 					internal_handle_motion();
+					updateHighlightedCell(-1);
+					FingerUP_TM = SDL_GetTicks();
+					return true;
 				}
 				FingerUP_TM = SDL_GetTicks();
 			}
@@ -7921,7 +8196,8 @@ namespace Volt
 			if (SIMPLE_RE_DRAW)
 			{
 				SIMPLE_RE_DRAW = false;
-				simpleDraw();
+				goto simple_rdraw;
+				//simpleDraw();
 			}
 			if (scrlAction==ScrollAction::None and not ANIM_ACTION_DN and not ANIM_ACTION_UP and not CELL_PRESSED and not adaptiveVsyncHD.shouldReDrawFrame())
 			{
@@ -8009,6 +8285,7 @@ namespace Volt
 				dy = 0.f;
 				scrlAction = ScrollAction::None;
 			}
+			simple_rdraw:
 			simpleDraw();
 
 			if (not toBeErasedCells.empty()) {
@@ -8271,6 +8548,7 @@ namespace Volt
 		struct Value {
 			std::size_t id = 0;
 			std::string value = "";
+			std::string img = "";
 		};
 	public:
 		CellBlock* getInnerBlock() { return &valuesBlock; }
@@ -8293,6 +8571,7 @@ namespace Volt
 	public:
 		Select& Build(Context* _context, SelectProps _props, std::vector<Value> _values, std::size_t _default=0) {
 			Context::setContext(_context);
+			//if any of _values contains img then add img padding to all value cells
 			const auto bounds = _props.rect;
 			_props.inner_block_rect.x = bounds.x;
 			_props.inner_block_rect.y = bounds.y + bounds.h + 2.f;
