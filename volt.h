@@ -772,6 +772,17 @@ namespace Volt
 
 	class Application : protected Context, IView
 	{
+		public:
+		struct Config{
+			std::string title{"Volt Application"};
+			int w=0, h=0;
+			int window_flags=SDL_WINDOW_HIGH_PIXEL_DENSITY;
+			int renderer_flags=SDL_RENDERER_ACCELERATED/*| SDL_RENDERER_PRESENTVSYNC*/;
+			bool init_ttf=true;
+			bool init_img=true;
+			bool init_everyting=true;
+		};
+
 		private:
 		AdaptiveVsync adaptiveVsync_;
 		SDL_Event event_;
@@ -802,16 +813,18 @@ namespace Volt
 		}
 
 	public:
-		short Create(const char *title, int ww, int wh,
-					 int window_flags = SDL_WINDOW_HIGH_PIXEL_DENSITY,
-					 int renderer_flags = SDL_RENDERER_ACCELERATED /*| SDL_RENDERER_PRESENTVSYNC*/)
+		short create(Application::Config config);
 		{
-			window = SDL_CreateWindow(title, ww, wh, window_flags);
+			if(config.init_everyting)SDL_Init(SDL_INIT_EVERYTHING);
+			if(config.init_ttf)TTF_Init();
+			if(config.init_img)IMG_Init(IMG_INIT_PNG);
+
+			window = SDL_CreateWindow(config.title, config.w, config.h, config.window_flags);
 			SDL_Rect usb_b{0};
 			SDL_GetWindowSize(window, &usb_b.w, &usb_b.h);
 			SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
 			// SDL_SetHint(SDL_HINT_RENDER_DRIVER, "direct3d");
-			renderer = SDL_CreateRenderer(window, NULL, renderer_flags);
+			renderer = SDL_CreateRenderer(window, NULL, config.renderer_flags);
 			DisplayInfo::Get().setContext(this);
 			DisplayInfo::Get().initDisplaySystem(0);
 			bounds.w = DisplayInfo::Get().RenderW;
@@ -829,13 +842,13 @@ namespace Volt
 			DisplayInfo::Get().setContext(this);
 
 			BasePath = SDL_GetBasePath();
-			PrefPath = SDL_GetPrefPath("Volt", title);
+			PrefPath = SDL_GetPrefPath("Volt", config.title);
 			std::cout << "BasePath:" << BasePath << "\n";
 			std::cout << "PrefPath:" << PrefPath << "\n";
 			return 1;
 		}
 
-		void Run()
+		void run()
 		{
 			tmPrevFrame = SDL_GetTicks();
 			loop();
@@ -857,7 +870,7 @@ namespace Volt
 			return false;
 		}
 
-		virtual void Draw() = 0;
+		virtual void draw() = 0;
 
 		auto getFPS()
 		{
@@ -880,7 +893,8 @@ namespace Volt
 			{
 				frames++;
 				handleEvent();
-				Draw();
+				draw();
+				SDL_RenderPresent(renderer);
 				tmNowFrame = SDL_GetTicks();
 				if (tmNowFrame >= tmPrevFrame + 1000)
 				{
@@ -1623,7 +1637,7 @@ namespace Volt
 		draw_filled_circle(renderer, x, y, r, color);
 	}
 
-	void renderClear(SDL_Renderer *renderer, const uint8_t &red, const uint8_t &green,
+	void RenderClear(SDL_Renderer *renderer, const uint8_t &red, const uint8_t &green,
 					 const uint8_t &blue,
 					 const uint8_t &alpha = 0xFF)
 	{
@@ -2070,40 +2084,122 @@ namespace Volt
 		float dy_sum = 0.f;
 	};
 
-	class DecelerateInterpolator
+	/*
+	 * This interpolator generates values that initially have a small difference between them 
+	 * and then ramps up the difference gradually until it reaches the endpoint.
+	 * For example, the generated values between 1 -> 5 with accelerated interpolation could be 1 -> 1.2 -> 1.5 -> 1.9 -> 2.4 -> 3.0 -> 3.6 -> 4.3 -> 5.
+	*/
+	class AccelerateInterpolator
 	{
 	};
 
-	class AccelerateInterpolator
+	/*
+	 * This interpolator generates values that are “slowing down” as you move forward in the list of generated values. 
+	 * So, the values generated initially have a greater difference between them and the difference 
+	 * gradually reduces until the endpoint is reached. Therefore, the generated values 
+	 * between 1 -> 5 could look like 1 -> 1.8 -> 2.5 -> 3.1 -> 3.6 -> 4.0 -> 4.3 -> 4.5 -> 4.6 -> 4.7 -> 4.8 -> 4.9 -> 5.
+	*/
+	class DecelerateInterpolator
 	{
+		public:
+		DecelerateInterpolator &start(float initial_velocity)
+		{
+			vo = initial_velocity;
+			distane = 100.f * ((vo * vo) / (2 * std::fabs(adg)));
+			value = 0.f, prev_dy = 0.f;
+			update_physics = true;
+			tm_start = SDL_GetTicks();
+			return *this;
+		}
+
+		DecelerateInterpolator &startWithDistance(float max_distance)
+		{
+			distance = max_distance / 100.f;
+			vo = std::sqrt((2.f * adg) * distance);
+			vo *= 2.f;
+			distance = max_length;
+			value = 0.f, prev_dy = 0.f;
+			update_physics = true;
+			tm_start = SDL_GetTicks();
+			return *this;
+		}
+
+		// call this to update the values
+		DecelerateInterpolator &update()
+		{
+			if (!update_physics)
+				return *this;
+			float t = (SDL_GetTicks() - tm_start) / 1000.f;
+			// t *= 1.5f;
+
+			dy = ((vo * t) + ((0.5f * adg) * (t * t))) * 100.f;
+			value = dy - prev_dy;
+			prev_dy = dy;
+			if (dy >= MAX_LEN - 1.f)
+				update_physics = false;
+			return *this;
+		}
+
+		DecelerateInterpolator &setIsInterpolatinating(bool interpolating) noexcept
+		{
+			update_physics = interpolating;
+			return *this;
+		}
+
+		float getValue() const noexcept
+		{
+			return value;
+		}
+
+		bool isInterpolating() const noexcept
+		{
+			return update_physics;
+		}
+
+	protected:
+		uint32_t tm_start = 0;
+		// acceleration due to gravity
+		float adg = -9.8f;
+		float distance = 0.f;
+		// initial velocity
+		float vo = 0.f;
+		float dy = 0.f;
+		float prev_dy = 0.f;
+		float value = 0.f;
+		bool update_physics = false;
 	};
 
 	class AccelerateDecelerateInterpolator
 	{
 	};
 
-	enum class AnimationType
+	/*
+	 * This interpolation starts by first moving backward, then “flings” forward, 
+	 * and then proceeds gradually to the end. This gives it an effect similar to 
+	 * cartoons where the characters pull back before shooting off running. 
+	 * For example, generated values between 1 -> 3 could look like: 1 -> 0.5 -> 2 -> 2.5 -> 3.
+	*/
+	class AnticipateInterpolator
 	{
-		SlideXY,
-		SlideX,
-		SlideY,
-		Fade,
-		Then
 	};
 
-	class Animator : protected Interpolator
+	class BounceInterpolator
 	{
-	public:
-		Animator &then(/*delay: ms*/)
-		{
-			return *this;
-		}
-
-	private:
-		std::deque<AnimationType> anim_pattern;
-		bool is_animating = false;
 	};
 
+	/*
+	 * This interpolator generates values uniformly from the start to end.
+	 * However, after hitting the end, it overshoots or goes beyond the last 
+	 * value by a small amount and then comes back to the endpoint. 
+	 * For example, the generated values between 1 -> 5 could look like: 1 -> 2 -> 3 -> 4 -> 5 -> 5.5 -> 5.
+	*/
+	class OvershootInterpolator
+	{
+	};
+
+	class AnticipateOvershootInterpolator
+	{
+	};
 	namespace Experimental
 	{
 
@@ -2700,7 +2796,7 @@ namespace Volt
 	private:
 		FontSystem()
 		{
-			this->m_font_attributes = FontAttributes{"", FontStyle::NORMAL, 255};
+			this->m_font_attributes = FontAttributes{"", FontStyle::Normal, 255};
 			m_font_outline = 0;
 			m_custom_fontstyle = TTF_STYLE_NORMAL;
 		}
@@ -2722,37 +2818,38 @@ namespace Volt
 
 			switch (m_font_attributes.font_style)
 			{
-			case FontStyle::NORMAL:
+				using enum FontStyle;
+			case Normal:
 				TTF_SetFontStyle(m_font, TTF_STYLE_NORMAL);
 				break;
-			case FontStyle::BOLD:
+			case Bold:
 				TTF_SetFontStyle(m_font, TTF_STYLE_BOLD);
 				break;
-			case FontStyle::ITALIC:
+			case Italic:
 				TTF_SetFontStyle(m_font, TTF_STYLE_ITALIC);
 				break;
-			case FontStyle::UNDERLINE:
+			case Underline:
 				TTF_SetFontStyle(m_font, TTF_STYLE_UNDERLINE);
 				break;
-			case FontStyle::STRIKETHROUGH:
+			case StrikeThrough:
 				TTF_SetFontStyle(m_font, TTF_STYLE_STRIKETHROUGH);
 				break;
-			case FontStyle::BOLD_UNDERLINE:
+			case BoldUnderline:
 				TTF_SetFontStyle(m_font, TTF_STYLE_BOLD | TTF_STYLE_UNDERLINE);
 				break;
-			case FontStyle::BOLD_STRIKETHROUGH:
+			case BoldStrikeThrough:
 				TTF_SetFontStyle(m_font, TTF_STYLE_BOLD | TTF_STYLE_STRIKETHROUGH);
 				break;
-			case FontStyle::ITALIC_BOLD:
+			case ItalicBold:
 				TTF_SetFontStyle(m_font, TTF_STYLE_ITALIC | TTF_STYLE_BOLD);
 				break;
-			case FontStyle::ITALIC_UNDERLINE:
+			case ItalicUnderline:
 				TTF_SetFontStyle(m_font, TTF_STYLE_ITALIC | TTF_STYLE_UNDERLINE);
 				break;
-			case FontStyle::ITALIC_STRIKETHROUGH:
+			case ItalicStrikeThrough:
 				TTF_SetFontStyle(m_font, TTF_STYLE_ITALIC | TTF_STYLE_STRIKETHROUGH);
 				break;
-			case FontStyle::CUSTOM:
+			case Custom:
 				TTF_SetFontStyle(m_font, m_custom_fontstyle);
 				break;
 			default:
@@ -2776,8 +2873,8 @@ namespace Volt
 		SDL_FRect rect = {0.f, 0.f, 0.f, 0.f};
 		TextAttributes textAttributes = {"", {0x00, 0x00, 0x00, 0xff}, {0xff, 0xff, 0xff, 0xff}};
 		std::string fontFile;
-		FontStyle fontStyle = FontStyle::NORMAL;
-		Gravity gravity = Gravity::LEFT;
+		FontStyle fontStyle = FontStyle::Normal;
+		Gravity gravity = Gravity::Left;
 		int customFontstyle = TTF_STYLE_NORMAL;
 		bool shrinkToFit = false;
 	};
@@ -2897,7 +2994,7 @@ namespace Volt
 				{
 					// if(shrinkToFit)dest.w = tmp_w;
 					rect.w = tmp_w;
-					if (tvAttr.gravity == Gravity::CENTER && !shrinkToFit)
+					if (tvAttr.gravity == Gravity::Center && !shrinkToFit)
 					{
 						rect.x = (tvAttr.rect.w - tmp_w) / 2.f;
 					}
@@ -3222,7 +3319,7 @@ namespace Volt
 			SDL_Color text_color{ 255, 255, 255, 255 };
 			SDL_Color bg_color{ 0, 0, 0, 0 };
 			Font mem_font = Font::ConsolasBold;
-			FontStyle font_style = FontStyle::NORMAL;
+			FontStyle font_style = FontStyle::Normal;
 			std::string font_file;
 			uint32_t pause_duration = 3000;
 			uint32_t speed = 5000;
@@ -3658,7 +3755,7 @@ namespace Volt
 	private:
 		TextNavBar textNavBar;
 		std::vector<std::string> texts;
-		FontStyle fontStyle = FontStyle::NORMAL;
+		FontStyle fontStyle = FontStyle::Normal;
 		std::string fontFile;
 		int dsv = 0;
 	};
@@ -4604,7 +4701,7 @@ namespace Volt
 		EdgeType edge_type;
 		uint32_t maxlines = 1;
 		TextWrapStyle text_wrap_style = TextWrapStyle::MAX_CHARS_PER_LN;
-		Gravity gravity = Gravity::LEFT;
+		Gravity gravity = Gravity::Left;
 		float coner_radius = 0.f;
 		int custom_fontstyle = 0x00;
 		bool shrink_to_fit = false;
@@ -4617,11 +4714,11 @@ namespace Volt
 		TextAttributes textAttributes = {"", {0x00, 0x00, 0x00, 0xff}, {0xff, 0xff, 0xff, 0xff}};
 		SDL_FRect margin = {0.f, 0.f, 100.f, 100.f};
 		std::string fontFile;
-		FontStyle fontStyle = FontStyle::NORMAL;
+		FontStyle fontStyle = FontStyle::Normal;
 		EdgeType edgeType = EdgeType::RECT;
 		uint32_t maxlines = 1;
 		TextWrapStyle textWrapStyle = TextWrapStyle::MAX_CHARS_PER_LN;
-		Gravity gravity = Gravity::LEFT;
+		Gravity gravity = Gravity::Left;
 		float conerRadius = 0.f;
 		int customFontstyle = 0x00;
 		float lineSpacing = 0.f;
@@ -4836,7 +4933,7 @@ namespace Volt
 
 					if (max_lines_ == 1)
 					{
-						if (gravity_ == Gravity::CENTER)
+						if (gravity_ == Gravity::Center)
 						{
 							text_rect_.x = ((cache_text_rect.w - text_rect_.w) / 2.f);
 						}
@@ -5002,7 +5099,7 @@ namespace Volt
 
 					if (max_lines_ == 1)
 					{
-						if (gravity_ == Gravity::CENTER)
+						if (gravity_ == Gravity::Center)
 						{
 							text_rect_.x = ((cache_text_rect.w - text_rect_.w) / 2.f);
 						}
@@ -5274,7 +5371,7 @@ namespace Volt
 			//	++i;
 			// }
 			_tbcd.shrinkToFit = true;
-			_tbcd.gravity = Gravity::LEFT;
+			_tbcd.gravity = Gravity::Left;
 			_tbcd.edgeType = EdgeType::RADIAL;
 
 			spacing = pv->to_cust(5.f, rect.w);
@@ -5467,14 +5564,14 @@ namespace Volt
 		std::string fontFile;
 		Font placeholder_mem_font = Font::ConsolasBold;
 		std::string placeholderFontFile;
-		FontStyle fontStyle = FontStyle::NORMAL;
-		FontStyle defaultTxtFontStyle = FontStyle::NORMAL;
+		FontStyle fontStyle = FontStyle::Normal;
+		FontStyle defaultTxtFontStyle = FontStyle::Normal;
 		EdgeType edgeType;
 		uint32_t maxlines = 1;
 		// max text size in code points
 		uint32_t maxTextSize = 1024000;
 		TextWrapStyle textWrapStyle = TextWrapStyle::MAX_CHARS_PER_LN;
-		Gravity gravity = Gravity::LEFT;
+		Gravity gravity = Gravity::Left;
 		float cornerRadius = 0.f;
 		int customFontstyle = 0x00;
 		float lineSpacing = 0.f;
@@ -6958,7 +7055,6 @@ namespace Volt
 		using IView::prevent_default_behaviour;
 		using IView::show;
 		using IView::childViews;
-
 		using FormData = std::unordered_map<std::string, std::string>;
 
 	public:
@@ -6978,11 +7074,11 @@ namespace Volt
 		std::deque<RunningText> runningText;
 		std::deque<Expr::Slider> sliders;
 		std::deque<ImageButton> imageButton;
+		std::deque<IView*> iViews;
 		bool selected = false;
 		bool isHighlighted = false;
 		bool highlightOnHover = false;
 		bool ignoreTextEvents = true;
-
 	public:
 		Cell &setContext(Context *context_) noexcept
 		{
@@ -7021,6 +7117,11 @@ namespace Volt
 			return *this;
 		}
 
+		Cell& addView(IView *iview){
+			//iViews.emplace_back(iview);
+			return *this;
+		}
+
 		Cell &addTextBox(TextBoxAttributes _TextBoxAttr) noexcept
 		{
 			_TextBoxAttr.rect = {bounds.x + pv->to_cust(_TextBoxAttr.rect.x, bounds.w),
@@ -7029,7 +7130,6 @@ namespace Volt
 								 pv->to_cust(_TextBoxAttr.rect.h, bounds.h)};
 			textBox.emplace_back()
 				.Build(this, _TextBoxAttr);
-
 			// if (is_form and _TextBoxAttr.type="submit"){
 			// textBox.back().setonsubmithandler }
 			return *this;
@@ -7043,7 +7143,6 @@ namespace Volt
 								 pv->to_cust(_TextBoxAttr.rect.h, bounds.h) };
 			textBox.emplace_front()
 				.Build(this, _TextBoxAttr);
-
 			// if (is_form and _TextBoxAttr.type="submit"){
 			// textBox.back().setonsubmithandler }
 			return *this;
@@ -7213,6 +7312,8 @@ namespace Volt
 				textBx.updatePosBy(_dx, _dy);
 			for (auto &rtext : runningText)
 				rtext.updatePosBy(_dx, _dy);
+			for (auto &iview : iViews)
+				iview.updatePosBy(_dx, _dy);
 		}
 
 		void notifyDataSetChanged(std::any _dataSetChangedData)
@@ -7838,6 +7939,8 @@ namespace Volt
 			// fillRoundedRectF(renderer, { 0.f,0.f,rect.w,rect.h }, cornerRadius, bgColor);
 			crt_.release(renderer);
 		}
+
+		///  todo: build from view
 
 		CellBlock &Build(Context *context_, const int &maxCells_, const int &_numVerticalGrids, const CellBlockProps &_blockProps, const ScrollDirection &scroll_direction = ScrollDirection::VERTICAL)
 		{
@@ -8530,26 +8633,27 @@ namespace Volt
 		Interpolator scrollAnimInterpolator;
 	};
 
-	struct SelectProps {
-		SDL_FRect rect{ 0.f,0.f,0.f,0.f };
-		SDL_FRect inner_block_rect{ 0.f,0.f,0.f,0.f };
-		SDL_FRect text_margin{ 0.f,0.f,0.f,0.f };
-		SDL_Color text_color{ 0x00,0x00,0x00,0xff };
-		SDL_Color bg_color{ 0xff,0xff,0xff,0xff };
-		SDL_Color on_hover_color{};
-		float border_size = 1.f;
-		float corner_radius = 1.f;
-		int maxValues = 1;
-	};
-
 
 	class Select : Context {
+	public:
+		struct Props {
+			SDL_FRect rect{ 0.f,0.f,0.f,0.f };
+			SDL_FRect inner_block_rect{ 0.f,0.f,0.f,0.f };
+			SDL_FRect text_margin{ 0.f,0.f,0.f,0.f };
+			SDL_Color text_color{ 0x00,0x00,0x00,0xff };
+			SDL_Color bg_color{ 0xff,0xff,0xff,0xff };
+			SDL_Color on_hover_color{};
+			float border_size = 1.f;
+			float corner_radius = 1.f;
+			int maxValues = 1;
+		};
 	public:
 		struct Value {
 			std::size_t id = 0;
 			std::string value = "";
 			std::string img = "";
 		};
+
 	public:
 		CellBlock* getInnerBlock() { return &valuesBlock; }
 		Cell* getInnerCell() { return &viewValue; }
@@ -8569,7 +8673,7 @@ namespace Volt
 			return viewValue.hide();
 		}
 	public:
-		Select& Build(Context* _context, SelectProps _props, std::vector<Value> _values, std::size_t _default=0) {
+		Select& Build(Context* _context, Select::Props _props, std::vector<Value> _values, std::size_t _default=0) {
 			Context::setContext(_context);
 			//if any of _values contains img then add img padding to all value cells
 			const auto bounds = _props.rect;
@@ -8594,7 +8698,7 @@ namespace Volt
 						//.mem_font = Font::OpenSansSemiBold,
 						.rect = {5.f,5.f,90.f,90.f},
 						.textAttributes = { values_[_default].value, {0,0,0,0xff}, {0, 0, 0, 0}},
-						.gravity = Gravity::LEFT
+						.gravity = Gravity::Left
 					}
 				);
 			}
@@ -8635,7 +8739,7 @@ namespace Volt
 							//.mem_font = Font::OpenSansSemiBold,
 							.rect = {5.f,2.5f,90.f,95.f},
 							.textAttributes = { values_[_cell.index].value, {0,0,0,0xff}, {0, 0, 0, 0}},
-							.gravity = Gravity::LEFT
+							.gravity = Gravity::Left
 						}
 					);
 
@@ -8647,7 +8751,7 @@ namespace Volt
 								//.mem_font = Font::OpenSansSemiBold,
 								.rect = {5.f,5.f,90.f,90.f},
 								.textAttributes = { values_[selectedVal].value, {0,0,0,0xff}, {0, 0, 0, 0} },
-								.gravity = Gravity::LEFT
+								.gravity = Gravity::Left
 							}
 						);
 						valuesBlock.hide();
@@ -8699,7 +8803,7 @@ namespace Volt
 						//.mem_font = Font::OpenSansSemiBold,
 						.rect = {5.f,5.f,90.f,90.f},
 						.textAttributes = { newVal.value, {0,0,0,0xff}, {0, 0, 0, 0}},
-						.gravity = Gravity::LEFT
+						.gravity = Gravity::Left
 					}
 				);
 			}
@@ -8724,7 +8828,7 @@ namespace Volt
 						//.mem_font = Font::OpenSansSemiBold,
 						.rect = {5.f,5.f,90.f,90.f},
 						.textAttributes = { values_[defaultVal].value, {0,0,0,0xff}, {0, 0, 0, 0}},
-						.gravity = Gravity::LEFT
+						.gravity = Gravity::Left
 					}
 				);
 			}
