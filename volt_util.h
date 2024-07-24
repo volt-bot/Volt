@@ -50,12 +50,12 @@
 //#define FMT_HEADER_ONLY
 
 enum class DeviceDisplayType {
-    UNKOWN,
-    TABLET,
-    TV,
-    MEDIUM,
-    SMALL,
-    UNSUPPORTED,
+    Unknown,
+    Tablet,
+    Tv,
+    Medium,
+    Small,
+    UnSupported,
 };
 
 enum class TextWrapStyle {
@@ -76,15 +76,15 @@ enum class Orientation {
 };
 
 enum class Gravity {
-    CENTER,
-    TOP_LEFT,
-    TOP_MIDDLE,
-    TOP_RIGHT,
-    LEFT,
-    RIGHT,
-    BOTTOM_LEFT,
-    BOTTOM_MIDDLE,
-    BOTTOM_RIGHT,
+    Center,
+    Left,
+    Right,
+    TL,
+    TM,
+    TR,
+    BL,
+    BM,
+    BR,
     FILL
 };
 
@@ -93,19 +93,21 @@ enum class EdgeType {
     RADIAL
 };
 
+
 enum class FontStyle {
-    NORMAL,
-    BOLD,
-    ITALIC,
-    UNDERLINE,
-    STRIKETHROUGH,
-    BOLD_UNDERLINE,
-    BOLD_STRIKETHROUGH,
-    ITALIC_BOLD,
-    ITALIC_UNDERLINE,
-    ITALIC_STRIKETHROUGH,
-    CUSTOM
+    Normal,
+    Bold,
+    Italic,
+    Underline,
+    StrikeThrough,
+    BoldUnderline,
+    BoldStrikeThrough,
+    ItalicBold,
+    ItalicUnderline,
+    ItalicStrikeThrough,
+    Custom
 };
+
 
 enum class IMAGE_LD_STYLE {
     NORMAL,
