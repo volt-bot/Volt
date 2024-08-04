@@ -41,7 +41,8 @@
 #include <windows.h>
 #endif
 
-static float tB_sP = 0.f, sn_spacing = 0.f;
+//	Global Logger Instance
+static Logger GLogger;
 
 namespace Volt
 {
@@ -127,68 +128,6 @@ namespace Volt
 	private:
 		bool redrawRequested = false;
 		AdaptiveVsync *adaptiveVsync = nullptr;
-	};
-
-	class Logger
-	{
-	public:
-		enum class LogLevel:uint8_t {
-			Info,
-			Debug,
-			Warning,
-			Error,
-		};
-	public:
-		Logger(const Logger&) = delete;
-		Logger(const Logger&&) = delete;
-
-		static Logger& Get()
-		{
-			static Logger instance;
-			return instance;
-		}
-
-		auto log(LogLevel level, std::string msg) {
-			logs[level].push_back(msg);
-			std::cout << "Log: ";
-			switch (level) {
-			case LogLevel::Info:
-				std::cout << "Info: ";
-				break;
-			case LogLevel::Debug:
-				std::cout << "Debug: ";
-				break;
-			case LogLevel::Warning:
-				std::cout << "Warning: ";
-				break;
-			case LogLevel::Error:
-				std::cout << "Error: ";
-				break;
-			}
-			std::cout << msg << std::endl;
-		}
-
-		auto setLoggerOutputFile(std::filesystem::path fp) {
-
-		}
-
-		auto getLastError() {
-			return logs[LogLevel::Error].back();
-		}
-
-		auto clearAll() {
-			logs.clear();
-		}
-
-		auto getAll() {
-			return logs;
-		}
-	private:
-		// Category and Log
-		std::unordered_map<LogLevel,std::vector<std::string>> logs{};
-	private:
-		Logger() {
-		}
 	};
 
 	class CacheRenderTarget
@@ -354,7 +293,6 @@ namespace Volt
 		}
 	};
 
-
 	class IView
 	{
 	public:
@@ -373,30 +311,32 @@ namespace Volt
 		bool hidden = false;
 		bool disabled = false;
 		std::function<void()> onHideCallback = nullptr;
-		std::vector<IView*> childViews;
+		std::vector<IView *> childViews;
+
 	public:
 		IView *getView()
 		{
 			return this;
 		}
 
-		IView* getChildView(std::size_t child_index=0)
+		IView *getChildView(std::size_t child_index = 0)
 		{
 			return childViews[child_index];
 		}
-		
-		IView* addChildView(IView* _child)
+
+		IView *addChildView(IView *_child)
 		{
 			return childViews.emplace_back(_child);
 		}
 
-		IView* clearAndAddChildView(IView* _child)
+		IView *clearAndAddChildView(IView *_child)
 		{
 			childViews.clear();
 			return childViews.emplace_back(_child);
 		}
 
-		IView& clearChildViews() {
+		IView &clearChildViews()
+		{
 			childViews.clear();
 			return *this;
 		}
@@ -421,19 +361,22 @@ namespace Volt
 			onHideCallback = _onHideCallback;
 		}
 
-		IView* toggleView() {
-			if (hidden) {
+		IView *toggleView()
+		{
+			if (hidden)
+			{
 				hidden = false;
 				disabled = false;
 			}
-			else {
+			else
+			{
 				hidden = true;
 				disabled = true;
 			}
 			return this;
 		}
 
-		IView* hide()
+		IView *hide()
 		{
 			for (auto child : childViews)
 				child->hide();
@@ -445,25 +388,28 @@ namespace Volt
 
 		bool isHidden() { return hidden; }
 
-		IView* show()
+		IView *show()
 		{
 			hidden = false;
 			return this;
 		}
 
-		IView* disable() {
+		IView *disable()
+		{
 			for (auto child : childViews)
 				child->disable();
-			disabled = true; return this;
+			disabled = true;
+			return this;
 		}
-		IView* enable() {
+		IView *enable()
+		{
 			for (auto child : childViews)
 				child->enable();
-			disabled = false; return this;
+			disabled = false;
+			return this;
 		}
 
 		bool isDisabled() { return disabled; }
-
 
 		virtual bool handleEvent() = 0;
 
@@ -498,102 +444,127 @@ namespace Volt
 	private:
 	};
 
-
-
-	class ViewTree {
+	class ViewTree
+	{
 	public:
-		auto addView(const std::string& label, IView* iview) {
+		auto addView(const std::string &label, IView *iview)
+		{
 			indexer[label] = view_tree.size();
 			return view_tree.emplace_back(iview);
 		}
 
-		auto removeView(const std::string& label) {
-			if (indexer.contains(label)) {
+		auto removeView(const std::string &label)
+		{
+			if (indexer.contains(label))
+			{
 				view_tree.erase(view_tree.begin() + indexer[label]);
 				indexer.erase(label);
 			}
 		}
 
-		bool isEmpty() {
+		bool isEmpty()
+		{
 			return view_tree.empty();
 		}
 
-		void toggleView(const std::string& label) {
-			if (indexer.contains(label)) {
-				if (view_tree[indexer[label]]->isHidden()) {
+		void toggleView(const std::string &label)
+		{
+			if (indexer.contains(label))
+			{
+				if (view_tree[indexer[label]]->isHidden())
+				{
 					view_tree[indexer[label]]->show();
 					view_tree[indexer[label]]->enable();
 				}
-				else {
+				else
+				{
 					view_tree[indexer[label]]->hide();
 					view_tree[indexer[label]]->disable();
 				}
 			}
 		}
 
-		void showAndEnable(const std::string& label) {
-			if (indexer.contains(label)) {
+		void showAndEnable(const std::string &label)
+		{
+			if (indexer.contains(label))
+			{
 				view_tree[indexer[label]]->show();
 				view_tree[indexer[label]]->enable();
 			}
 		}
 
-		void hideAndDisable(const std::string& label) {
-			if (indexer.contains(label)) {
+		void hideAndDisable(const std::string &label)
+		{
+			if (indexer.contains(label))
+			{
 				view_tree[indexer[label]]->hide();
 				view_tree[indexer[label]]->disable();
 			}
 		}
 
-		auto setViewHidden(const std::string& label, bool _hidden) {
+		auto setViewHidden(const std::string &label, bool _hidden)
+		{
 			if (indexer.contains(label))
 				_hidden ? view_tree[indexer[label]]->hide() : view_tree[indexer[label]]->show();
 		}
 
-
-		auto setViewDisabled(const std::string& label, bool _disabled) {
+		auto setViewDisabled(const std::string &label, bool _disabled)
+		{
 			if (indexer.contains(label))
 				_disabled ? view_tree[indexer[label]]->disable() : view_tree[indexer[label]]->enable();
 		}
 
-		auto setTreeHidden(bool _hidden) {
+		auto setTreeHidden(bool _hidden)
+		{
 			hidden_ = _hidden;
 		}
 
-
-		auto setTreeDisabled(bool _disabled) {
+		auto setTreeDisabled(bool _disabled)
+		{
 			disabled_ = _disabled;
 		}
 
-		void handleEvent() {
-			if (not hidden_ and not disabled_) {
-				for (auto view_index = view_tree.size(); view_index > 0; --view_index) {
+		void handleEvent()
+		{
+			if (not hidden_ and not disabled_)
+			{
+				for (auto view_index = view_tree.size(); view_index > 0; --view_index)
+				{
 					if (not view_tree[view_index - 1]->isHidden())
-						if (view_tree[view_index - 1]->handleEvent())return;
+						if (view_tree[view_index - 1]->handleEvent())
+							return;
 				}
 			}
 		}
 
-		void forceHandleEventAll() {
+		void forceHandleEventAll()
+		{
 			for (auto view_ : view_tree)
 				view_->handleEvent();
 		}
 
-		void forceDrawAll() {
+		void forceDrawAll()
+		{
 			for (auto view : view_tree)
 				view->Draw();
 		}
 
-		void Draw() {
-			if (not hidden_) {
-				for (int view_index = 0; view_index < view_tree.size(); ++view_index) {
-					auto& view = view_tree[view_index];
-					if (not view->isHidden())view->Draw();
+		void Draw()
+		{
+			if (not hidden_)
+			{
+				for (int view_index = 0; view_index < view_tree.size(); ++view_index)
+				{
+					auto &view = view_tree[view_index];
+					if (not view->isHidden())
+						view->Draw();
 				}
 			}
 		}
+
 	public:
-		std::optional<IView*> operator[](const std::string& label) {
+		std::optional<IView *> operator[](const std::string &label)
+		{
 			if (indexer.contains(label))
 				return view_tree[indexer[label]];
 			return {};
@@ -601,14 +572,10 @@ namespace Volt
 
 	private:
 		std::unordered_map<std::string, size_t> indexer;
-		std::vector<IView*> view_tree;
+		std::vector<IView *> view_tree;
 		bool hidden_ = false, disabled_;
-		//ViewTree child_tree();
+		// ViewTree child_tree();
 	};
-
-
-
-
 
 	class Context
 	{
@@ -665,7 +632,7 @@ namespace Volt
 
 		using Context::setContext;
 
-		static DisplayInfo& Get()
+		static DisplayInfo &Get()
 		{
 			static DisplayInfo instance;
 			return instance;
@@ -678,7 +645,7 @@ namespace Volt
 
 		void initDisplaySystem(const float &display_index = 0.f)
 		{
-			//SDL_GetDisplayDPI() - not reliable across platforms, approximately replaced by multiplying `display_scale` in the structure returned by SDL_GetDesktopDisplayMode() times 160 on iPhone and Android, and 96 on other platforms.
+			// SDL_GetDisplayDPI() - not reliable across platforms, approximately replaced by multiplying `display_scale` in the structure returned by SDL_GetDesktopDisplayMode() times 160 on iPhone and Android, and 96 on other platforms.
 			auto *_mode = SDL_GetCurrentDisplayMode(0);
 			int windowWidth, windowHeight;
 			int drawableWidth, drawableHeight;
@@ -700,14 +667,13 @@ namespace Volt
 			H_DPI = dpiScale;
 			dpiScale = (float)dm->h / (float)windowHeight;
 			V_DPI = dpiScale;
-			auto* ddm= SDL_GetDesktopDisplayMode(1);
+			auto *ddm = SDL_GetDesktopDisplayMode(1);
 
-			DDPI = 160.f*ds;
+			DDPI = 160.f * ds;
 #ifdef _WIN32
 			DDPI = 96.f * ds;
 #endif
 			SDL_Log("PixelDensity:%f DispScale:%f DdmScale:%f DispContentScale:%f HDPI:%f VDPI:%f Mode.W:%d Mode.H:%d", DDPI, ds, ddm->pixel_density, dcs, H_DPI, V_DPI, dm->w, dm->h);
-
 		}
 
 		void handleEvent()
@@ -772,22 +738,24 @@ namespace Volt
 
 	class Application : protected Context, IView
 	{
-		public:
-		struct Config{
+	public:
+		struct Config
+		{
 			std::string title{"Volt Application"};
-			int w=0, h=0;
-			int window_flags=SDL_WINDOW_HIGH_PIXEL_DENSITY;
-			int renderer_flags=SDL_RENDERER_ACCELERATED/*| SDL_RENDERER_PRESENTVSYNC*/;
-			bool init_ttf=true;
-			bool init_img=true;
-			bool init_everyting=true;
+			int w = 0, h = 0;
+			int window_flags = SDL_WINDOW_HIGH_PIXEL_DENSITY;
+			int renderer_flags = SDL_RENDERER_ACCELERATED /*| SDL_RENDERER_PRESENTVSYNC*/;
+			bool init_ttf = true;
+			bool init_img = true;
+			bool init_everyting = true;
+			bool mouse_touch_events = true;
 		};
 
-		private:
+	private:
 		AdaptiveVsync adaptiveVsync_;
 		SDL_Event event_;
 
-		public:
+	public:
 		using Context::adaptiveVsync;
 		using Context::event;
 		using Context::getContext;
@@ -797,7 +765,7 @@ namespace Volt
 		using IView::ph;
 		using IView::pw;
 		using IView::to_cust;
-	
+
 	public:
 		SDL_Event RedrawTriggeredEvent_;
 		UniqueTexture texture;
@@ -815,9 +783,14 @@ namespace Volt
 	public:
 		short create(Application::Config config);
 		{
-			if(config.init_everyting)SDL_Init(SDL_INIT_EVERYTHING);
-			if(config.init_ttf)TTF_Init();
-			if(config.init_img)IMG_Init(IMG_INIT_PNG);
+			if (Config.mouse_touch_events)
+				SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "1");
+			if (config.init_everyting)
+				SDL_Init(SDL_INIT_EVERYTHING);
+			if (config.init_ttf)
+				TTF_Init();
+			if (config.init_img)
+				IMG_Init(IMG_INIT_PNG);
 
 			window = SDL_CreateWindow(config.title, config.w, config.h, config.window_flags);
 			SDL_Rect usb_b{0};
@@ -832,7 +805,7 @@ namespace Volt
 			pv = this;
 
 			SDL_SetHint(SDL_HINT_RENDER_LINE_METHOD, "1");
-			//SDL_SetHint(SDL_HINT_RENDER_LINE_METHOD, "3");
+			// SDL_SetHint(SDL_HINT_RENDER_LINE_METHOD, "3");
 
 			adaptiveVsync = &adaptiveVsync_;
 			event = &event_;
@@ -843,8 +816,9 @@ namespace Volt
 
 			BasePath = SDL_GetBasePath();
 			PrefPath = SDL_GetPrefPath("Volt", config.title);
-			std::cout << "BasePath:" << BasePath << "\n";
-			std::cout << "PrefPath:" << PrefPath << "\n";
+			GLogger.setOutputFile({PrefPath});
+			GLogger.Log(Logger::Level::Info, "BasePath:" + BasePath);
+			GLogger.Log(Logger::Level::Info, "PrefPath:" + PrefPath);
 			return 1;
 		}
 
@@ -933,7 +907,8 @@ namespace Volt
 		T x, y;
 	};
 
-	struct Triangle {
+	struct Triangle
+	{
 		SDL_FPoint center{};
 		float h = 0.f;
 		Direction direction;
@@ -1029,7 +1004,8 @@ namespace Volt
 	}
 
 	// Function to rotate a point around the center
-	SDL_FPoint rotatePoint(SDL_FPoint point, SDL_FPoint center, double angle) {
+	SDL_FPoint rotatePoint(SDL_FPoint point, SDL_FPoint center, double angle)
+	{
 		double radians = angle * 3.1415926 / 180.0;
 		double s = std::sin(radians);
 		double c = std::cos(radians);
@@ -1049,28 +1025,32 @@ namespace Volt
 		return point;
 	}
 
-
-	std::vector<SDL_Vertex> getTriangleVertices(Triangle _tri) {
+	std::vector<SDL_Vertex> getTriangleVertices(Triangle _tri)
+	{
 		// Calculate the side length of the equilateral triangle
 		double side = (2 * _tri.h) / std::sqrt(3);
 
 		// Calculate the vertices for the "up" direction
-		SDL_FPoint p1 = { _tri.center.x, _tri.center.y + (2.0 / 3.0) * _tri.h };
-		SDL_FPoint p2 = { _tri.center.x - side / 2, _tri.center.y - (1.0 / 3.0) * _tri.h };
-		SDL_FPoint p3 = { _tri.center.x + side / 2, _tri.center.y - (1.0 / 3.0) * _tri.h };
+		SDL_FPoint p1 = {_tri.center.x, _tri.center.y + (2.0 / 3.0) * _tri.h};
+		SDL_FPoint p2 = {_tri.center.x - side / 2, _tri.center.y - (1.0 / 3.0) * _tri.h};
+		SDL_FPoint p3 = {_tri.center.x + side / 2, _tri.center.y - (1.0 / 3.0) * _tri.h};
 
 		// Determine rotation angle based on direction
 		double angle = 0;
-		if (_tri.direction == Direction::Down) {
+		if (_tri.direction == Direction::Down)
+		{
 			angle = 0;
 		}
-		else if (_tri.direction == Direction::Left) {
+		else if (_tri.direction == Direction::Left)
+		{
 			angle = 90;
 		}
-		else if (_tri.direction == Direction::Up) {
+		else if (_tri.direction == Direction::Up)
+		{
 			angle = 180;
 		}
-		else if (_tri.direction == Direction::Right) {
+		else if (_tri.direction == Direction::Right)
+		{
 			angle = -90;
 		}
 
@@ -1080,18 +1060,17 @@ namespace Volt
 		p3 = rotatePoint(p3, _tri.center, angle);
 
 		// Create SDL_Vertex with colors
-		SDL_Vertex v1 = { p1, {50, 50, 50, 255} };
-		SDL_Vertex v2 = { p2, {50, 50, 50, 255} };
-		SDL_Vertex v3 = { p3, {50, 50, 50, 255} };
-		return std::vector{ v1,v2,v3 };
+		SDL_Vertex v1 = {p1, {50, 50, 50, 255}};
+		SDL_Vertex v2 = {p2, {50, 50, 50, 255}};
+		SDL_Vertex v3 = {p3, {50, 50, 50, 255}};
+		return std::vector{v1, v2, v3};
 	}
 
-	void drawFilledTriangle(SDL_Renderer* _renderer, Triangle &_tri) {
+	void drawFilledTriangle(SDL_Renderer *_renderer, Triangle &_tri)
+	{
 		auto verts = getTriangleVertices(_tri);
 		SDL_RenderGeometry(_renderer, NULL, verts.data(), 3, NULL, 3);
 	}
-
-
 
 	void draw_ring(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r, const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
 	{
@@ -1570,7 +1549,7 @@ namespace Volt
 
 		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
 		SDL_RenderFillRects(_renderer, rects_.data(), rects_.size());
-		draw_filled_circle_4quad(_renderer, _dest.x + final_rad-1.f, _dest.y + final_rad, _dest.w - (final_rad * 2.f), _dest.h - (final_rad * 2.f), final_rad, _color);
+		draw_filled_circle_4quad(_renderer, _dest.x + final_rad - 1.f, _dest.y + final_rad, _dest.w - (final_rad * 2.f), _dest.h - (final_rad * 2.f), final_rad, _color);
 	}
 
 	void drawRoundedRectF(SDL_Renderer *_renderer, const SDL_FRect &_dest, const float &_rad,
@@ -1622,7 +1601,7 @@ namespace Volt
 													 {_rect.x + _rect.w - outline_sz_, _rect.y + final_rad, outline_sz_, _rect.h - (final_rad * 2.f)}};
 		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
 		SDL_RenderFillRects(_renderer, side_rects.data(), side_rects.size());
-		draw_ring_4quad(_renderer, _rect.x + final_rad-1.f, _rect.y + final_rad, side_rects[0].w, side_rects[3].h, final_rad - outline_sz_, final_rad, _color);
+		draw_ring_4quad(_renderer, _rect.x + final_rad - 1.f, _rect.y + final_rad, side_rects[0].w, side_rects[3].h, final_rad - outline_sz_, final_rad, _color);
 	}
 
 	void DrawCircle(SDL_Renderer *renderer, float x, float y, float r,
@@ -1902,9 +1881,9 @@ namespace Volt
 
 	public:
 		using IView::getView;
+		using IView::hide;
 		using IView::isHidden;
 		using IView::show;
-		using IView::hide;
 		SDL_FRect rect{};
 		SDL_Color color{}, outline_color{};
 		float corner_rad = 0.f, outline = 0.f;
@@ -2073,10 +2052,10 @@ namespace Volt
 	protected:
 		uint32_t tm_start = 0;
 		bool update_physics = false;
-		//acceleration due to gravity
+		// acceleration due to gravity
 		float ADG = -9.8f;
 		float MAX_LEN = 0.f;
-		//initial velocity
+		// initial velocity
 		float vO = 0.f;
 		float dy = 0.f;
 		float prev_dy = 0.f;
@@ -2085,23 +2064,23 @@ namespace Volt
 	};
 
 	/*
-	 * This interpolator generates values that initially have a small difference between them 
+	 * This interpolator generates values that initially have a small difference between them
 	 * and then ramps up the difference gradually until it reaches the endpoint.
 	 * For example, the generated values between 1 -> 5 with accelerated interpolation could be 1 -> 1.2 -> 1.5 -> 1.9 -> 2.4 -> 3.0 -> 3.6 -> 4.3 -> 5.
-	*/
+	 */
 	class AccelerateInterpolator
 	{
 	};
 
 	/*
-	 * This interpolator generates values that are “slowing down” as you move forward in the list of generated values. 
-	 * So, the values generated initially have a greater difference between them and the difference 
-	 * gradually reduces until the endpoint is reached. Therefore, the generated values 
+	 * This interpolator generates values that are “slowing down” as you move forward in the list of generated values.
+	 * So, the values generated initially have a greater difference between them and the difference
+	 * gradually reduces until the endpoint is reached. Therefore, the generated values
 	 * between 1 -> 5 could look like 1 -> 1.8 -> 2.5 -> 3.1 -> 3.6 -> 4.0 -> 4.3 -> 4.5 -> 4.6 -> 4.7 -> 4.8 -> 4.9 -> 5.
-	*/
+	 */
 	class DecelerateInterpolator
 	{
-		public:
+	public:
 		DecelerateInterpolator &start(float initial_velocity)
 		{
 			vo = initial_velocity;
@@ -2174,11 +2153,11 @@ namespace Volt
 	};
 
 	/*
-	 * This interpolation starts by first moving backward, then “flings” forward, 
-	 * and then proceeds gradually to the end. This gives it an effect similar to 
-	 * cartoons where the characters pull back before shooting off running. 
+	 * This interpolation starts by first moving backward, then “flings” forward,
+	 * and then proceeds gradually to the end. This gives it an effect similar to
+	 * cartoons where the characters pull back before shooting off running.
 	 * For example, generated values between 1 -> 3 could look like: 1 -> 0.5 -> 2 -> 2.5 -> 3.
-	*/
+	 */
 	class AnticipateInterpolator
 	{
 	};
@@ -2189,10 +2168,10 @@ namespace Volt
 
 	/*
 	 * This interpolator generates values uniformly from the start to end.
-	 * However, after hitting the end, it overshoots or goes beyond the last 
-	 * value by a small amount and then comes back to the endpoint. 
+	 * However, after hitting the end, it overshoots or goes beyond the last
+	 * value by a small amount and then comes back to the endpoint.
 	 * For example, the generated values between 1 -> 5 could look like: 1 -> 2 -> 3 -> 4 -> 5 -> 5.5 -> 5.
-	*/
+	 */
 	class OvershootInterpolator
 	{
 	};
@@ -2403,9 +2382,8 @@ namespace Volt
 
 		FontAttributes() = default;
 
-		FontAttributes(const std::string& a_font_file, const FontStyle& a_font_style,
-			const uint8_t& a_font_size) : font_file(a_font_file), font_size(a_font_size), font_style(a_font_style) {}
-
+		FontAttributes(const std::string &a_font_file, const FontStyle &a_font_style,
+					   const uint8_t &a_font_size) : font_file(a_font_file), font_size(a_font_size), font_style(a_font_style) {}
 
 		void setFontAttributes(const FontAttributes &font_attributes)
 		{
@@ -2687,51 +2665,58 @@ namespace Volt
 			return result;
 		}
 
-		std::optional<UniqueTexture> genTextTextureUniqueV2(SDL_Renderer* renderer, const char* text, const SDL_Color text_color, float _w, float _h, bool wordWrap=false)
+		std::optional<UniqueTexture> genTextTextureUniqueV2(SDL_Renderer *renderer, const char *text, const SDL_Color text_color, float _w, float _h, bool wordWrap = false)
 		{
 			if (!genTextCommon())
 				return {};
-			std::vector<std::pair<SDL_FRect, SDL_Texture*>> finalGlyphs{};
-			int maxW = 0, maxH=0;
+			std::vector<std::pair<SDL_FRect, SDL_Texture *>> finalGlyphs{};
+			int maxW = 0, maxH = 0;
 			int length = strlen(text);
 			int textOffsetY = 0;
 			int textOffsetX = 0;
 			int lineHeight = TTF_FontLineSkip(m_font);
 
-			for (int i = 0; i < length;) {
+			for (int i = 0; i < length;)
+			{
 				int wordWidth = 0;
 				int wordLength = 0;
 				int advance;
-				for (int j = i; j < length && text[j] != ' ' && text[j] != '\n'; ++j) {
+				for (int j = i; j < length && text[j] != ' ' && text[j] != '\n'; ++j)
+				{
 					TTF_GlyphMetrics(m_font, text[j], NULL, NULL, NULL, NULL, &advance);
 					wordWidth += advance;
 					++wordLength;
 				}
 
-				if (wordWrap && textOffsetX + wordWidth > _w) {
+				if (wordWrap && textOffsetX + wordWidth > _w)
+				{
 					textOffsetX = 0;
 					textOffsetY += lineHeight;
 				}
 
-				for (int j = 0; j < wordLength; ++j) {
-					if (text[i + j] == '\n') {
+				for (int j = 0; j < wordLength; ++j)
+				{
+					if (text[i + j] == '\n')
+					{
 						textOffsetX = 0;
 						textOffsetY += lineHeight;
 						break;
 					}
 
 					TTF_GlyphMetrics(m_font, text[i + j], NULL, NULL, NULL, NULL, &advance);
-					SDL_Surface* textSurf = TTF_RenderGlyph_Blended(m_font, text[i + j], text_color);
-					SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, textSurf);
-					std::pair<SDL_FRect, SDL_Texture*> gl_{ { (float)textOffsetX,   (float)textOffsetY,  (float)textSurf->w,  (float)textSurf->h } ,texture };
+					SDL_Surface *textSurf = TTF_RenderGlyph_Blended(m_font, text[i + j], text_color);
+					SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, textSurf);
+					std::pair<SDL_FRect, SDL_Texture *> gl_{{(float)textOffsetX, (float)textOffsetY, (float)textSurf->w, (float)textSurf->h}, texture};
 					finalGlyphs.emplace_back(gl_);
 					textOffsetX += advance;
-					if (textOffsetX + textSurf->w >= maxW)maxW = textOffsetX + textSurf->w;
-					Async::GThreadPool.enqueue([](SDL_Surface* surface)
-						{SDL_DestroySurface(surface); surface = nullptr; }, textSurf);
+					if (textOffsetX + textSurf->w >= maxW)
+						maxW = textOffsetX + textSurf->w;
+					Async::GThreadPool.enqueue([](SDL_Surface *surface)
+											   {SDL_DestroySurface(surface); surface = nullptr; }, textSurf);
 				}
 
-				if (text[i + wordLength] == ' ') {
+				if (text[i + wordLength] == ' ')
+				{
 					TTF_GlyphMetrics(m_font, ' ', NULL, NULL, NULL, NULL, &advance);
 					textOffsetX += advance;
 					++wordLength;
@@ -2740,20 +2725,20 @@ namespace Volt
 				i += wordLength;
 			}
 
-
 			CacheRenderTarget crt_(renderer);
 			auto result = CreateUniqueTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, maxW, (int)_h);
 			SDL_SetTextureBlendMode(result.get(), SDL_BLENDMODE_BLEND);
 			SDL_SetRenderTarget(renderer, result.get());
 			renderClear(renderer, 0, 0, 0, 0);
-			for (auto& [grect, gtexture] : finalGlyphs) {
-				SDL_RenderTexture(renderer, gtexture, NULL, (const SDL_FRect*)&grect);
-				//SDL_DestroyTexture(gtexture);
-				Async::GThreadPool.enqueue([](SDL_Texture* dtex)
-					{SDL_DestroyTexture(dtex); dtex = nullptr; }, gtexture);
+			for (auto &[grect, gtexture] : finalGlyphs)
+			{
+				SDL_RenderTexture(renderer, gtexture, NULL, (const SDL_FRect *)&grect);
+				// SDL_DestroyTexture(gtexture);
+				Async::GThreadPool.enqueue([](SDL_Texture *dtex)
+										   {SDL_DestroyTexture(dtex); dtex = nullptr; }, gtexture);
 			}
 			crt_.release(renderer);
-			
+
 			return result;
 		}
 
@@ -3304,8 +3289,6 @@ namespace Volt
 		AdaptiveVsyncHandler animSwitchAdaptiveVsyncHD, slideAdaptiveVsyncHD;
 	};
 
-	
-
 	class RunningText : public Context, IView
 	{
 	public:
@@ -3315,9 +3298,9 @@ namespace Volt
 	public:
 		struct Attr
 		{
-			SDL_FRect rect{ 0.f, 0.f, 0.f, 0.f };
-			SDL_Color text_color{ 255, 255, 255, 255 };
-			SDL_Color bg_color{ 0, 0, 0, 0 };
+			SDL_FRect rect{0.f, 0.f, 0.f, 0.f};
+			SDL_Color text_color{255, 255, 255, 255};
+			SDL_Color bg_color{0, 0, 0, 0};
 			Font mem_font = Font::ConsolasBold;
 			FontStyle font_style = FontStyle::Normal;
 			std::string font_file;
@@ -3326,6 +3309,7 @@ namespace Volt
 			// transition speed in 0.f%-100.f%
 			float transition_speed = 2.f;
 		};
+
 	public:
 		RunningText() = default;
 		RunningText(Context *_context, const RunningText::Attr &_attr)
@@ -4981,7 +4965,7 @@ namespace Volt
 				break;
 			case SDL_EVENT_MOUSE_BUTTON_DOWN:
 				if (onClick(event->button.x, event->button.y))
-					mouse_in_bound_ = true, result=true;
+					mouse_in_bound_ = true, result = true;
 				else
 					mouse_in_bound_ = false;
 				break;
@@ -5746,20 +5730,24 @@ namespace Volt
 			return internalText;
 		}
 
-		EditBox& setOnFocusView(IView* _onFocusView) {
+		EditBox &setOnFocusView(IView *_onFocusView)
+		{
 			onFocusView = _onFocusView;
 			return *this;
 		}
 
-		IView* getOnFocusView() {
+		IView *getOnFocusView()
+		{
 			return onFocusView;
 		}
 
-		bool isFocused() {
+		bool isFocused()
+		{
 			return hasFocus;
 		}
 
-		EditBox& killFocus() {
+		EditBox &killFocus()
+		{
 			if (SDL_TextInputActive())
 				SDL_StopTextInput();
 			adaptiveVsyncHD.stopRedrawSession();
@@ -5778,7 +5766,8 @@ namespace Volt
 				SDL_StartTextInput();
 
 			if (onFocusView and hasFocus)
-				if (onFocusView->handleEvent()) return true;
+				if (onFocusView->handleEvent())
+					return true;
 			switch (event->type)
 			{
 			case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
@@ -6032,8 +6021,10 @@ namespace Volt
 			cusor.setPosX(textRect.x + float(tmpW));
 			finalTextRect.w = tmpW;
 		}
+
 	protected:
-		IView* onFocusView = nullptr;
+		IView *onFocusView = nullptr;
+
 	protected:
 		float cornerRadius = 0.f;
 		std::shared_ptr<SDL_Texture> txtTexture;
@@ -6903,49 +6894,56 @@ namespace Volt
 		std::function<SDL_Surface *()> CustomLazyImageLoaderCallBack_ = nullptr;
 	};
 
-
-	class Pointer: public Context, IView {
+	class Pointer : public Context, IView
+	{
 	public:
 		Direction openDir;
 		Triangle tri;
+
 	public:
-		Pointer(Context* _context, Triangle &_tri, Direction openDirection) {
+		Pointer(Context *_context, Triangle &_tri, Direction openDirection)
+		{
 			Build(_context, _tri, openDirection);
 		}
 
-		Pointer& setContext(Context* _context) {
+		Pointer &setContext(Context *_context)
+		{
 			Context::setContext(_context);
 			Context::setView(this);
 			return *this;
 		}
 
-		Pointer& Build(Context* _context, Triangle &_tri, Direction openDirection, bool isOpen=false) {
+		Pointer &Build(Context *_context, Triangle &_tri, Direction openDirection, bool isOpen = false)
+		{
 			this->setContext(_context);
 			tri = _tri;
 			is_open = isOpen;
-			//auto trirect = getTriangleBounds(tri);
+			// auto trirect = getTriangleBounds(tri);
 
-			bounds = { 0.f,0.f,0.f,0.f };
+			bounds = {0.f, 0.f, 0.f, 0.f};
 			return *this;
 		}
 
-		bool handleEvent() override{
+		bool handleEvent() override
+		{
 			bool result = false;
 			if (event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
 			{
 				bounds =
-				{
-					DisplayInfo::Get().toUpdatedWidth(bounds.x),
-					DisplayInfo::Get().toUpdatedHeight(bounds.y),
-					DisplayInfo::Get().toUpdatedWidth(bounds.w),
-					DisplayInfo::Get().toUpdatedHeight(bounds.h),
-				};
+					{
+						DisplayInfo::Get().toUpdatedWidth(bounds.x),
+						DisplayInfo::Get().toUpdatedHeight(bounds.y),
+						DisplayInfo::Get().toUpdatedWidth(bounds.w),
+						DisplayInfo::Get().toUpdatedHeight(bounds.h),
+					};
 				return false;
 			}
-			else if (event->type == SDL_EVENT_FINGER_DOWN) {
-				if (not motion_occured) {
-					auto cf= SDL_FPoint{ event->tfinger.x * DisplayInfo::Get().RenderW,
-						   event->tfinger.y * DisplayInfo::Get().RenderH };
+			else if (event->type == SDL_EVENT_FINGER_DOWN)
+			{
+				if (not motion_occured)
+				{
+					auto cf = SDL_FPoint{event->tfinger.x * DisplayInfo::Get().RenderW,
+										 event->tfinger.y * DisplayInfo::Get().RenderH};
 					if (isPosInbound(cf.x, cf.y))
 					{
 						if (is_open)
@@ -6956,23 +6954,28 @@ namespace Volt
 				}
 				motion_occured = false;
 			}
-			else if (event->type == SDL_EVENT_FINGER_UP) {
+			else if (event->type == SDL_EVENT_FINGER_UP)
+			{
 				motion_occured = false;
 			}
-			else if (event->type == SDL_EVENT_FINGER_MOTION) {
+			else if (event->type == SDL_EVENT_FINGER_MOTION)
+			{
 				motion_occured = true;
 			}
 			return result;
 		}
 
-		void Draw() override {
+		void Draw() override
+		{
 			drawFilledTriangle(renderer, tri);
 		}
+
 	private:
 		bool motion_occured = false;
 		bool is_open = false;
+
 	private:
-		[[nodiscard]] bool isPosInbound(const float& valX, const float& valY) const noexcept
+		[[nodiscard]] bool isPosInbound(const float &valX, const float &valY) const noexcept
 		{
 			if (valX > bounds.x && valX < bounds.x + bounds.w && valY > bounds.y &&
 				valY < bounds.y + bounds.h)
@@ -6980,34 +6983,30 @@ namespace Volt
 			return false;
 		}
 
-		void openTri() {
-
+		void openTri()
+		{
 		}
 
-		void closeTri() {
-
+		void closeTri()
+		{
 		}
 	};
-
-
-
-
 
 	class cellblock_visitor
 	{
 	public:
 		template <typename T>
 		explicit cellblock_visitor(const T &_t) : object{&_t}
-			//,
-			//	getMaxVerticalGrids_{ [](const void* obj) {
-			//	return static_cast<const T*>(obj)->getMaxVerticalGrids();
-			//} },
-			/*getCellSpacing_{ [](const void* obj) {
-			  return static_cast<const T*>(obj)->getCellSpacing();
-			} },
-			getCellWidth_{ [](const void* obj) {
-			  return static_cast<const T*>(obj)->getCellWidth();
-			} }*/
+		//,
+		//	getMaxVerticalGrids_{ [](const void* obj) {
+		//	return static_cast<const T*>(obj)->getMaxVerticalGrids();
+		//} },
+		/*getCellSpacing_{ [](const void* obj) {
+		  return static_cast<const T*>(obj)->getCellSpacing();
+		} },
+		getCellWidth_{ [](const void* obj) {
+		  return static_cast<const T*>(obj)->getCellWidth();
+		} }*/
 		{
 		}
 
@@ -7028,33 +7027,34 @@ namespace Volt
 		_t.getCellWidth();
 	};
 
-	//class Select : Context, IView;
+	// class Select : Context, IView;
 
 	class Cell : public Context, IView
 	{
 	private:
-		//private helpers used by CellBlock
+		// private helpers used by CellBlock
 		bool isHeader = false;
 		uint32_t num_vert_grids = 1;
 		float org_mx = 0.f, org_my = 0.f, mx = 0.f, my = 0.f;
+
 	public:
 		friend class CellBlock;
 		using Context::adaptiveVsync;
 		using Context::event;
 		using Context::getContext;
 		using Context::pv;
-		using IView::bounds;
-		using IView::getView;
-		using IView::getChildView;
 		using IView::addChildView;
+		using IView::bounds;
+		using IView::getChildView;
+		using IView::getView;
 		// using IView::type;
 		using IView::action;
+		using IView::childViews;
 		using IView::hide;
 		using IView::is_form;
 		using IView::isHidden;
 		using IView::prevent_default_behaviour;
 		using IView::show;
-		using IView::childViews;
 		using FormData = std::unordered_map<std::string, std::string>;
 
 	public:
@@ -7074,11 +7074,12 @@ namespace Volt
 		std::deque<RunningText> runningText;
 		std::deque<Expr::Slider> sliders;
 		std::deque<ImageButton> imageButton;
-		std::deque<IView*> iViews;
+		std::deque<IView *> iViews;
 		bool selected = false;
 		bool isHighlighted = false;
 		bool highlightOnHover = false;
 		bool ignoreTextEvents = true;
+
 	public:
 		Cell &setContext(Context *context_) noexcept
 		{
@@ -7117,8 +7118,9 @@ namespace Volt
 			return *this;
 		}
 
-		Cell& addView(IView *iview){
-			//iViews.emplace_back(iview);
+		Cell &addView(IView *iview)
+		{
+			// iViews.emplace_back(iview);
 			return *this;
 		}
 
@@ -7135,12 +7137,12 @@ namespace Volt
 			return *this;
 		}
 
-		Cell& addTextBoxFront(TextBoxAttributes _TextBoxAttr) noexcept
+		Cell &addTextBoxFront(TextBoxAttributes _TextBoxAttr) noexcept
 		{
-			_TextBoxAttr.rect = { bounds.x + pv->to_cust(_TextBoxAttr.rect.x, bounds.w),
+			_TextBoxAttr.rect = {bounds.x + pv->to_cust(_TextBoxAttr.rect.x, bounds.w),
 								 bounds.y + pv->to_cust(_TextBoxAttr.rect.y, bounds.h),
 								 pv->to_cust(_TextBoxAttr.rect.w, bounds.w),
-								 pv->to_cust(_TextBoxAttr.rect.h, bounds.h) };
+								 pv->to_cust(_TextBoxAttr.rect.h, bounds.h)};
 			textBox.emplace_front()
 				.Build(this, _TextBoxAttr);
 			// if (is_form and _TextBoxAttr.type="submit"){
@@ -7203,13 +7205,13 @@ namespace Volt
 			return *this;
 		}
 
-		Cell& addEditBoxFront(EditBoxAttributes _EditBoxAttr)
+		Cell &addEditBoxFront(EditBoxAttributes _EditBoxAttr)
 		{
 			_EditBoxAttr.rect = {
 				bounds.x + pv->to_cust(_EditBoxAttr.rect.x, bounds.w),
 				bounds.y + pv->to_cust(_EditBoxAttr.rect.y, bounds.h),
 				pv->to_cust(_EditBoxAttr.rect.w, bounds.w),
-				pv->to_cust(_EditBoxAttr.rect.h, bounds.h) };
+				pv->to_cust(_EditBoxAttr.rect.h, bounds.h)};
 			editBox.emplace_front()
 				.Build(this, _EditBoxAttr);
 			return *this;
@@ -7270,7 +7272,7 @@ namespace Volt
 			return *this;
 		}
 
-		Cell& addImageButtonFront(ImageButtonAttributes imageButtonAttributes, const PixelSystem& pixel_system = PixelSystem::PERCENTAGE)
+		Cell &addImageButtonFront(ImageButtonAttributes imageButtonAttributes, const PixelSystem &pixel_system = PixelSystem::PERCENTAGE)
 		{
 			imageButton.emplace_front().setContext(this);
 			if (pixel_system == PixelSystem::PERCENTAGE)
@@ -7279,7 +7281,7 @@ namespace Volt
 					bounds.x + pv->to_cust(imageButtonAttributes.rect.x, bounds.w),
 					bounds.y + pv->to_cust(imageButtonAttributes.rect.y, bounds.h),
 					pv->to_cust(imageButtonAttributes.rect.w, bounds.w),
-					pv->to_cust(imageButtonAttributes.rect.h, bounds.h) };
+					pv->to_cust(imageButtonAttributes.rect.h, bounds.h)};
 
 				imageButton.front().Build(imageButtonAttributes);
 			}
@@ -7328,7 +7330,7 @@ namespace Volt
 		bool handleEvent() override
 		{
 			bool result = false;
-			auto p_ = SDL_FPoint{ -1.f, -1.f};
+			auto p_ = SDL_FPoint{-1.f, -1.f};
 			if (customEventHandlerCallback != nullptr)
 			{
 				bool temp_res = customEventHandlerCallback(*this);
@@ -7340,10 +7342,13 @@ namespace Volt
 				}
 			}
 
-			if (hidden)return result;
+			if (hidden)
+				return result;
 
-			for (auto child : childViews) {
-				if (child->handleEvent()) {
+			for (auto child : childViews)
+			{
+				if (child->handleEvent())
+				{
 					return true;
 				}
 			}
@@ -7358,59 +7363,68 @@ namespace Volt
 						DisplayInfo::Get().toUpdatedHeight(bounds.h),
 					};
 
-				for (auto& imgBtn : imageButton)
+				for (auto &imgBtn : imageButton)
 					imgBtn.handleEvent();
-				for (auto& textBx : textBox)
+				for (auto &textBx : textBox)
 					textBx.handleEvent();
-				for (auto& _editBox : editBox)
+				for (auto &_editBox : editBox)
 					_editBox.handleEvent();
 				return false;
-			} 
+			}
 			if (isHidden())
 				return result;
 
-			if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN){
-				p_ = SDL_FPoint{ event->button.x, event->button.y };
-				if (SDL_PointInRectFloat(&p_, &bounds))result |= true;
-				//std::cout << result << ", downx:" << p_.x << ", y:" << p_.y << std::endl;
+			if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN)
+			{
+				p_ = SDL_FPoint{event->button.x, event->button.y};
+				if (SDL_PointInRectFloat(&p_, &bounds))
+					result |= true;
+				// std::cout << result << ", downx:" << p_.x << ", y:" << p_.y << std::endl;
 			}
-			else if (event->type == SDL_EVENT_MOUSE_BUTTON_UP) {
-				p_ = SDL_FPoint{ event->button.x, event->button.y };
-				if (SDL_PointInRectFloat(&p_, &bounds))result |= true;
-				//std::cout << result << ", upx:" << p_.x << ", y:" << p_.y << std::endl;
+			else if (event->type == SDL_EVENT_MOUSE_BUTTON_UP)
+			{
+				p_ = SDL_FPoint{event->button.x, event->button.y};
+				if (SDL_PointInRectFloat(&p_, &bounds))
+					result |= true;
+				// std::cout << result << ", upx:" << p_.x << ", y:" << p_.y << std::endl;
 			}
-			else if (event->type == SDL_EVENT_FINGER_DOWN) {
-				p_ = SDL_FPoint{ event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.y * DisplayInfo::Get().RenderH };
-				if (SDL_PointInRectFloat(&p_, &bounds))result |= true;
-				//std::cout << "mouse" << ", x:" << event->tfinger.x << ", y:" << event->tfinger.y << std::endl;
+			else if (event->type == SDL_EVENT_FINGER_DOWN)
+			{
+				p_ = SDL_FPoint{event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.y * DisplayInfo::Get().RenderH};
+				if (SDL_PointInRectFloat(&p_, &bounds))
+					result |= true;
+				// std::cout << "mouse" << ", x:" << event->tfinger.x << ", y:" << event->tfinger.y << std::endl;
 			}
-			else if (event->type == SDL_EVENT_FINGER_UP) {
-				p_ = SDL_FPoint{ event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.y * DisplayInfo::Get().RenderH };
-				if (SDL_PointInRectFloat(&p_, &bounds))result |= true;
-				//std::cout << "mouse" << ", x:" << event->tfinger.x << ", y:" << event->tfinger.y << std::endl;
+			else if (event->type == SDL_EVENT_FINGER_UP)
+			{
+				p_ = SDL_FPoint{event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.y * DisplayInfo::Get().RenderH};
+				if (SDL_PointInRectFloat(&p_, &bounds))
+					result |= true;
+				// std::cout << "mouse" << ", x:" << event->tfinger.x << ", y:" << event->tfinger.y << std::endl;
 			}
 			else if (event->type == SDL_EVENT_FINGER_MOTION)
 			{
-				p_ = SDL_FPoint{ event->tfinger.x, event->tfinger.y };
-				if (SDL_PointInRectFloat(&p_, &bounds))result |= true;
-				//std::cout << "mouse" << ", x:" << event->tfinger.x << ", y:" << event->tfinger.y << std::endl;
+				p_ = SDL_FPoint{event->tfinger.x, event->tfinger.y};
+				if (SDL_PointInRectFloat(&p_, &bounds))
+					result |= true;
+				// std::cout << "mouse" << ", x:" << event->tfinger.x << ", y:" << event->tfinger.y << std::endl;
 			}
 			else if (event->type == SDL_EVENT_MOUSE_MOTION)
 			{
-				p_ = SDL_FPoint{ event->motion.x, event->motion.y };
-				if (SDL_PointInRectFloat(&p_, &bounds))result |= true;
-				//std::cout << "mouse" << ", x:" << event->motion.x << ", y:" << event->motion.y << std::endl;
+				p_ = SDL_FPoint{event->motion.x, event->motion.y};
+				if (SDL_PointInRectFloat(&p_, &bounds))
+					result |= true;
+				// std::cout << "mouse" << ", x:" << event->motion.x << ", y:" << event->motion.y << std::endl;
 			}
 
-			for (auto& imgBtn : imageButton)
+			for (auto &imgBtn : imageButton)
 				result |= imgBtn.handleEvent();
 			for (auto &textBx : textBox)
 				result |= textBx.handleEvent();
 			for (auto &_editBox : editBox)
 				result or_eq _editBox.handleEvent();
-			
 
-			//std::cout << ", w:" << bounds.w << ", h:" << bounds.h << std::endl;
+			// std::cout << ", w:" << bounds.w << ", h:" << bounds.h << std::endl;
 
 			return result;
 		}
@@ -7423,14 +7437,14 @@ namespace Volt
 			// the default draw func has no ordering
 			if (nullptr == customDrawCallback)
 			{
-				if(not highlightOnHover and not isHighlighted)
-				fillRoundedRectF(renderer,
-								 {bounds.x, bounds.y, bounds.w, bounds.h}, corner_radius,
-								 {bg_color.r, bg_color.g, bg_color.b, bg_color.a});
+				if (not highlightOnHover and not isHighlighted)
+					fillRoundedRectF(renderer,
+									 {bounds.x, bounds.y, bounds.w, bounds.h}, corner_radius,
+									 {bg_color.r, bg_color.g, bg_color.b, bg_color.a});
 				if (highlightOnHover and isHighlighted)
 					fillRoundedRectF(renderer,
-						{ bounds.x, bounds.y, bounds.w, bounds.h }, corner_radius,
-						{ onHoverBgColor.r, onHoverBgColor.g, onHoverBgColor.b, onHoverBgColor.a });
+									 {bounds.x, bounds.y, bounds.w, bounds.h}, corner_radius,
+									 {onHoverBgColor.r, onHoverBgColor.g, onHoverBgColor.b, onHoverBgColor.a});
 
 				for (auto &imgBtn : imageButton)
 					imgBtn.Draw();
@@ -7465,17 +7479,17 @@ namespace Volt
 	{
 	public:
 		using Context::event;
+		using IView::addChildView;
 		using IView::bounds;
 		using IView::childViews;
-		using IView::getView;
-		using IView::getChildView;
-		using IView::addChildView;
 		using IView::clearAndAddChildView;
+		using IView::getChildView;
+		using IView::getView;
 		using IView::hide;
 		using IView::isHidden;
+		using IView::label;
 		using IView::prevent_default_behaviour;
 		using IView::show;
-		using IView::label;
 
 	public:
 		uint32_t prevLineCount = 0, consumedCells = 0, lineCount = 0, numPrevLineCells = 0;
@@ -7487,7 +7501,7 @@ namespace Volt
 			return bounds;
 		}
 
-	 SDL_FRect& getBounds()
+		SDL_FRect &getBounds()
 		{
 			return bounds;
 		}
@@ -7532,7 +7546,8 @@ namespace Volt
 			return cells.front();
 		};
 
-		void eraseCell(std::size_t _cell_index) {
+		void eraseCell(std::size_t _cell_index)
+		{
 			toBeErasedCells.emplace_back(_cell_index);
 		}
 
@@ -7718,13 +7733,15 @@ namespace Volt
 		{
 		}
 
-		std::optional<std::reference_wrapper<Cell>> getHeaderCell() {
-			if (fillNewCellDataCallbackHeader and not cells.empty()) {
+		std::optional<std::reference_wrapper<Cell>> getHeaderCell()
+		{
+			if (fillNewCellDataCallbackHeader and not cells.empty())
+			{
 				return cells.front();
 			}
 			else
 			{
-				Logger::Get().log(Logger::LogLevel::Error, "CellBlock::getHeaderCell() failed. no header cell was found. call CellBlock::addHeaderCell() before CellBlock::getHeaderCell()");
+				GLogger.Log(Logger::Level::Error, "CellBlock::getHeaderCell() failed. no header cell was found. call CellBlock::addHeaderCell() before CellBlock::getHeaderCell()");
 				return {};
 			}
 		}
@@ -7732,7 +7749,7 @@ namespace Volt
 		// Note this method must be invoked before CellBlock::Build() and CellBlock::addCell
 		CellBlock &addHeaderCell(std::function<void(Cell &)> newCellSetUpCallback)
 		{
-			fillNewCellDataCallbackHeader =newCellSetUpCallback;
+			fillNewCellDataCallbackHeader = newCellSetUpCallback;
 			return *this;
 		}
 
@@ -7775,11 +7792,13 @@ namespace Volt
 		 */
 		CellBlock &setCellRect(Cell &_cell, uint32_t numVertGrids, const float h, const float margin_x = 0.f, const float margin_y = 0.f)
 		{
-			[[unlikely]] if (_cell.isHeader) {
+			[[unlikely]] if (_cell.isHeader)
+			{
 				numVertGrids = numVerticalGrids;
 			}
 			numVertGrids = std::clamp(numVertGrids, uint32_t(0), numVerticalGrids);
-			if (numVertGrids == numVerticalGrids) isFlexible = false;
+			if (numVertGrids == numVerticalGrids)
+				isFlexible = false;
 			_cell.num_vert_grids = numVertGrids;
 			_cell.org_mx = margin_x;
 			_cell.org_my = margin_y;
@@ -7809,7 +7828,8 @@ namespace Volt
 			_cell.bounds.h = h - (margin_y * 2.f);
 			prevLineCount = lineCount;
 			consumedCells += numVertGrids;
-			[[unlikely]] if (_cell.isHeader) {
+			[[unlikely]] if (_cell.isHeader)
+			{
 				_cell.bounds.x += bounds.x;
 				_cell.bounds.y += bounds.y;
 			}
@@ -7818,65 +7838,81 @@ namespace Volt
 
 		float sumGainedGrids = 0.f;
 
-		void handleFlexResize(float dw){
-			if (dw == 0.f)return;
-			if (max_vert_grids <= 1) {
+		void handleFlexResize(float dw)
+		{
+			if (dw == 0.f)
+				return;
+			if (max_vert_grids <= 1)
+			{
 				cellWidth = margin.w / static_cast<float>(numVerticalGrids);
 				allCellsHandleEvent();
 				return;
 			}
 
-			//check if we lost or gained width
-			if (dw<0.f)
+			// check if we lost or gained width
+			if (dw < 0.f)
 			{
-				//handle lost grids
+				// handle lost grids
 				const float lostGrids = std::fabs(dw) / cellWidth;
 				const float fLostGrids = std::floor(lostGrids);
 				std::cout << "LostGrids:" << lostGrids << "\n";
 				std::cout << "PrevCellSpacingX:" << CellSpacingX << "\n";
-				if (lostGrids >= 1.0f) {
-					if ((float)(numVerticalGrids) - fLostGrids >= 1.f) {
+				if (lostGrids >= 1.0f)
+				{
+					if ((float)(numVerticalGrids)-fLostGrids >= 1.f)
+					{
 						numVerticalGrids -= (uint32_t)fLostGrids;
-						CellSpacingX += std::fabs(fLostGrids*cellWidth) / (float)(numVerticalGrids+1);
-						if (lostGrids > fLostGrids) {
-							const float dx = ((lostGrids - fLostGrids) * cellWidth)/(floor)(numVerticalGrids+1);
-							if (CellSpacingX - dx >= 0.0) {
+						CellSpacingX += std::fabs(fLostGrids * cellWidth) / (float)(numVerticalGrids + 1);
+						if (lostGrids > fLostGrids)
+						{
+							const float dx = ((lostGrids - fLostGrids) * cellWidth) / (floor)(numVerticalGrids + 1);
+							if (CellSpacingX - dx >= 0.0)
+							{
 								CellSpacingX += dx;
 							}
-							else {
-								if (numVerticalGrids - 1.f >= 1.f) {
+							else
+							{
+								if (numVerticalGrids - 1.f >= 1.f)
+								{
 									--numVerticalGrids;
-									CellSpacingX += cellWidth / (float)(numVerticalGrids+1);
+									CellSpacingX += cellWidth / (float)(numVerticalGrids + 1);
 								}
 							}
 						}
 					}
-					else {
+					else
+					{
 						return;
 					}
 				}
-				else {
-					const float dx = (lostGrids * cellWidth) / (floor)(numVerticalGrids+1);
-					if (CellSpacingX - dx >= 0.0f) {
+				else
+				{
+					const float dx = (lostGrids * cellWidth) / (floor)(numVerticalGrids + 1);
+					if (CellSpacingX - dx >= 0.0f)
+					{
 						CellSpacingX -= dx;
 					}
-					else {
-						if (numVerticalGrids - 1 >= 1) {
+					else
+					{
+						if (numVerticalGrids - 1 >= 1)
+						{
 							--numVerticalGrids;
-							CellSpacingX += cellWidth / (float)(numVerticalGrids+1);
+							CellSpacingX += cellWidth / (float)(numVerticalGrids + 1);
 							CellSpacingX -= dx;
 						}
-						else {
+						else
+						{
 							std::cout << "can't shrink grids any more\n";
 							return;
 						}
 					}
 				}
 			}
-			else if(dw>0.f){
+			else if (dw > 0.f)
+			{
 				bool reg = false;
 
-				//redo_gained:
+				// redo_gained:
 				const float gainedGrids = dw / cellWidth;
 				const float fGainedGrids = std::floor(gainedGrids);
 				sumGainedGrids += gainedGrids;
@@ -7884,16 +7920,19 @@ namespace Volt
 				std::cout << "GainedGrids:" << gainedGrids << "\n";
 				std::cout << "PrevCellSpacingX:" << CellSpacingX << "\n";
 				std::cout << "sumGainedGrids:" << sumGainedGrids << "\n";
-				if (sumGainedGrids >= 1.f) {
+				if (sumGainedGrids >= 1.f)
+				{
 					numVerticalGrids += (uint32_t)std::floor(sumGainedGrids);
 					CellSpacingX = OrgCellSpacingX;
-					if (sumGainedGrids > std::floor(sumGainedGrids)) {
+					if (sumGainedGrids > std::floor(sumGainedGrids))
+					{
 						const float dx = ((sumGainedGrids - std::floor(sumGainedGrids)) * cellWidth) / (floor)(numVerticalGrids + 1);
 						CellSpacingX += dx;
 					}
 					sumGainedGrids = 0.f;
 				}
-				else {
+				else
+				{
 					const float dx = dw / (floor)(numVerticalGrids + 1);
 					CellSpacingX += dx;
 				}
@@ -7923,8 +7962,8 @@ namespace Volt
 			clearAndReset();
 
 			/*
-			* std::for_each(cells.begin(), cells.end(), [this](Cell& cell) { setCellRect(cell, cell.num_vert_grids, cell.bounds.h, CellSpacingX); });
-			*/
+			 * std::for_each(cells.begin(), cells.end(), [this](Cell& cell) { setCellRect(cell, cell.num_vert_grids, cell.bounds.h, CellSpacingX); });
+			 */
 		}
 
 		void resetTexture()
@@ -7964,7 +8003,8 @@ namespace Volt
 			CellSpacingY = _blockProps.cellSpacingY;
 			cellWidth = ((margin.w - (_blockProps.cellSpacingX * (_numVerticalGrids - 1))) / static_cast<float>(_numVerticalGrids));
 
-			if (fillNewCellDataCallbackHeader) {
+			if (fillNewCellDataCallbackHeader)
+			{
 				update_top_and_bottom_cells();
 				header_cell = Cell{};
 				header_cell.isHeader = true;
@@ -7974,9 +8014,9 @@ namespace Volt
 				header_cell.adaptiveVsync = adaptiveVsync;
 				fillNewCellDataCallbackHeader(header_cell);
 				header_h = header_cell.bounds.h;
-				margin.y += header_h+2.f;
-				margin.h -= header_h+2.f;
-				Logger::Get().log(Logger::LogLevel::Info, "CellBlock::addHeaderCell() Success Index:" + std::to_string(header_cell.index));
+				margin.y += header_h + 2.f;
+				margin.h -= header_h + 2.f;
+				GLogger.Log(Logger::Level::Info, "CellBlock::addHeaderCell() Success Index:" + std::to_string(header_cell.index));
 			}
 
 			if (texture.get() != nullptr)
@@ -8017,7 +8057,7 @@ namespace Volt
 				visibleCells.emplace_back(&cells.back());
 
 				while (visibleCells.back()->bounds.y < margin.h and
-					visibleCells.back()->index < (maxCells - 1))
+					   visibleCells.back()->index < (maxCells - 1))
 				{
 					update_top_and_bottom_cells();
 					if (FIRST_LOAD and (cells.back().index == visibleCells.back()->index) and cells.back().index < (maxCells - 1))
@@ -8064,11 +8104,14 @@ namespace Volt
 		bool handleEvent() override
 		{
 			bool result = false;
-			if (not enabled or hidden) {
+			if (not enabled or hidden)
+			{
 				return result;
 			}
-			for (auto child : childViews) {
-				if (child->handleEvent()) {
+			for (auto child : childViews)
+			{
+				if (child->handleEvent())
+				{
 					updateHighlightedCell(-1);
 					SIMPLE_RE_DRAW = true;
 					return true;
@@ -8099,7 +8142,7 @@ namespace Volt
 						DisplayInfo::Get().toUpdatedHeight(margin.h),
 					};
 				resetTexture();
-				//handleFlexResize(dw);
+				// handleFlexResize(dw);
 				allCellsHandleEvent();
 				SIMPLE_RE_DRAW = true;
 			}
@@ -8109,13 +8152,16 @@ namespace Volt
 						   event->tfinger.y * DisplayInfo::Get().RenderH};
 				if (isPosInbound(cf.x, cf.y))
 				{
-					for (auto child : childViews) {
-						if (not child->hidden) {
+					for (auto child : childViews)
+					{
+						if (not child->hidden)
+						{
 							child->hide();
 							result = true;
 						}
 					}
-					if (result)return result;
+					if (result)
+						return result;
 					SIMPLE_RE_DRAW = true;
 					KEYDOWN = true, scrollAnimInterpolator.setIsAnimating(false);
 					visibleCellsHandleEvent();
@@ -8129,11 +8175,11 @@ namespace Volt
 				visibleCellsHandleEvent();
 				if (isPosInbound(event->wheel.mouseX, event->wheel.mouseY) and maxCells > 0)
 				{
-					pf = { event->wheel.mouseX,
-						  event->wheel.mouseY };
-					cf = { pf.x + (event->wheel.x*40.f),
-						  pf.y + (event->wheel.y*40.f) };
-					movedDistance += {event->wheel.x*5.f, event->wheel.y*5.f};
+					pf = {event->wheel.mouseX,
+						  event->wheel.mouseY};
+					cf = {pf.x + (event->wheel.x * 40.f),
+						  pf.y + (event->wheel.y * 40.f)};
+					movedDistance += {event->wheel.x * 5.f, event->wheel.y * 5.f};
 					internal_handle_motion();
 					updateHighlightedCell(-1);
 					FingerUP_TM = SDL_GetTicks();
@@ -8221,7 +8267,8 @@ namespace Volt
 													   cf_trans.x <= cell->bounds.x + cell->bounds.w)
 												   {
 													   updateSelectedCell(cell->index);
-													   if (not cell->handleEvent()) {
+													   if (not cell->handleEvent())
+													   {
 														   CELL_PRESSED = true;
 														   pressed_cell_index = cell->index;
 														   updateHighlightedCell(-1);
@@ -8300,14 +8347,16 @@ namespace Volt
 			{
 				SIMPLE_RE_DRAW = false;
 				goto simple_rdraw;
-				//simpleDraw();
+				// simpleDraw();
 			}
-			if (scrlAction==ScrollAction::None and not ANIM_ACTION_DN and not ANIM_ACTION_UP and not CELL_PRESSED and not adaptiveVsyncHD.shouldReDrawFrame())
+			if (scrlAction == ScrollAction::None and not ANIM_ACTION_DN and not ANIM_ACTION_UP and not CELL_PRESSED and not adaptiveVsyncHD.shouldReDrawFrame())
 			{
 				fillRoundedRectF(renderer, {bounds.x, bounds.y, bounds.w, bounds.h}, cornerRadius, bgColor);
-				if (fillNewCellDataCallbackHeader)header_cell.Draw();
+				if (fillNewCellDataCallbackHeader)
+					header_cell.Draw();
 				SDL_RenderTexture(renderer, texture.get(), nullptr, &margin);
-				if (not childViews.empty()) {
+				if (not childViews.empty())
+				{
 					for (auto child : childViews)
 						child->Draw();
 				}
@@ -8322,7 +8371,8 @@ namespace Volt
 				{
 					dy = scrollAnimInterpolator.getValue();
 					scrlAction = ScrollAction::Down;
-					if (cells.front().bounds.y + dy > 0.f) {
+					if (cells.front().bounds.y + dy > 0.f)
+					{
 						if (cells.front().bounds.y > 0.f)
 							dy = 0.f - (cells.front().bounds.y);
 						else
@@ -8335,11 +8385,12 @@ namespace Volt
 					dy = 0.f - scrollAnimInterpolator.getValue();
 					scrlAction = ScrollAction::Up;
 					if (cells.back().bounds.y + cells.back().bounds.h + dy < margin.h and
-						cells.back().index >= (maxCells - 1)) {
+						cells.back().index >= (maxCells - 1))
+					{
 						if (cells.back().bounds.y + cells.back().bounds.h < margin.h)
 							dy = margin.h - cells.back().bounds.y - cells.back().bounds.h;
 						else
-							dy = cells.back().bounds.y + cells.back().bounds.h-margin.h, std::cout <<"mh:"<<margin.h<<" "<<"cy:"<<cells.back().bounds.y+ cells.back().bounds.h << "dy:" << dy << ", ";
+							dy = cells.back().bounds.y + cells.back().bounds.h - margin.h, std::cout << "mh:" << margin.h << " " << "cy:" << cells.back().bounds.y + cells.back().bounds.h << "dy:" << dy << ", ";
 						scrollAnimInterpolator.setIsAnimating(false);
 					}
 				}
@@ -8388,11 +8439,13 @@ namespace Volt
 				dy = 0.f;
 				scrlAction = ScrollAction::None;
 			}
-			simple_rdraw:
+		simple_rdraw:
 			simpleDraw();
 
-			if (not toBeErasedCells.empty()) {
-				for (auto i : toBeErasedCells) {
+			if (not toBeErasedCells.empty())
+			{
+				for (auto i : toBeErasedCells)
+				{
 					cells.erase(cells.begin() + i);
 				}
 				updateHighlightedCell(-1);
@@ -8403,19 +8456,22 @@ namespace Volt
 		}
 
 	protected:
-		void simpleDraw() {
-			fillRoundedRectF(renderer, { bounds.x, bounds.y, bounds.w, bounds.h }, cornerRadius, bgColor);
-			if (fillNewCellDataCallbackHeader)header_cell.Draw();
+		void simpleDraw()
+		{
+			fillRoundedRectF(renderer, {bounds.x, bounds.y, bounds.w, bounds.h}, cornerRadius, bgColor);
+			if (fillNewCellDataCallbackHeader)
+				header_cell.Draw();
 			CacheRenderTarget crt_(renderer);
 			SDL_SetRenderTarget(renderer, texture.get());
 			renderClear(renderer, 0, 0, 0, 0);
-			for (auto& cell : visibleCells)
+			for (auto &cell : visibleCells)
 			{
 				cell->Draw();
 			}
 			crt_.release(renderer);
 			SDL_RenderTexture(renderer, texture.get(), nullptr, &margin);
-			if (not childViews.empty()) {
+			if (not childViews.empty())
+			{
 				for (auto child : childViews)
 					child->Draw();
 			}
@@ -8426,9 +8482,10 @@ namespace Volt
 			}
 		}
 
-		void scrollUp() {
+		void scrollUp()
+		{
 			while (visibleCells.back()->bounds.y < margin.h and
-				visibleCells.back()->index < (maxCells - 1))
+				   visibleCells.back()->index < (maxCells - 1))
 			{
 				update_top_and_bottom_cells();
 				if (FIRST_LOAD and (cells.back().index == visibleCells.back()->index) and cells.back().index < (maxCells - 1))
@@ -8446,7 +8503,8 @@ namespace Volt
 				visibleCells.pop_front(), frontIndex = visibleCells.front()->index;
 		}
 
-		void scrollDown() {
+		void scrollDown()
+		{
 			while (visibleCells[0]->index > cells.front().index and visibleCells[0]->bounds.y + visibleCells[0]->bounds.h > 0.f)
 			{
 				--frontIndex;
@@ -8504,8 +8562,8 @@ namespace Volt
 		{
 			// clear the prev highlighted cell
 			if (HIGHLIGHTED_CELL >= 0)
-				if(HIGHLIGHTED_CELL<cells.size())
-				cells[HIGHLIGHTED_CELL].isHighlighted = false;
+				if (HIGHLIGHTED_CELL < cells.size())
+					cells[HIGHLIGHTED_CELL].isHighlighted = false;
 			// PREV_HIGHLIGHTED_CELL = HIGHLIGHTED_CELL;
 			HIGHLIGHTED_CELL = _highlightedCell;
 			// if (PREV_HIGHLIGHTED_CELL >= 0)cells[PREV_HIGHLIGHTED_CELL].isHighlighted = false;
@@ -8526,7 +8584,8 @@ namespace Volt
 		bool allCellsHandleEvent()
 		{
 			bool result = false;
-			if (fillNewCellDataCallbackHeader)header_cell.handleEvent();
+			if (fillNewCellDataCallbackHeader)
+				header_cell.handleEvent();
 			for (auto &_cell : cells)
 			{
 				_cell.handleEvent();
@@ -8579,7 +8638,8 @@ namespace Volt
 		}
 
 	private:
-		enum class ScrollAction {
+		enum class ScrollAction
+		{
 			None,
 			Up,
 			Down,
@@ -8587,9 +8647,10 @@ namespace Volt
 			Right
 		};
 		ScrollAction scrlAction;
+
 	private:
 		std::function<void(Cell &)> onCellClickedCallback = nullptr;
-		std::function<void(Cell&)> fillNewCellDataCallback = nullptr;
+		std::function<void(Cell &)> fillNewCellDataCallback = nullptr;
 		std::function<void(Cell &)> fillNewCellDataCallbackHeader = nullptr;
 		std::deque<Cell> cells;
 		std::deque<Cell *> visibleCells;
@@ -8604,7 +8665,7 @@ namespace Volt
 		SDL_Color cell_bg_color = {0x00, 0x00, 0x00, 0x00};
 		uint64_t maxCells = 0;
 		// SDL_FRect dest;
-		float cellWidth = 0.f, CellSpacing = 0.f, CellSpacingX = 0.f, OrgCellSpacingX=0.f, CellSpacingY = 0.f;
+		float cellWidth = 0.f, CellSpacing = 0.f, CellSpacingX = 0.f, OrgCellSpacingX = 0.f, CellSpacingY = 0.f;
 		float dy = 0.f;
 		float cornerRadius = 0.f;
 		float header_h = 0.f;
@@ -8633,78 +8694,84 @@ namespace Volt
 		Interpolator scrollAnimInterpolator;
 	};
 
-
-	class Select : Context {
+	class Select : Context
+	{
 	public:
-		struct Props {
-			SDL_FRect rect{ 0.f,0.f,0.f,0.f };
-			SDL_FRect inner_block_rect{ 0.f,0.f,0.f,0.f };
-			SDL_FRect text_margin{ 0.f,0.f,0.f,0.f };
-			SDL_Color text_color{ 0x00,0x00,0x00,0xff };
-			SDL_Color bg_color{ 0xff,0xff,0xff,0xff };
+		struct Props
+		{
+			SDL_FRect rect{0.f, 0.f, 0.f, 0.f};
+			SDL_FRect inner_block_rect{0.f, 0.f, 0.f, 0.f};
+			SDL_FRect text_margin{0.f, 0.f, 0.f, 0.f};
+			SDL_Color text_color{0x00, 0x00, 0x00, 0xff};
+			SDL_Color bg_color{0xff, 0xff, 0xff, 0xff};
 			SDL_Color on_hover_color{};
 			float border_size = 1.f;
 			float corner_radius = 1.f;
 			int maxValues = 1;
+			bool show_all_on_hover = false;
 		};
+
 	public:
-		struct Value {
+		struct Value
+		{
 			std::size_t id = 0;
 			std::string value = "";
 			std::string img = "";
 		};
 
 	public:
-		CellBlock* getInnerBlock() { return &valuesBlock; }
-		Cell* getInnerCell() { return &viewValue; }
+		CellBlock *getInnerBlock() { return &valuesBlock; }
+		Cell *getInnerCell() { return &viewValue; }
 
-		IView* getView()
+		IView *getView()
 		{
 			return viewValue.getView();
 		}
 
-		IView* show()
+		IView *show()
 		{
 			return viewValue.show();
 		}
 
-		IView* hide()
+		IView *hide()
 		{
 			return viewValue.hide();
 		}
+
 	public:
-		Select& Build(Context* _context, Select::Props _props, std::vector<Value> _values, std::size_t _default=0) {
+		Select &Build(Context *_context, Select::Props _props, std::vector<Value> _values, std::size_t _default = 0)
+		{
 			Context::setContext(_context);
-			//if any of _values contains img then add img padding to all value cells
+			// if any of _values contains img then add img padding to all value cells
 			const auto bounds = _props.rect;
 			_props.inner_block_rect.x = bounds.x;
 			_props.inner_block_rect.y = bounds.y + bounds.h + 2.f;
 			values_ = _values;
 			defaultVal = _default;
 			std::size_t _max_values = _values.size();
-			//if all values rect dimensions arent set we defaut
-			if (_props.inner_block_rect.w <= 0.f or _props.inner_block_rect.w <= 0.f) {
+			// if all values rect dimensions arent set we defaut
+			if (_props.inner_block_rect.w <= 0.f or _props.inner_block_rect.w <= 0.f)
+			{
 				float tmpH = _max_values >= 4 ? 4.f : static_cast<float>(_max_values);
-				_props.inner_block_rect = { bounds.x, bounds.y + bounds.h + 1.f, bounds.w, bounds.h * tmpH };
+				_props.inner_block_rect = {bounds.x, bounds.y + bounds.h + 1.f, bounds.w, bounds.h * tmpH};
 			}
 
 			viewValue.setContext(_context);
 			viewValue.bg_color = _props.bg_color;
 			viewValue.corner_radius = _props.corner_radius;
 			viewValue.bounds = bounds;
-			if (_values.size()) {
+			if (_values.size())
+			{
 				viewValue.addTextBox(
-					{
-						//.mem_font = Font::OpenSansSemiBold,
-						.rect = {5.f,5.f,90.f,90.f},
-						.textAttributes = { values_[_default].value, {0,0,0,0xff}, {0, 0, 0, 0}},
-						.gravity = Gravity::Left
-					}
-				);
+					{//.mem_font = Font::OpenSansSemiBold,
+					 .rect = {5.f, 5.f, 90.f, 90.f},
+					 .textAttributes = {values_[_default].value, {0, 0, 0, 0xff}, {0, 0, 0, 0}},
+					 .gravity = Gravity::Left});
 			}
 
 			viewValue.prevent_default_behaviour = true;
-			viewValue.registerCustomEventHandlerCallback([this](Cell& _cell)->bool {
+			viewValue.registerCustomEventHandlerCallback([this](Cell &_cell) -> bool
+														 {
 				if (viewValue.childViews[0]->handleEvent()) {
 						return true;
 					}
@@ -8725,25 +8792,23 @@ namespace Volt
 						valuesBlock.hide();
 					}
 				}
-				return false;
-				});
+				return false; });
 
 			valuesBlock.setOnFillNewCellData(
-				[this, bounds](Cell& _cell) {
+				[this, bounds](Cell &_cell)
+				{
 					valuesBlock.setCellRect(_cell, 1, bounds.h, 0.f, 1.f);
 					_cell.bg_color = viewValue.bg_color;
-					_cell.onHoverBgColor = { 180,180,180,0xff };
+					_cell.onHoverBgColor = {180, 180, 180, 0xff};
 					_cell.highlightOnHover = true;
 					_cell.addTextBox(
-						{
-							//.mem_font = Font::OpenSansSemiBold,
-							.rect = {5.f,2.5f,90.f,95.f},
-							.textAttributes = { values_[_cell.index].value, {0,0,0,0xff}, {0, 0, 0, 0}},
-							.gravity = Gravity::Left
-						}
-					);
+						{//.mem_font = Font::OpenSansSemiBold,
+						 .rect = {5.f, 2.5f, 90.f, 95.f},
+						 .textAttributes = {values_[_cell.index].value, {0, 0, 0, 0xff}, {0, 0, 0, 0}},
+						 .gravity = Gravity::Left});
 
-					_cell.textBox[0].addOnclickedCallback([this, &_cell](TextBox* _textbox) {
+					_cell.textBox[0].addOnclickedCallback([this, &_cell](TextBox *_textbox)
+														  {
 						viewValue.textBox.pop_back();
 						selectedVal = _cell.index;
 						viewValue.addTextBox(
@@ -8754,28 +8819,26 @@ namespace Volt
 								.gravity = Gravity::Left
 							}
 						);
-						valuesBlock.hide();
-						});
+						valuesBlock.hide(); });
 				});
 			valuesBlock.Build(_context, _max_values, 1,
-				{
-				.rect = _props.inner_block_rect,
-				.cornerRadius = _props.corner_radius,
-				.bgColor = _props.bg_color
-				}
-			);
+							  {.rect = _props.inner_block_rect,
+							   .cornerRadius = _props.corner_radius,
+							   .bgColor = _props.bg_color});
 			viewValue.addChildView(valuesBlock.getView()->hide());
 
 			return *this;
 		}
 
-		Select& Build(Context* _context, SelectProps _props, int _max_values, const int& _numVerticalGrid, std::function<void(Cell&)> _valueCellOnCreateCallback) {
+		Select &Build(Context *_context, SelectProps _props, int _max_values, const int &_numVerticalGrid, std::function<void(Cell &)> _valueCellOnCreateCallback)
+		{
 			Context::setContext(_context);
 			auto bounds = _props.rect;
-			//if all values rect dimensions arent set we defaut
-			if (_props.inner_block_rect.w <= 0.f or _props.inner_block_rect.w) {
+			// if all values rect dimensions arent set we defaut
+			if (_props.inner_block_rect.w <= 0.f or _props.inner_block_rect.w)
+			{
 				float tmpH = _max_values >= 4 ? 4.f : static_cast<float>(_max_values);
-				_props.inner_block_rect = { bounds.x, bounds.y + bounds.h, bounds.w, bounds.h * tmpH };
+				_props.inner_block_rect = {bounds.x, bounds.y + bounds.h, bounds.w, bounds.h * tmpH};
 			}
 
 			viewValue.setContext(_context);
@@ -8785,60 +8848,57 @@ namespace Volt
 
 			valuesBlock.setOnFillNewCellData(_valueCellOnCreateCallback);
 			valuesBlock.Build(_context, _max_values, _numVerticalGrid,
-				{
-				.rect = _props.inner_block_rect,
-				.bgColor = _props.bg_color
-				}
-			);
+							  {.rect = _props.inner_block_rect,
+							   .bgColor = _props.bg_color});
 
 			return *this;
 		}
-		
-		//void addValueFront(Value newVal) { }
 
-		void addValue(Value newVal) {
-			if (values_.empty()) {
+		// void addValueFront(Value newVal) { }
+
+		void addValue(Value newVal)
+		{
+			if (values_.empty())
+			{
 				viewValue.addTextBox(
-					{
-						//.mem_font = Font::OpenSansSemiBold,
-						.rect = {5.f,5.f,90.f,90.f},
-						.textAttributes = { newVal.value, {0,0,0,0xff}, {0, 0, 0, 0}},
-						.gravity = Gravity::Left
-					}
-				);
+					{//.mem_font = Font::OpenSansSemiBold,
+					 .rect = {5.f, 5.f, 90.f, 90.f},
+					 .textAttributes = {newVal.value, {0, 0, 0, 0xff}, {0, 0, 0, 0}},
+					 .gravity = Gravity::Left});
 			}
 			values_.emplace_back(newVal);
 			valuesBlock.updateNoMaxCells(values_.size());
 			valuesBlock.clearAndReset();
 		}
 
-
-		void removeValue(std::size_t val_index) {
-			if (not values_.empty()) {
+		void removeValue(std::size_t val_index)
+		{
+			if (not values_.empty())
+			{
 				values_.erase(values_.begin() + val_index);
 			}
 			valuesBlock.updateNoMaxCells(values_.size());
 			valuesBlock.clearAndReset();
 
-			//update viewValue
-			if (val_index == selectedVal and not values_.empty()) {
+			// update viewValue
+			if (val_index == selectedVal and not values_.empty())
+			{
 				viewValue.textBox.pop_back();
 				viewValue.addTextBox(
-					{
-						//.mem_font = Font::OpenSansSemiBold,
-						.rect = {5.f,5.f,90.f,90.f},
-						.textAttributes = { values_[defaultVal].value, {0,0,0,0xff}, {0, 0, 0, 0}},
-						.gravity = Gravity::Left
-					}
-				);
+					{//.mem_font = Font::OpenSansSemiBold,
+					 .rect = {5.f, 5.f, 90.f, 90.f},
+					 .textAttributes = {values_[defaultVal].value, {0, 0, 0, 0xff}, {0, 0, 0, 0}},
+					 .gravity = Gravity::Left});
 			}
 		}
-		
-		Value& getSelectedValue() {
+
+		Value &getSelectedValue()
+		{
 			return values_[selectedVal];
 		}
 
-		std::size_t getSelectedValueIndex() {
+		std::size_t getSelectedValueIndex()
+		{
 			return selectedVal;
 		}
 
@@ -8848,14 +8908,16 @@ namespace Volt
 
 		void reset() { values_ = {}; }
 
-		bool handleEvent() {
-			switch (event->type) {
-
+		bool handleEvent()
+		{
+			switch (event->type)
+			{
 			}
 			return viewValue.handleEvent();
 		}
 
-		void Draw() {
+		void Draw()
+		{
 			viewValue.Draw();
 		}
 
@@ -8865,9 +8927,9 @@ namespace Volt
 		std::vector<Value> values_;
 		std::size_t selectedVal = 0;
 		std::size_t defaultVal = 0;
+		/// @todo implemment the show on over funtionality
+		bool show_all_on_hover = false;
 	};
-
-
 
 	using MenuProps = CellBlockProps;
 
