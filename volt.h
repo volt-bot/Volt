@@ -1,6 +1,14 @@
-#pragma once
-// #ifndef VOLT_H
-// #define VOLT_H
+#include <stdio.h>
+#ifdef _MSC_VER
+#include <SDL.h>
+#include <SDL_image.h>
+#include <SDL_ttf.h>
+#else
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_image.h>
+#include <SDL2/SDL_ttf.h>
+#endif
+
 #include <iostream>
 #include <string_view>
 #include <cmath>
@@ -32,621 +40,887 @@
 #include <sstream>
 #include <atomic>
 #include <mutex>
-#include <SDL3/SDL.h>
-#include <SDL3/SDL_image.h>
-#include <SDL3/SDL_ttf.h>
+// #include <arm_neon.h> // For NEON intrinsics
+
 #include "volt_util.h"
 #include "volt_fonts.h"
-#ifdef _WIN32
-#include <windows.h>
-#endif
+#include "mp.h"
+#include "interpolators.h"
+#include "interpolated.hpp"
+//#include "text_editor.hpp"
 
-//	Global Logger Instance
 static Logger GLogger;
-
-namespace Volt
+//	helper function to convert SDL_FRect* to SDL_Rect* for compatibility with old sdl versions
+// use std::launder instead
+SDL_Rect *cvt_frect_to_rect(/*void*/ SDL_FRect *frect)
 {
-	SDL_Color WHITE = {0xFF, 0xFF, 0xFF, 0xFF};
-	SDL_Color BLACK = {0x00, 0x00, 0x00, 0xff};
-	SDL_Color YELLOW = {0xff, 0xff, 0x00, 0xff};
-	SDL_Color BLUE = {0x00, 0x00, 0xff, 0xff};
-	SDL_Color BLANK = {0x00, 0x00, 0x00, 0x00};
+	if (frect == nullptr)
+		return nullptr;
 
-	SDL_BlendMode blendMode = SDL_BLENDMODE_BLEND;
+	SDL_Rect *rect1 = reinterpret_cast<SDL_Rect *>(frect);
+	SDL_Rect *rect = std::launder(rect1);
+	return rect;
+}
 
-	/*
-	 * notice the use of std::mutext instead of using std::atomic
-	 * this is because class CellBlock relies on AdaptiveVsync alot but CellBlock must be copy constructible
-	 * and std::atomic's are'nt;
-	 */
-	std::mutex AdaptiveVsyncMux;
+SDL_Point *cvt_fpoint_to_point(SDL_FPoint *fpoint)
+{
+	if (fpoint == nullptr)
+		return nullptr;
+	SDL_Point *point1 = reinterpret_cast<SDL_Point *>(fpoint);
+	SDL_Point *point = std::launder(point1);
 
-	class AdaptiveVsyncHandler;
+	return point;
+}
+template <typename A, typename AA>
+SDL_bool SDL_PointInRect2(const A *p, const AA *r)
+{
+	return ((p->x >= r->x) && (p->x < (r->x + r->w)) &&
+			(p->y >= r->y) && (p->y < (r->y + r->h)))
+			   ? SDL_TRUE
+			   : SDL_FALSE;
+}
+#define HIGH_PIXEL_DENSITY SDL_WINDOW_ALLOW_HIGHDPI
+#define EVT_WPSC SDL_WINDOWEVENT_SIZE_CHANGED
+#define EVT_QUIT SDL_QUIT
+#define EVT_WMAX SDL_WINDOW_MAXIMIZED
+#define EVT_RENDER_TARGETS_RESET SDL_RENDER_TARGETS_RESET
+#define EVT_FINGER_DOWN SDL_FINGERDOWN
+#define EVT_FINGER_MOTION SDL_FINGERMOTION
+#define EVT_FINGER_UP SDL_FINGERUP
+#define EVT_MOUSE_BTN_DOWN SDL_MOUSEBUTTONDOWN
+#define EVT_MOUSE_MOTION SDL_MOUSEMOTION
+#define EVT_MOUSE_BTN_UP SDL_MOUSEBUTTONUP
+//#define CreateWindow(TITLE, ...) SDL_CreateWindow(TITLE, 0 __VA_OPT__(, ) 0 __VA_OPT__(, ) __VA_ARGS__)
+#define RenderPoint SDL_RenderDrawPointF
+#define RenderPoints SDL_RenderDrawPointsF
+#define RenderLine SDL_RenderDrawLine
+#define SDL_DestroySurface SDL_FreeSurface
+#define RenderTexture(rend, tex, src, dst) SDL_RenderCopyF(rend, tex, cvt_frect_to_rect(src), dst)
+#define RenderFillRect(rend, dst) SDL_RenderFillRect(rend, cvt_frect_to_rect(dst))
+#define RenderFillRectsF SDL_RenderFillRectsF
+#define SDL_PointInRectFloat(p, r) SDL_PointInRect2(p, r)
 
-	class AdaptiveVsync
+// Using SDL_EventFilter for SDL2. For SDL3, the return type is bool.
+static int last_motion_event_time = 0;
+// static auto last_event_time = 0;
+
+#if SDL_VERSION_ATLEAST(3, 0, 0)
+static bool SDLCALL myEventFilter(void *userdata, SDL_Event *event)
+#else
+static int SDLCALL myEventFilter(void *userdata, SDL_Event *event)
+#endif
+{
+	// static int motion_event_count = 0;
+	static auto last_event_time = SDL_GetTicks();
+
+	if (event->type == SDL_FINGERMOTION)
 	{
-	public:
-		friend class AdaptiveVsyncHandler;
+		// last_motion_event_time = SDL_GetTicks();
+		//  Rate limit based on time
+		//  This is generally a better approach for smoother handling.
+		//  For example, only process finger motion events every 10ms.
+		auto current_time = SDL_GetTicks();
+		auto duration = (current_time - last_event_time);
 
-		auto pollEvent(SDL_Event *_event) const -> int
+		const int MIN_TIME_BETWEEN_EVENTS_MS = 30; // Adjust this value as needed
+
+		if (duration < MIN_TIME_BETWEEN_EVENTS_MS)
 		{
-			if (no_sleep_requests)
-				return SDL_PollEvent(_event);
-			else
-				return SDL_WaitEvent(_event);
+			// std::cout << "Skipping event:"<<event->type<<" (rate limit, time: " << duration<< "ms)" << std::endl;
+			return
+#if SDL_VERSION_ATLEAST(3, 0, 0)
+				false; // Drop the event in SDL3
+#else
+				0; // Drop the event in SDL2
+#endif
 		}
-
-		auto hasRequests()
+		else
 		{
-			if (!no_sleep_requests)
-				return false;
-			return true;
+			last_event_time = current_time; // Update last event time only when an event is processed
 		}
+	}
+	// For all other event types, always allow them
+	return
+#if SDL_VERSION_ATLEAST(3, 0, 0)
+		true; // Allow the event in SDL3
+#else
+		1; // Allow the event in SDL2
+#endif
+}
 
-	private:
-		std::uint32_t no_sleep_requests = 0;
-	};
+void WakeGui()
+{
+	SDL_Event RedrawTriggeredEvent;
+	RedrawTriggeredEvent.type = SDL_RegisterEvents(1);
+	SDL_PushEvent(&RedrawTriggeredEvent);
+}
 
-	/*
-	Volt is an event driven sys and only draws upon request("only when necessary").
+std::mutex AdaptiveVsyncMux;
+
+class AdaptiveVsyncHandler;
+
+class AdaptiveVsync
+{
+public:
+	friend class AdaptiveVsyncHandler;
+
+	auto pollEvent(SDL_Event *_event) const -> int
+	{
+		if (no_sleep_requests)
+			return SDL_PollEvent(_event);
+		else
+			return SDL_WaitEvent(_event);
+	}
+
+	auto hasRequests()
+	{
+		if (!no_sleep_requests)
+			return false;
+		return true;
+	}
+
+private:
+	std::uint32_t no_sleep_requests = 0;
+};
+
+/*
+	Volt uses a event driven sys and only draws upon request("only when necessary").
 	if you have an object/drawable that needs the drawing thread to stay alive eg animation, you must use this class to
 	tell volt when not to hybernate the drawing thread
 	*/
-	class AdaptiveVsyncHandler
+class AdaptiveVsyncHandler
+{
+public:
+	void setAdaptiveVsync(AdaptiveVsync *_adaptiveVsync)
 	{
-	public:
-		void setAdaptiveVsync(AdaptiveVsync *_adaptiveVsync)
+		adaptiveVsync = _adaptiveVsync;
+	}
+
+	void startRedrawSession()
+	{
+		if (!redrawRequested)
 		{
-			adaptiveVsync = _adaptiveVsync;
+			std::scoped_lock lock(AdaptiveVsyncMux);
+			adaptiveVsync->no_sleep_requests++;
+			redrawRequested = true;
+		}
+	}
+
+	void stopRedrawSession()
+	{
+		if (redrawRequested)
+		{
+			std::scoped_lock lock(AdaptiveVsyncMux);
+			adaptiveVsync->no_sleep_requests--;
+			redrawRequested = false;
+		}
+	}
+
+	bool shouldReDrawFrame()
+	{
+		return redrawRequested;
+	}
+
+	~AdaptiveVsyncHandler()
+	{
+		stopRedrawSession();
+	}
+
+private:
+	bool redrawRequested = false;
+	int cache_frame_rate = 1;
+	AdaptiveVsync *adaptiveVsync = nullptr;
+};
+
+class CacheRenderTarget
+{
+public:
+	CacheRenderTarget(SDL_Renderer *_renderer) : targetCache(SDL_GetRenderTarget(_renderer)) {}
+	CacheRenderTarget(const CacheRenderTarget &) = delete;
+	CacheRenderTarget(const CacheRenderTarget &&) = delete;
+	void cache(SDL_Renderer *_renderer)
+	{
+		targetCache = SDL_GetRenderTarget(_renderer);
+	}
+	void release(SDL_Renderer *_renderer)
+	{
+		SDL_SetRenderTarget(_renderer, targetCache);
+	}
+
+private:
+	SDL_Texture *targetCache;
+};
+
+SDL_Color CACHE_COLOR;
+auto CacheRenderColor = [](SDL_Renderer *renderer)
+{
+	SDL_GetRenderDrawColor(renderer, &CACHE_COLOR.r, &CACHE_COLOR.g, &CACHE_COLOR.b,
+						   &CACHE_COLOR.a);
+};
+
+auto RestoreCachedRenderColor = [](SDL_Renderer *renderer)
+{
+	SDL_SetRenderDrawColor(renderer, CACHE_COLOR.r, CACHE_COLOR.g, CACHE_COLOR.b,
+						   CACHE_COLOR.a);
+};
+
+struct SDLResourceDeleter
+{
+	void operator()(SDL_Window *window_) const
+	{
+		if (window_ != nullptr)
+			SDL_DestroyWindow(window_);
+		window_ = nullptr;
+		SDL_Log("Window Destroyed!");
+	}
+
+	void operator()(SDL_Renderer *renderer_) const
+	{
+		if (renderer_ != nullptr)
+			SDL_DestroyRenderer(renderer_);
+		renderer_ = nullptr;
+		SDL_Log("Renderer Destroyed!");
+	}
+
+	void operator()(SDL_Texture *texture_) const
+	{
+		if (texture_ != nullptr)
+		{
+			SDL_DestroyTexture(texture_);
+			texture_ = nullptr;
+		}
+	}
+
+	void operator()(SDL_Haptic *haptic) const
+	{
+		if (haptic != nullptr)
+		{
+			SDL_HapticClose(haptic);
+			haptic = nullptr;
+		}
+	}
+};
+
+using UniqueTexture = std::unique_ptr<SDL_Texture, SDLResourceDeleter>;
+using SharedTexture = std::shared_ptr<SDL_Texture>;
+using UniqueHaptic = std::unique_ptr<SDL_Haptic, SDLResourceDeleter>;
+using SharedHaptic = std::shared_ptr<SDL_Haptic>;
+
+std::unique_ptr<SDL_Window, SDLResourceDeleter>
+CreateUniqueWindow(const char *title, int w,
+				   int h, uint32_t flags)
+{
+	return std::unique_ptr<SDL_Window, SDLResourceDeleter>(
+		SDL_CreateWindow(title, 0, 0, w, h, flags), SDLResourceDeleter());
+}
+
+std::shared_ptr<SDL_Window>
+CreateSharedWindow(const char *title, int w, int h, uint32_t flags)
+{
+	return std::shared_ptr<SDL_Window>(
+		SDL_CreateWindow(title, 0, 0, w, h, flags), SDLResourceDeleter());
+}
+
+std::unique_ptr<SDL_Renderer, SDLResourceDeleter>
+CreateUniqueRenderer(SDL_Window *window, int index, uint32_t flags)
+{
+	return std::unique_ptr<SDL_Renderer, SDLResourceDeleter>(
+		SDL_CreateRenderer(window, NULL, flags), SDLResourceDeleter());
+}
+
+std::shared_ptr<SDL_Renderer>
+CreateSharedRenderer(SDL_Window *window, int index, uint32_t flags)
+{
+	return std::shared_ptr<SDL_Renderer>(
+		SDL_CreateRenderer(window, NULL, flags), SDLResourceDeleter());
+}
+
+inline UniqueTexture
+CreateUniqueTexture(SDL_Renderer *renderer, Uint32 format, int access, const int w,
+					const int h)
+{
+	return UniqueTexture(
+		SDL_CreateTexture(renderer, format, access, w, h),
+		SDLResourceDeleter());
+}
+
+SharedTexture
+CreateSharedTexture(SDL_Renderer *renderer, Uint32 format, int access, const int &w,
+					const int &h)
+{
+	return SharedTexture(
+		SDL_CreateTexture(renderer, format, access, w, h),
+		SDLResourceDeleter());
+}
+
+SharedTexture CreateSharedTextureFromSurface(SDL_Renderer *renderer, SDL_Surface *surface)
+{
+	return SharedTexture(
+		SDL_CreateTextureFromSurface(renderer, surface),
+		SDLResourceDeleter());
+}
+
+SharedTexture LoadSharedTexture(SDL_Renderer *renderer, const std::string &_img_path)
+{
+	return SharedTexture(
+		IMG_LoadTexture(renderer, _img_path.c_str()),
+		SDLResourceDeleter());
+}
+
+std::unique_ptr<SDL_Texture, SDLResourceDeleter>
+CreateUniqueTextureFromSurface(SDL_Renderer *renderer, SDL_Surface *surface)
+{
+	return std::unique_ptr<SDL_Texture, SDLResourceDeleter>(SDL_CreateTextureFromSurface(renderer, surface));
+}
+
+inline UniqueHaptic
+CreateUniqueHaptic(const int id)
+{
+	return UniqueHaptic(
+		SDL_HapticOpen(id),
+		SDLResourceDeleter());
+}
+
+SharedHaptic
+CreateSharedHaptic(const int id = 0)
+{
+	return SharedHaptic(
+		SDL_HapticOpen(id),
+		SDLResourceDeleter());
+}
+
+void RenderClear(SDL_Renderer *renderer, const uint8_t &red, const uint8_t &green,
+				 const uint8_t &blue,
+				 const uint8_t &alpha = 0xFF)
+{
+	SDL_SetRenderDrawColor(renderer, red, green, blue, alpha);
+	SDL_RenderClear(renderer);
+}
+
+auto DestroyTextureSafe = [](SDL_Texture *texture)
+{
+	if (texture != nullptr)
+	{
+		SDL_DestroyTexture(texture);
+		texture = nullptr;
+	}
+};
+
+class Haptics
+{
+public:
+	Haptics()
+	{
+	}
+	void create()
+	{
+		if (SDL_Init(SDL_INIT_HAPTIC) < 0)
+		{
+			GLogger.Log(Logger::Level::Error, "Failed to initialize SDL Haptic subsystem:", std::string(SDL_GetError()));
 		}
 
-		void startRedrawSession()
+		if (SDL_NumHaptics() < 1)
 		{
-			if (!redrawRequested)
+			GLogger.Log(Logger::Level::Info, "No haptic devices found.");
+		}
+
+		haptic_dev = CreateSharedHaptic();
+		if (haptic_dev.get() == nullptr)
+		{
+			GLogger.Log(Logger::Level::Error, "Failed to open haptic device:",std::string(SDL_GetError()));
+			return;
+		}
+
+		GLogger.Log(Logger::Level::Info, "Haptic device opened:", std::string(SDL_HapticName(0)));
+
+		// Check if the device supports a simple rumble effect.
+		if (SDL_HapticQuery(haptic_dev.get()) & SDL_HAPTIC_LEFTRIGHT)
+		{
+			SDL_HapticEffect effect;
+			SDL_memset(&effect, 0, sizeof(SDL_HapticEffect)); // Initialize to zero
+
+			effect.type = SDL_HAPTIC_LEFTRIGHT;
+			effect.leftright.length = 30;			  // duration
+			effect.leftright.large_magnitude = 32767; // Max strength
+			effect.leftright.small_magnitude = 32767; // Max strength
+
+			// Upload the effect to the device
+			effect_id = SDL_HapticNewEffect(haptic_dev.get(), &effect);
+			if (effect_id < 0)
 			{
-				std::scoped_lock lock(AdaptiveVsyncMux);
-				adaptiveVsync->no_sleep_requests++;
-				redrawRequested = true;
+				GLogger.Log(Logger::Level::Error, "Failed to create haptic effect:", std::string(SDL_GetError()));
 			}
 		}
-
-		void stopRedrawSession()
+		else
 		{
-			if (redrawRequested)
+			GLogger.Log(Logger::Level::Error,"Device does not support left/right rumble. You can try other effect types.");
+		}
+	}
+
+	void play_effect()
+	{
+		if (haptic_dev.get() != nullptr && effect_id >= 0)
+		{
+			// Run the effect once. The '1' means it will play 1 time.
+			if (SDL_HapticRunEffect(haptic_dev.get(), effect_id, 1) != 0)
 			{
-				std::scoped_lock lock(AdaptiveVsyncMux);
-				adaptiveVsync->no_sleep_requests--;
-				redrawRequested = false;
+				GLogger.Log(Logger::Level::Error, "Failed to run haptic effect:", std::string(SDL_GetError()));
+			} /*else {
+			SDL_Log("Haptic effect played.");
+		}*/
+		}
+	}
+
+	~Haptics()
+	{
+		if (haptic_dev.get() != nullptr)
+		{
+			if (effect_id >= 0)
+			{
+				SDL_HapticDestroyEffect(haptic_dev.get(), effect_id);
 			}
 		}
+		GLogger.Log(Logger::Level::Info, "Haptic device closed.");
+	}
 
-		bool shouldReDrawFrame()
-		{
-			return redrawRequested;
-		}
+private:
+	SharedHaptic haptic_dev = nullptr;
+	int effect_id = -1;
+};
 
-	private:
-		bool redrawRequested = false;
-		AdaptiveVsync *adaptiveVsync = nullptr;
+struct IViewAttributes
+{
+	SDL_FRect bounds = {0.f, 0.f, 0.f, 0.f};
+	SDL_FRect min_bounds = {0.f, 0.f, 1.f, 1.f};
+	float rel_x = 0.f, rel_y = 0.f;
+	std::string label = "nolabel";
+	std::string type = "";
+	std::string action = "default";
+	std::string id = "null";
+	bool required = false;
+	bool is_form = false;
+	bool prevent_default_behaviour = false;
+	bool hidden = false;
+	bool disabled = false;
+};
+
+class IView
+{
+public:
+	IView() = default;
+	virtual ~IView() = default;
+
+public:
+	SDL_FRect bounds = {0.f, 0.f, 0.f, 0.f};
+	SDL_FRect min_bounds = {0.f, 0.f, 1.f, 1.f};
+	float rel_x = 0.f, rel_y = 0.f;
+	std::string label = "nolabel";
+	std::string type = "";
+	std::string action = "default";
+	std::string id = "null";
+	bool required = false;
+	bool is_form = false;
+	bool prevent_default_behaviour = false;
+	bool hidden = false;
+	bool disabled = false;
+	bool auto_hide = false;
+	// bool relative_pos = false;
+	std::function<void()> onHideCallback = nullptr;
+	std::vector<IView *> childViews;
+
+public:
+	IView *getView()
+	{
+		return this;
+	}
+
+	IView *getChildView(std::size_t child_index = 0)
+	{
+		return childViews[child_index];
+	}
+
+	IView *addChildView(IView *_child)
+	{
+		return childViews.emplace_back(_child);
+	}
+
+	virtual void attachRelativeView(IView *_prev_view, float _margin = 0.f)
+	{
+		bounds.y = _prev_view->bounds.y + _prev_view->bounds.h + _margin;
+	}
+
+	IView *clearAndAddChildView(IView *_child)
+	{
+		childViews.clear();
+		return childViews.emplace_back(_child);
+	}
+
+	IView &clearChildViews()
+	{
+		childViews.clear();
+		return *this;
+	}
+
+	SDL_FRect &getBoundsBox()
+	{
+		return bounds;
+	}
+
+	float getRealX() { return rel_x + bounds.x; }
+
+	float getRealY() { return rel_y + bounds.y; }
+
+	SDL_FPoint getRealPos() { return {rel_x + bounds.x, rel_y + bounds.y}; }
+
+	void setBoundsBox(const SDL_FRect &_bounds, const SDL_FRect &_min_bounds = {0.f})
+	{
+		bounds = _bounds;
+	}
+
+	virtual void updatePosBy(float dx, float dy)
+	{
+		bounds.x += dx, bounds.y += dy;
 	};
 
-	class CacheRenderTarget
+	virtual void updatePos(float x, float y)
 	{
-	public:
-		CacheRenderTarget(SDL_Renderer *_renderer) : targetCache(SDL_GetRenderTarget(_renderer)) {}
-		CacheRenderTarget(const CacheRenderTarget &) = delete;
-		CacheRenderTarget(const CacheRenderTarget &&) = delete;
-		void cache(SDL_Renderer *_renderer)
-		{
-			targetCache = SDL_GetRenderTarget(_renderer);
-		}
-		void release(SDL_Renderer *_renderer)
-		{
-			SDL_SetRenderTarget(_renderer, targetCache);
-		}
-
-	private:
-		SDL_Texture *targetCache;
+		bounds.x = x, bounds.y = y;
 	};
 
-	SDL_Color CACHE_COLOR;
-	auto CacheRenderColor = [](SDL_Renderer *renderer)
+	virtual void updatePosX(float x)
 	{
-		SDL_GetRenderDrawColor(renderer, &CACHE_COLOR.r, &CACHE_COLOR.g, &CACHE_COLOR.b,
-							   &CACHE_COLOR.a);
+		bounds.x = x;
 	};
 
-	auto RestoreCachedRenderColor = [](SDL_Renderer *renderer)
+	virtual void updatePosY(float y)
 	{
-		SDL_SetRenderDrawColor(renderer, CACHE_COLOR.r, CACHE_COLOR.g, CACHE_COLOR.b,
-							   CACHE_COLOR.a);
+		bounds.y = y;
 	};
 
-	class ScopeTimer
+	void setOnHide(std::function<void()> _onHideCallback)
 	{
-	public:
-		ScopeTimer(const char *name) : m_name(name)
-		{
-			m_start = std::chrono::high_resolution_clock::now();
-		}
-
-		~ScopeTimer()
-		{
-			std::chrono::duration<double> dt = (std::chrono::high_resolution_clock::now() -
-												m_start);
-			SDL_Log("ScopeTimer_ID: %s: %f secs", m_name.c_str(), dt.count());
-		}
-
-		ScopeTimer(const ScopeTimer &) = delete;
-
-		ScopeTimer(const ScopeTimer &&) = delete;
-
-	private:
-		std::string m_name;
-		std::chrono::steady_clock::time_point m_start;
-	};
-
-	struct ResourceDeleter
-	{
-		void operator()(SDL_Window *window_) const
-		{
-			if (window_ != nullptr)
-				SDL_DestroyWindow(window_);
-			window_ = nullptr;
-			SDL_Log("Window Destroyed!");
-		}
-
-		void operator()(SDL_Renderer *renderer_) const
-		{
-			if (renderer_ != nullptr)
-				SDL_DestroyRenderer(renderer_);
-			renderer_ = nullptr;
-			SDL_Log("Renderer Destroyed!");
-		}
-
-		void operator()(SDL_Texture *texture_) const
-		{
-			if (texture_ != nullptr)
-			{
-				SDL_DestroyTexture(texture_);
-				texture_ = nullptr;
-			}
-		}
-	};
-
-	using UniqueTexture = std::unique_ptr<SDL_Texture, ResourceDeleter>;
-	using SharedTexture = std::shared_ptr<SDL_Texture>;
-
-	std::unique_ptr<SDL_Window, ResourceDeleter>
-	CreateUniqueWindow(const char *title, Width<int> w,
-					   Height<int> h, uint32_t flags)
-	{
-		return std::unique_ptr<SDL_Window, ResourceDeleter>(
-			SDL_CreateWindow(title, w.get(), h.get(), flags), ResourceDeleter());
+		onHideCallback = _onHideCallback;
 	}
 
-	std::shared_ptr<SDL_Window>
-	CreateSharedWindow(const char *title, int w, int h, uint32_t flags)
+	IView *toggleView()
 	{
-		return std::shared_ptr<SDL_Window>(
-			SDL_CreateWindow(title, w, h, flags), ResourceDeleter());
-	}
-
-	std::unique_ptr<SDL_Renderer, ResourceDeleter>
-	CreateUniqueRenderer(SDL_Window *window, int index, uint32_t flags)
-	{
-		return std::unique_ptr<SDL_Renderer, ResourceDeleter>(
-			SDL_CreateRenderer(window, NULL, flags), ResourceDeleter());
-	}
-
-	std::shared_ptr<SDL_Renderer>
-	CreateSharedRenderer(SDL_Window *window, int index, uint32_t flags)
-	{
-		return std::shared_ptr<SDL_Renderer>(
-			SDL_CreateRenderer(window, NULL, flags), ResourceDeleter());
-	}
-
-	inline UniqueTexture
-	CreateUniqueTexture(SDL_Renderer *renderer, Uint32 format, int access, const int w,
-						const int h)
-	{
-		return UniqueTexture(
-			SDL_CreateTexture(renderer, format, access, w, h),
-			ResourceDeleter());
-	}
-
-	SharedTexture
-	CreateSharedTexture(SDL_Renderer *renderer, Uint32 format, int access, const int &w,
-						const int &h)
-	{
-		return SharedTexture(
-			SDL_CreateTexture(renderer, format, access, w, h),
-			ResourceDeleter());
-	}
-
-	SharedTexture CreateSharedTextureFromSurface(SDL_Renderer *renderer, SDL_Surface *surface)
-	{
-		return SharedTexture(
-			SDL_CreateTextureFromSurface(renderer, surface),
-			ResourceDeleter());
-	}
-
-	SharedTexture LoadSharedTexture(SDL_Renderer *renderer, const std::string &_img_path)
-	{
-		return SharedTexture(
-			IMG_LoadTexture(renderer, _img_path.c_str()),
-			ResourceDeleter());
-	}
-
-	std::unique_ptr<SDL_Texture, ResourceDeleter>
-	CreateUniqueTextureFromSurface(SDL_Renderer *renderer, SDL_Surface *surface)
-	{
-		return std::unique_ptr<SDL_Texture, ResourceDeleter>(SDL_CreateTextureFromSurface(renderer, surface));
-	}
-
-	auto DestroyTextureSafe = [](SDL_Texture *texture)
-	{
-		if (texture != nullptr)
-		{
-			SDL_DestroyTexture(texture);
-			texture = nullptr;
-		}
-	};
-
-	class IView
-	{
-	public:
-		IView() = default;
-
-	public:
-		SDL_FRect bounds = {0.f, 0.f, 0.f, 0.f};
-		SDL_FRect min_bounds = {0.f, 0.f, 1.f, 1.f};
-		std::string label = "nolabel";
-		std::string type = "";
-		std::string action = "default";
-		std::string id = "null";
-		bool required = false;
-		bool is_form = false;
-		bool prevent_default_behaviour = false;
-		bool hidden = false;
-		bool disabled = false;
-		std::function<void()> onHideCallback = nullptr;
-		std::vector<IView *> childViews;
-
-	public:
-		IView *getView()
-		{
-			return this;
-		}
-
-		IView *getChildView(std::size_t child_index = 0)
-		{
-			return childViews[child_index];
-		}
-
-		IView *addChildView(IView *_child)
-		{
-			return childViews.emplace_back(_child);
-		}
-
-		IView *clearAndAddChildView(IView *_child)
-		{
-			childViews.clear();
-			return childViews.emplace_back(_child);
-		}
-
-		IView &clearChildViews()
-		{
-			childViews.clear();
-			return *this;
-		}
-
-		SDL_FRect &getBoundsBox()
-		{
-			return bounds;
-		}
-
-		void setBoundsBox(const SDL_FRect &_bounds, const SDL_FRect &_min_bounds = {0.f})
-		{
-			bounds = _bounds;
-		}
-
-		virtual void updatePosBy(float dx, float dy)
-		{
-			bounds.x += dx, bounds.y += dy;
-		};
-
-		void setOnHide(std::function<void()> _onHideCallback)
-		{
-			onHideCallback = _onHideCallback;
-		}
-
-		IView *toggleView()
-		{
-			if (hidden)
-			{
-				hidden = false;
-				disabled = false;
-			}
-			else
-			{
-				hidden = true;
-				disabled = true;
-			}
-			return this;
-		}
-
-		IView *hide()
-		{
-			for (auto child : childViews)
-				child->hide();
-			hidden = true;
-			if (onHideCallback)
-				onHideCallback();
-			return this;
-		}
-
-		bool isHidden() { return hidden; }
-
-		IView *show()
+		if (hidden)
 		{
 			hidden = false;
-			return this;
-		}
-
-		IView *disable()
-		{
-			for (auto child : childViews)
-				child->disable();
-			disabled = true;
-			return this;
-		}
-		IView *enable()
-		{
-			for (auto child : childViews)
-				child->enable();
 			disabled = false;
-			return this;
 		}
-
-		bool isDisabled() { return disabled; }
-
-		virtual bool handleEvent() = 0;
-
-		virtual void Draw() = 0;
-
-		// get %val of context height
-		/// @brief
-		/// @tparam T
-		/// @param val
-		/// @return
-		template <typename T>
-		constexpr inline T ph(const T &val) const { return ((val * bounds.h) / static_cast<decltype(val)>(100)); }
-
-		// get %val of context width
-		template <typename T>
-		constexpr inline T pw(const T &val) const { return ((val * bounds.w) / static_cast<decltype(val)>(100)); }
-
-		// get %val of ref
-		template <typename T>
-		constexpr inline T to_cust(const T &val, const T &ref) const { return ((val * ref) / static_cast<decltype(val)>(100)); }
-
-		// get %val of min(a,b)
-		template <typename T>
-		constexpr inline T to_min(const T &val, const T &a, const T &b)
+		else
 		{
-			if (a < b || a == b)
-				return toCust(val, a);
-			else if (a > b)
-				return toCust(val, b);
+			hidden = true;
+			disabled = true;
 		}
+		return this;
+	}
 
-	private:
-	};
-
-	class ViewTree
+	IView *hide()
 	{
-	public:
-		auto addView(const std::string &label, IView *iview)
-		{
-			indexer[label] = view_tree.size();
-			return view_tree.emplace_back(iview);
-		}
+		for (auto child : childViews)
+			child->hide();
+		hidden = true;
+		if (onHideCallback)
+			onHideCallback();
+		return this;
+	}
 
-		auto removeView(const std::string &label)
-		{
-			if (indexer.contains(label))
-			{
-				view_tree.erase(view_tree.begin() + indexer[label]);
-				indexer.erase(label);
-			}
-		}
+	bool isHidden() { return hidden; }
 
-		bool isEmpty()
-		{
-			return view_tree.empty();
-		}
+	IView *show()
+	{
+		hidden = false;
+		return this;
+	}
 
-		void toggleView(const std::string &label)
-		{
-			if (indexer.contains(label))
-			{
-				if (view_tree[indexer[label]]->isHidden())
-				{
-					view_tree[indexer[label]]->show();
-					view_tree[indexer[label]]->enable();
-				}
-				else
-				{
-					view_tree[indexer[label]]->hide();
-					view_tree[indexer[label]]->disable();
-				}
-			}
-		}
+	IView *disable()
+	{
+		for (auto child : childViews)
+			child->disable();
+		disabled = true;
+		return this;
+	}
+	IView *enable()
+	{
+		for (auto child : childViews)
+			child->enable();
+		disabled = false;
+		return this;
+	}
 
-		void showAndEnable(const std::string &label)
+	bool isDisabled() { return disabled; }
+
+	virtual bool handleEvent() = 0;
+
+	virtual void onUpdate() {};
+
+	virtual void draw() = 0;
+
+	// get %val of context height
+	/// @brief
+	/// @tparam T
+	/// @param val
+	/// @return
+	template <typename T>
+	constexpr inline T ph(const T &val) const { return ((val * bounds.h) / static_cast<decltype(val)>(100)); }
+
+	// get %val of context width
+	template <typename T>
+	constexpr inline T pw(const T &val) const { return ((val * bounds.w) / static_cast<decltype(val)>(100)); }
+
+	// get %val of ref
+	template <typename T>
+	constexpr inline T to_cust(const T &val, const T &ref) const { return ((val * ref) / static_cast<decltype(val)>(100)); }
+
+	// get %val of min(a,b)
+	template <typename T>
+	constexpr inline T to_min(const T &val, const T &a, const T &b)
+	{
+		if (a < b || a == b)
+			return toCust(val, a);
+		else if (a > b)
+			return toCust(val, b);
+	}
+
+private:
+};
+
+class ViewTree
+{
+public:
+	auto addView(const std::string &label, IView *iview)
+	{
+		indexer[label] = view_tree.size();
+		return view_tree.emplace_back(iview);
+	}
+
+	auto removeView(const std::string &label)
+	{
+		if (indexer.contains(label))
 		{
-			if (indexer.contains(label))
+			view_tree.erase(view_tree.begin() + indexer[label]);
+			indexer.erase(label);
+		}
+	}
+
+	bool isEmpty()
+	{
+		return view_tree.empty();
+	}
+
+	void toggleView(const std::string &label)
+	{
+		if (indexer.contains(label))
+		{
+			if (view_tree[indexer[label]]->isHidden())
 			{
 				view_tree[indexer[label]]->show();
 				view_tree[indexer[label]]->enable();
 			}
-		}
-
-		void hideAndDisable(const std::string &label)
-		{
-			if (indexer.contains(label))
+			else
 			{
 				view_tree[indexer[label]]->hide();
 				view_tree[indexer[label]]->disable();
 			}
 		}
+	}
 
-		auto setViewHidden(const std::string &label, bool _hidden)
+	void showAndEnable(const std::string &label)
+	{
+		if (indexer.contains(label))
 		{
-			if (indexer.contains(label))
-				_hidden ? view_tree[indexer[label]]->hide() : view_tree[indexer[label]]->show();
+			view_tree[indexer[label]]->show();
+			view_tree[indexer[label]]->enable();
 		}
+	}
 
-		auto setViewDisabled(const std::string &label, bool _disabled)
+	void hideAndDisable(const std::string &label)
+	{
+		if (indexer.contains(label))
 		{
-			if (indexer.contains(label))
-				_disabled ? view_tree[indexer[label]]->disable() : view_tree[indexer[label]]->enable();
+			view_tree[indexer[label]]->hide();
+			view_tree[indexer[label]]->disable();
 		}
+	}
 
-		auto setTreeHidden(bool _hidden)
-		{
-			hidden_ = _hidden;
-		}
+	auto setViewHidden(const std::string &label, bool _hidden)
+	{
+		if (indexer.contains(label))
+			_hidden ? view_tree[indexer[label]]->hide() : view_tree[indexer[label]]->show();
+	}
 
-		auto setTreeDisabled(bool _disabled)
-		{
-			disabled_ = _disabled;
-		}
+	auto setViewDisabled(const std::string &label, bool _disabled)
+	{
+		if (indexer.contains(label))
+			_disabled ? view_tree[indexer[label]]->disable() : view_tree[indexer[label]]->enable();
+	}
 
-		void handleEvent()
+	auto setTreeHidden(bool _hidden)
+	{
+		hidden_ = _hidden;
+	}
+
+	auto setTreeDisabled(bool _disabled)
+	{
+		disabled_ = _disabled;
+	}
+
+	bool handleEvent()
+	{
+		if (not hidden_ /*and not disabled_*/)
 		{
-			if (not hidden_ and not disabled_)
+			for (auto view_index = view_tree.size(); view_index > 0; --view_index)
 			{
-				for (auto view_index = view_tree.size(); view_index > 0; --view_index)
-				{
-					if (not view_tree[view_index - 1]->isHidden())
-						if (view_tree[view_index - 1]->handleEvent())
-							return;
-				}
+				auto &iv = view_tree[view_index - 1];
+				if (not iv->isHidden())
+					if (iv->handleEvent())
+						return true;
 			}
 		}
+		return false;
+	}
 
-		void forceHandleEventAll()
-		{
-			for (auto view_ : view_tree)
-				view_->handleEvent();
-		}
+	void forceHandleEventAll()
+	{
+		for (auto view_ : view_tree)
+			view_->handleEvent();
+	}
 
-		void forceDrawAll()
+	void onUpdate()
+	{
+		if (not hidden_)
 		{
-			for (auto view : view_tree)
-				view->Draw();
-		}
-
-		void Draw()
-		{
-			if (not hidden_)
+			for (int view_index = 0; view_index < view_tree.size(); ++view_index)
 			{
-				for (int view_index = 0; view_index < view_tree.size(); ++view_index)
-				{
-					auto &view = view_tree[view_index];
-					if (not view->isHidden())
-						view->Draw();
-				}
+				auto &view = view_tree[view_index];
+				if (not view->isHidden())
+					view->onUpdate();
 			}
 		}
-
-	public:
-		std::optional<IView *> operator[](const std::string &label)
-		{
-			if (indexer.contains(label))
-				return view_tree[indexer[label]];
-			return {};
-		}
-
-	private:
-		std::unordered_map<std::string, size_t> indexer;
-		std::vector<IView *> view_tree;
-		bool hidden_ = false, disabled_;
-		// ViewTree child_tree();
 	};
 
-	class Context
+	void forceDrawAll()
 	{
-	public:
-		SDL_Renderer *renderer;
-		SDL_Window *window;
-		AdaptiveVsync *adaptiveVsync;
-		SDL_Event *event;
-		// parent view
-		IView *pv;
-		IView *cv;
+		for (auto view : view_tree)
+			view->draw();
+	}
 
-		Context() = default;
-
-		Context(Context *_context)
-		{
-			setContext(_context);
-		}
-
-		void setContext(Context *_context)
-		{
-			renderer = _context->renderer;
-			window = _context->window;
-			pv = _context->pv;
-			adaptiveVsync = _context->adaptiveVsync;
-			event = _context->event;
-			RedrawTriggeredEvent = _context->RedrawTriggeredEvent;
-		}
-
-		void setView(IView *_cv)
-		{
-			cv = _cv;
-		}
-
-		Context *getContext()
-		{
-			return this;
-		}
-
-		void wakeGui()
-		{
-			SDL_PushEvent(RedrawTriggeredEvent);
-		}
-
-	protected:
-		SDL_Event *RedrawTriggeredEvent;
-	};
-
-	class DisplayInfo : Context
+	void draw()
 	{
-	public:
-		DisplayInfo(const DisplayInfo &) = delete;
-		DisplayInfo(const DisplayInfo &&) = delete;
-
-		using Context::setContext;
-
-		static DisplayInfo &Get()
+		if (not hidden_)
 		{
-			static DisplayInfo instance;
-			return instance;
+			for (int view_index = 0; view_index < view_tree.size(); ++view_index)
+			{
+				auto &view = view_tree[view_index];
+				if (not view->isHidden())
+					view->draw();
+			}
 		}
+	}
 
-		DeviceDisplayType GetDeviceDisplayType()
+public:
+	IView *operator[](const std::string &label)
+	{
+		if (indexer.contains(label))
+			return view_tree[indexer[label]];
+		return nullptr;
+	}
+
+private:
+	std::unordered_map<std::string, size_t> indexer;
+	std::vector<IView *> view_tree;
+	bool hidden_ = false, disabled_;
+	// ViewTree child_tree();
+};
+
+class Application;
+
+class Context
+{
+public:
+	SDL_Renderer *renderer;
+	SDL_Window *window;
+	Application* app;
+	AdaptiveVsync *adaptiveVsync;
+	SDL_Event *event;
+	Haptics *haptics;
+	// parent view
+	IView *pv;
+	IView *cv;
+	bool skipFrame = false;
+
+	Context() = default;
+
+	Context(Context *_context)
+	{
+		setContext(_context);
+	}
+
+	void setContext(Context *_context, IView *parent = nullptr)
+	{
+		renderer = _context->renderer;
+		window = _context->window;
+		if (parent == nullptr)
 		{
-			return display_type;
+			pv = _context->cv;
 		}
-
-		void initDisplaySystem(const float &display_index = 0.f)
+		else
 		{
-			// SDL_GetDisplayDPI() - not reliable across platforms, approximately replaced by multiplying `display_scale` in the structure returned by SDL_GetDesktopDisplayMode() times 160 on iPhone and Android, and 96 on other platforms.
-			auto *_mode = SDL_GetCurrentDisplayMode(0);
+			pv = parent;
+		}
+		/*
+		cv->rel_x=pv->rel_x+pv->bounds.x;
+		cv->rel_y=pv->rel_y+pv->bounds.y;*/
+		adaptiveVsync = _context->adaptiveVsync;
+		event = _context->event;
+		haptics = _context->haptics;
+		RedrawTriggeredEvent = _context->RedrawTriggeredEvent;
+	}
+
+	void setView(IView *_cv)
+	{
+		cv = _cv;
+	}
+
+	Context *getContext()
+	{
+		return this;
+	}
+
+	void wakeGui()
+	{
+		SDL_PushEvent(RedrawTriggeredEvent);
+	}
+
+protected:
+	SDL_Event *RedrawTriggeredEvent;
+};
+
+class DisplayInfo : Context
+{
+public:
+	DisplayInfo(const DisplayInfo &) = delete;
+	DisplayInfo(const DisplayInfo &&) = delete;
+
+	using Context::setContext;
+
+	static DisplayInfo &Get()
+	{
+		static DisplayInfo instance;
+		return instance;
+	}
+
+	DeviceDisplayType GetDeviceDisplayType()
+	{
+		return display_type;
+	}
+
+	void initDisplaySystem(const float &display_index = 0.f)
+	{
+		// SDL_GetDisplayDPI() - not reliable across platforms, approximately replaced by multiplying `display_scale` in the structure returned by SDL_GetDesktopDisplayMode() times 160 on iPhone and Android, and 96 on other platforms.
+		/*auto *_mode = SDL_GetCurrentDisplayMode(0);
 			int windowWidth, windowHeight;
 			int drawableWidth, drawableHeight;
 			SDL_GetRendererInfo(renderer, &rendererInfo);
@@ -668,3817 +942,3745 @@ namespace Volt
 			dpiScale = (float)dm->h / (float)windowHeight;
 			V_DPI = dpiScale;
 			auto *ddm = SDL_GetDesktopDisplayMode(1);
-
 			DDPI = 160.f * ds;
-#ifdef _WIN32
+			#ifdef _WIN32
 			DDPI = 96.f * ds;
+			#endif
+*/
+		DDPI = 160.f;
+#ifdef _WIN32
+		DDPI = 96.f;
 #endif
-			SDL_Log("PixelDensity:%f DispScale:%f DdmScale:%f DispContentScale:%f HDPI:%f VDPI:%f Mode.W:%d Mode.H:%d", DDPI, ds, ddm->pixel_density, dcs, H_DPI, V_DPI, dm->w, dm->h);
-		}
+		/*GLogger.Log(Logger::Level::Info, "PixelDensity:" + DDPI + " DispScale:" + ds + " DdmScale:" + ddm->pixel_density + " DispContentScale:" + dcs + " HDPI:" + H_DPI + " VDPI:" + V_DPI + " Mode.W:" + dm->w + " Mode.H:" + dm->h);*/
+	}
 
-		void handleEvent()
-		{
-			if (event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED or event->type == SDL_EVENT_WINDOW_MAXIMIZED)
-			{
-				OldRenderW = RenderW;
-				OldRenderH = RenderH;
-				int newW, newH;
-				SDL_GetWindowSize(window, &newW, &newH);
-				RenderW = static_cast<float>(newW);
-				RenderH = static_cast<float>(newH);
-			}
-		}
-
-		template <typename T>
-		constexpr T toUpdatedWidth(const T &_val)
-		{
-			return ((T)(RenderW)*_val) / (T)(OldRenderW);
-		}
-
-		template <typename T>
-		constexpr T toUpdatedHeight(const T &_val)
-		{
-			return ((T)(RenderH)*_val) / (T)(OldRenderH);
-		}
-
-		// get %val of context height
-		template <typename T>
-		constexpr inline T ph(const T &val) const { return ((val * RenderH) / static_cast<decltype(val)>(100)); }
-
-		// get %val of context width
-		template <typename T>
-		constexpr inline T pw(const T &val) const { return ((val * RenderW) / static_cast<decltype(val)>(100)); }
-
-		// get %val of ref
-		template <typename T>
-		constexpr inline T to_cust(const T &val, const T &ref) const { return ((val * ref) / static_cast<decltype(val)>(100)); }
-
-		template <typename T>
-		constexpr inline T dpToPx(const T &dp) const
-		{
-			return (DDPI * dp) / 160.f;
-		}
-
-		float RenderH, RenderW, DPRenderH, DPRenderW, DDPI, H_DPI, V_DPI, V_DPI_R, H_DPI_R;
-		float OldRenderH, OldRenderW;
-		int DrawableH, DrawableW;
-		int maxTextureWidth, maxTextureHeight;
-		SDL_DisplayMode mode;
-		DeviceDisplayType display_type;
-		SDL_RendererInfo rendererInfo;
-
-	private:
-		DisplayInfo()
-		{
-			display_type = DeviceDisplayType::UNKOWN;
-			DrawableH = 0, DrawableW = 0;
-			RenderH = RenderW = DPRenderH = DPRenderW = DDPI = H_DPI = V_DPI = V_DPI_R = H_DPI_R = 1.f;
-		}
-	};
-
-	class Application : protected Context, IView
+	void handleEvent()
 	{
-	public:
-		struct Config
+		if (event->type == EVT_WPSC or event->type == EVT_WMAX)
 		{
-			std::string title{"Volt Application"};
-			int w = 0, h = 0;
-			int window_flags = SDL_WINDOW_HIGH_PIXEL_DENSITY;
-			int renderer_flags = SDL_RENDERER_ACCELERATED /*| SDL_RENDERER_PRESENTVSYNC*/;
-			bool init_ttf = true;
-			bool init_img = true;
-			bool init_everyting = true;
-			bool mouse_touch_events = true;
-		};
-
-	private:
-		AdaptiveVsync adaptiveVsync_;
-		SDL_Event event_;
-
-	public:
-		using Context::adaptiveVsync;
-		using Context::event;
-		using Context::getContext;
-		using Context::renderer;
-		using Context::window;
-		using IView::bounds;
-		using IView::ph;
-		using IView::pw;
-		using IView::to_cust;
-
-	public:
-		SDL_Event RedrawTriggeredEvent_;
-		UniqueTexture texture;
-		std::string PrefLocale, CurrentLocale;
-		std::string BasePath{}, PrefPath{};
-		bool quit = false;
-		bool show_fps = false;
-
-	public:
-		Application()
-		{
-			std::setlocale(LC_CTYPE, "en_US.UTF-8");
+			OldRenderW = RenderW;
+			OldRenderH = RenderH;
+			int newW, newH;
+			SDL_GetWindowSize(window, &newW, &newH);
+			RenderW = static_cast<float>(newW);
+			RenderH = static_cast<float>(newH);
 		}
-
-	public:
-		short create(Application::Config config);
-		{
-			if (Config.mouse_touch_events)
-				SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "1");
-			if (config.init_everyting)
-				SDL_Init(SDL_INIT_EVERYTHING);
-			if (config.init_ttf)
-				TTF_Init();
-			if (config.init_img)
-				IMG_Init(IMG_INIT_PNG);
-
-			window = SDL_CreateWindow(config.title, config.w, config.h, config.window_flags);
-			SDL_Rect usb_b{0};
-			SDL_GetWindowSize(window, &usb_b.w, &usb_b.h);
-			SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
-			// SDL_SetHint(SDL_HINT_RENDER_DRIVER, "direct3d");
-			renderer = SDL_CreateRenderer(window, NULL, config.renderer_flags);
-			DisplayInfo::Get().setContext(this);
-			DisplayInfo::Get().initDisplaySystem(0);
-			bounds.w = DisplayInfo::Get().RenderW;
-			bounds.h = DisplayInfo::Get().RenderH;
-			pv = this;
-
-			SDL_SetHint(SDL_HINT_RENDER_LINE_METHOD, "1");
-			// SDL_SetHint(SDL_HINT_RENDER_LINE_METHOD, "3");
-
-			adaptiveVsync = &adaptiveVsync_;
-			event = &event_;
-			RedrawTriggeredEvent = &RedrawTriggeredEvent_;
-			RedrawTriggeredEvent->type = SDL_RegisterEvents(1);
-			SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-			DisplayInfo::Get().setContext(this);
-
-			BasePath = SDL_GetBasePath();
-			PrefPath = SDL_GetPrefPath("Volt", config.title);
-			GLogger.setOutputFile({PrefPath});
-			GLogger.Log(Logger::Level::Info, "BasePath:" + BasePath);
-			GLogger.Log(Logger::Level::Info, "PrefPath:" + PrefPath);
-			return 1;
-		}
-
-		void run()
-		{
-			tmPrevFrame = SDL_GetTicks();
-			loop();
-		}
-
-		virtual bool handleEvent() override
-		{
-			if (adaptiveVsync->pollEvent(event) != 0)
-			{
-				switch (event->type)
-				{
-				case SDL_EVENT_QUIT:
-					quit = true;
-					break;
-				default:
-					break;
-				}
-			}
-			return false;
-		}
-
-		virtual void draw() = 0;
-
-		auto getFPS()
-		{
-			return fps;
-		}
-
-		~Application()
-		{
-			SDL_DestroyRenderer(renderer);
-			SDL_DestroyWindow(window);
-			renderer = nullptr;
-			window = nullptr;
-			SDL_Quit();
-		}
-
-	private:
-		void loop()
-		{
-			while (not quit)
-			{
-				frames++;
-				handleEvent();
-				draw();
-				SDL_RenderPresent(renderer);
-				tmNowFrame = SDL_GetTicks();
-				if (tmNowFrame >= tmPrevFrame + 1000)
-				{
-					fps = frames;
-					frames = 0;
-					tmPrevFrame = tmNowFrame;
-				}
-			}
-		}
-
-	private:
-		uint32_t tmPrevFrame = 0;
-		uint32_t tmNowFrame = 0;
-		uint32_t frames = 0;
-		uint32_t fps = 0;
-	};
-
-	struct Margin
-	{
-		Margin() = default;
-		Margin(float _left, float _top, float _right, float _bottom) : left(_left), top(_top), right(_right), bottom(_bottom) {}
-		// Left
-		float left = 0.f;
-		// Top
-		float top = 0.f;
-		// Right
-		float right = 0.f;
-		// Bottom
-		float bottom = 0.f;
-	};
+	}
 
 	template <typename T>
-	struct Point
+	constexpr T toUpdatedWidth(const T &_val)
 	{
-		Point(T _x, T _y) : x(_x), y(_y) {}
-		T x, y;
+		return ((T)(RenderW)*_val) / (T)(OldRenderW);
+	}
+
+	template <typename T>
+	constexpr T toUpdatedHeight(const T &_val)
+	{
+		return ((T)(RenderH)*_val) / (T)(OldRenderH);
+	}
+
+	// get %val of context height
+	template <typename T>
+	constexpr inline T ph(const T &val) const { return ((val * RenderH) / static_cast<decltype(val)>(100)); }
+
+	// get %val of context width
+	template <typename T>
+	constexpr inline T pw(const T &val) const { return ((val * RenderW) / static_cast<decltype(val)>(100)); }
+
+	// get %val of ref
+	template <typename T>
+	constexpr inline T to_cust(const T &val, const T &ref) const { return ((val * ref) / static_cast<decltype(val)>(100)); }
+
+	template <typename T>
+	constexpr inline T dpToPx(const T &dp) const
+	{
+		return (DDPI * dp) / 160.f;
+	}
+
+	float RenderH, RenderW, DPRenderH, DPRenderW, DDPI, H_DPI, V_DPI, V_DPI_R, H_DPI_R;
+	float OldRenderH, OldRenderW;
+	int DrawableH, DrawableW;
+	int maxTextureWidth, maxTextureHeight;
+	SDL_DisplayMode mode;
+	DeviceDisplayType display_type;
+	SDL_RendererInfo rendererInfo;
+
+private:
+	DisplayInfo()
+	{
+		display_type = DeviceDisplayType::Unknown;
+		DrawableH = 0, DrawableW = 0;
+		RenderH = RenderW = DPRenderH = DPRenderW = DDPI = H_DPI = V_DPI = V_DPI_R = H_DPI_R = 1.f;
+	}
+};
+
+class Application : protected Context, public IView
+{
+public:
+	struct Config
+	{
+		std::string title{"Volt Application"};
+		int x=100,y=50, w = 320, h = 500;
+		int window_flags = HIGH_PIXEL_DENSITY;
+		int renderer_flags = SDL_RENDERER_ACCELERATED /*| SDL_RENDERER_PRESENTVSYNC*/;
+		bool init_ttf = true;
+		bool init_img = true;
+		bool init_everyting = true;
+		bool mouse_touch_events = true;
 	};
 
-	struct Triangle
-	{
-		SDL_FPoint center{};
-		float h = 0.f;
-		Direction direction;
-		SDL_Color color;
-	};
+public:
+	using Context::adaptiveVsync;
+	using Context::event;
+	using Context::getContext;
+	using Context::renderer;
+	using Context::skipFrame;
+	using Context::window;
+	using IView::bounds;
+	using IView::ph;
+	using IView::pw;
+	using IView::to_cust;
 
-	struct Spline
-	{
-		std::deque<Point<float>> points;
+public:
+	AdaptiveVsync adaptiveVsync_;
+	SDL_Event RedrawTriggeredEvent_;
+	UniqueTexture texture;
+	std::string PrefLocale, CurrentLocale;
+	std::string BasePath{}, PrefPath{};
+	bool quit = false;
+	bool show_fps = false;
+	std::ofstream file;
+	std::ofstream out_app_props_file;
+	Config cfg;
 
-		SDL_FPoint getSplinePoint(float t, bool looped = false)
+public:
+	Application()
+	{
+		std::setlocale(LC_ALL, "en_US.UTF-8");
+	}
+
+public:
+	short create(Application::Config config)
+	{
+		cfg = config;
+		file.open(config.title + "_logs.txt", std::ios::out | std::ios::app);
+		if (file.is_open())
 		{
-			int p0, p1, p2, p3;
-			if (!looped)
+			file << "\n\n\n\n----------NEW LOGGING SESSION----------\n";
+		}
+		GLogger.onLog([this](std::string slog)
+					  {
+			SDL_Log("%s", slog.c_str());
+			if (file.is_open())
 			{
-				p1 = static_cast<int>(t) + 1;
-				p2 = p1 + 1;
-				p3 = p2 + 1;
-				p0 = p1 - 1;
+				file << slog << "\n";
+			} });
+		GLogger.Log(Logger::Level::Info, "sys std::thread::hardware_concurrency:",std::to_string(std::thread::hardware_concurrency()));
+
+		int wnx = -1, wny=-1;
+		if (std::filesystem::exists(config.title + "_props.txt")) {
+			std::ifstream app_props_file;
+			std::string line;
+			app_props_file.open(config.title + "_props.txt", std::ios::in);
+			if (!app_props_file.is_open())
+			{
+				GLogger.Log(Logger::Level::Error, "Failed to open file:", config.title + "_props.txt");
+				return false;
 			}
-			else
+			while (std::getline(app_props_file, line))
 			{
-				p1 = static_cast<int>(t);
-				p2 = (p1 + 1) % points.size();
-				p3 = (p2 + 1) % points.size();
-				p0 = p1 >= 1 ? p1 - 1 : points.size() - 1;
-			}
-			t = t - static_cast<int>(t);
-			const float tt = t * t;
-			const float ttt = tt * t;
-			const float q1 = -ttt + 2.0f * tt - t;
-			const float q2 = 3.0f * ttt - 5.0f * tt + 2.0f;
-			const float q3 = -3.0f * ttt + 4.0f * tt + t;
-			const float q4 = ttt - tt;
-			const float tx = 0.5f * (points[p0].x * q1 + points[p1].x * q2 + points[p2].x * q3 +
-									 points[p3].x * q4);
-			const float ty = 0.5f * (points[p0].y * q1 + points[p1].y * q2 + points[p2].y * q3 +
-									 points[p3].y * q4);
-			return {tx, ty};
-		}
+				std::stringstream ss(line);
+				std::string segment;
+				std::vector<std::string> values;
 
-		SDL_FPoint getSplineGradient(float t, bool looped = false)
-		{
-			int p0, p1, p2, p3;
-			if (!looped)
-			{
-				p1 = (int)t + 1;
-				p2 = p1 + 1;
-				p3 = p2 + 1;
-				p0 = p1 - 1;
-			}
-			else
-			{
-				p1 = (int)t;
-				p2 = (p1 + 1) % points.size();
-				p3 = (p2 + 1) % points.size();
-				p0 = p1 >= 1 ? p1 - 1 : points.size() - 1;
-			}
-			t = t - (int)t;
-			const float tt = t * t;
-			const float q1 = -3.0f * tt + 4.0f * t - 1.0f;
-			const float q2 = 9.0f * tt - 10.0f * t;
-			const float q3 = -9.0f * tt + 8.0f * t + 1.0f;
-			const float q4 = 3.0f * tt - 2.0f * t;
-			const float tx = 0.5f * (points[p0].x * q1 + points[p1].x * q2 + points[p2].x * q3 +
-									 points[p3].x * q4);
-			const float ty = 0.5f * (points[p0].y * q1 + points[p1].y * q2 + points[p2].y * q3 +
-									 points[p3].y * q4);
-			return {tx, ty};
-		}
-	};
-
-	enum class QUADRANT : uint8_t
-	{
-		TOP_LEFT,
-		TOP_RIGHT,
-		BOTTOM_LEFT,
-		BOTTOM_RIGHT
-	};
-
-	void drawPixelFWeight(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_weight, const SDL_Color &_color)
-	{
-		const uint8_t alpha_ = static_cast<uint8_t>(_weight * static_cast<float>(_color.a));
-		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, alpha_);
-		SDL_RenderPoint(_renderer, static_cast<int>(_x), static_cast<int>(_y));
-	}
-
-	void drawPixelWeight(SDL_Renderer *_renderer, const int &_x, const int &_y, const float &_weight, const SDL_Color &_color)
-	{
-		const uint8_t alpha_ = static_cast<uint8_t>(_weight * static_cast<float>(_color.a));
-		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, alpha_);
-		SDL_RenderPoint(_renderer, _x, _y);
-	}
-
-	// Function to rotate a point around the center
-	SDL_FPoint rotatePoint(SDL_FPoint point, SDL_FPoint center, double angle)
-	{
-		double radians = angle * 3.1415926 / 180.0;
-		double s = std::sin(radians);
-		double c = std::cos(radians);
-
-		// Translate point back to origin
-		point.x -= center.x;
-		point.y -= center.y;
-
-		// Rotate point
-		double xnew = point.x * c - point.y * s;
-		double ynew = point.x * s + point.y * c;
-
-		// Translate point back
-		point.x = xnew + center.x;
-		point.y = ynew + center.y;
-
-		return point;
-	}
-
-	std::vector<SDL_Vertex> getTriangleVertices(Triangle _tri)
-	{
-		// Calculate the side length of the equilateral triangle
-		double side = (2 * _tri.h) / std::sqrt(3);
-
-		// Calculate the vertices for the "up" direction
-		SDL_FPoint p1 = {_tri.center.x, _tri.center.y + (2.0 / 3.0) * _tri.h};
-		SDL_FPoint p2 = {_tri.center.x - side / 2, _tri.center.y - (1.0 / 3.0) * _tri.h};
-		SDL_FPoint p3 = {_tri.center.x + side / 2, _tri.center.y - (1.0 / 3.0) * _tri.h};
-
-		// Determine rotation angle based on direction
-		double angle = 0;
-		if (_tri.direction == Direction::Down)
-		{
-			angle = 0;
-		}
-		else if (_tri.direction == Direction::Left)
-		{
-			angle = 90;
-		}
-		else if (_tri.direction == Direction::Up)
-		{
-			angle = 180;
-		}
-		else if (_tri.direction == Direction::Right)
-		{
-			angle = -90;
-		}
-
-		// Rotate vertices based on the direction
-		p1 = rotatePoint(p1, _tri.center, angle);
-		p2 = rotatePoint(p2, _tri.center, angle);
-		p3 = rotatePoint(p3, _tri.center, angle);
-
-		// Create SDL_Vertex with colors
-		SDL_Vertex v1 = {p1, {50, 50, 50, 255}};
-		SDL_Vertex v2 = {p2, {50, 50, 50, 255}};
-		SDL_Vertex v3 = {p3, {50, 50, 50, 255}};
-		return std::vector{v1, v2, v3};
-	}
-
-	void drawFilledTriangle(SDL_Renderer *_renderer, Triangle &_tri)
-	{
-		auto verts = getTriangleVertices(_tri);
-		SDL_RenderGeometry(_renderer, NULL, verts.data(), 3, NULL, 3);
-	}
-
-	void draw_ring(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r, const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
-	{
-		const float outer_r2_ = _outer_r * _outer_r;
-		const float inner_r2_ = _inner_r * _inner_r;
-		const float mid1 = inner_r2_ + ((outer_r2_ - inner_r2_) / 2.f);
-		const float max = (outer_r2_ - inner_r2_);
-		const float max1 = (_outer_r - _inner_r);
-		float bias = 1.f;
-		float prev_bias = 1.f;
-		float res = 1.f;
-		std::vector<SDL_FPoint> points_;
-		for (float y = 0.5f; y <= _outer_r; y += 1.f)
-		{
-			for (float x = 0.5f; x <= _outer_r; x += 1.f)
-			{
-				res = x * x + y * y;
-				if (res <= outer_r2_ && res >= inner_r2_)
+				while (std::getline(ss, segment, ':'))
 				{
-					bias = std::clamp(((1.f - ((fabs(mid1 - res) * 2.f) / max)) * (max1 / 2.f)), 0.f, 1.f);
+					values.push_back(segment);
+				}
+				if (values.size() >= 1)
+				{
+					if (values[0] == "winpos")
+					{
+						wnx = std::atoi(values[1].c_str());
+						wny = std::atoi(values[2].c_str());
+						cfg.x = wnx;
+						cfg.y = wny;
+
+					}
+				}
+			}
+		}
+		//out_app_props_file.open(config.title + "_props.txt", std::ios::out);
+		//if (not out_app_props_file.is_open())
+		//{
+		//	GLogger.Log(Logger::Level::Error, "Failed to open file:", config.title + "_props.txt");
+		//	//file << "\n\n\n\n----------NEW LOGGING SESSION----------\n";
+		//}
+
+		if (config.mouse_touch_events)
+			SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "1");
+		if (config.init_everyting)
+			SDL_Init(SDL_INIT_EVERYTHING);
+		if (config.init_ttf)
+			TTF_Init();
+		if (config.init_img)
+			IMG_Init(IMG_INIT_PNG);
+		// Set the event filter
+		// SDL_SetEventFilter(myEventFilter, nullptr); // Pass nullptr if no user data is needed
+
+		//window = CreateWindow(config.title.c_str(), config.w, config.h, config.window_flags);
+		window = SDL_CreateWindow(config.title.c_str(), cfg.x, cfg.y, config.w, config.h, config.window_flags);
+		SDL_Rect usb_b{0};
+		SDL_GetWindowSize(window, &usb_b.w, &usb_b.h);
+#ifdef _MSC_VER
+		SDL_SetHint(SDL_HINT_RENDER_DRIVER, "direct3d");
+#else
+		SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
+#endif
+		renderer = SDL_CreateRenderer(window, NULL, config.renderer_flags);
+		DisplayInfo::Get().setContext(this);
+		DisplayInfo::Get().initDisplaySystem(0);
+		DisplayInfo::Get().RenderW = usb_b.w;
+		DisplayInfo::Get().RenderH = usb_b.h;
+		bounds.x = 0.f;
+		bounds.y = 0.f;
+		bounds.w = DisplayInfo::Get().RenderW;
+		bounds.h = DisplayInfo::Get().RenderH;
+		pv = this;
+		cv = this;
+#ifndef OLDSDL
+// SDL_SetHint(SDL_HINT_RENDER_LINE_METHOD, "1");
+//  SDL_SetHint(SDL_HINT_RENDER_LINE_METHOD, "3");
+#endif
+
+		if (wnx > -1) {
+			SDL_SetWindowPosition(window, wnx, wny);
+		}
+
+		adaptiveVsync = &adaptiveVsync_;
+		event = &event_;
+		haptics_.create();
+		haptics = &haptics_;
+		RedrawTriggeredEvent = &RedrawTriggeredEvent_;
+		RedrawTriggeredEvent->type = SDL_RegisterEvents(1);
+		SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+		DisplayInfo::Get().setContext(this);
+
+		/*BasePath = SDL_GetBasePath();
+			PrefPath = SDL_GetPrefPath("Volt", config.title.c_str());
+			GLogger.setOutputFile(PrefPath + "logs-" + getDateAndTimeStr() + ".");
+			GLogger.Log(Logger::Level::Info, "BasePath:" + BasePath);
+			GLogger.Log(Logger::Level::Info, "PrefPath:" + PrefPath);
+			*/
+		return 1;
+	}
+
+	void run()
+	{
+		tmPrevFrame = SDL_GetTicks();
+		this->loop();
+	}
+
+	bool handleEvent() override
+	{
+		switch (event->type)
+		{
+		case EVT_QUIT:
+			quit = true;
+			break;
+		case SDL_WINDOWEVENT:
+		{
+			if (event->window.type == SDL_WINDOWEVENT_MOVED) {
+				GLogger.Log(Logger::Level::Info, "window moved");
+			}
+			out_app_props_file.open(cfg.title + "_props.txt", std::ios::out);
+			if (out_app_props_file.is_open())
+			{
+				//GLogger.Log(Logger::Level::Error, "Failed to open file:", config.title + "_props.txt");
+				int wx =0, wy = 0;
+				SDL_GetWindowPosition(window, &wx, &wy);
+				out_app_props_file << "winpos:" << wx << ":" << wy;
+			}
+			out_app_props_file.close();
+			break;
+		}
+		/*case SDL_KEYDOWN:
+			quit = true;
+			break;*/
+		default:
+			break;
+		}
+
+		return false;
+	}
+
+	void draw() override = 0;
+
+	auto getFPS()
+	{
+		return fps;
+	}
+
+	~Application()
+	{
+		SDL_DestroyRenderer(renderer);
+		SDL_DestroyWindow(window);
+		renderer = nullptr;
+		window = nullptr;
+		SDL_Quit();
+	}
+
+private:
+	void loop()
+	{
+		while (not quit)
+		{
+			frames++;
+			if (adaptiveVsync->pollEvent(event) != 0)
+			{
+				Application::handleEvent();
+				this->handleEvent();
+			}
+			if (not skipFrame)
+			{
+				onUpdate();
+				this->draw();
+				SDL_RenderPresent(renderer);
+			}
+			skipFrame = false;
+			tmNowFrame = SDL_GetTicks();
+			if (tmNowFrame >= tmPrevFrame + 1000)
+			{
+				fps = frames;
+				frames = 0;
+				tmPrevFrame = tmNowFrame;
+			}
+		}
+	}
+
+private:
+	Haptics haptics_;
+	SDL_Event event_;
+	uint32_t tmPrevFrame = 0;
+	uint32_t tmNowFrame = 0;
+	uint32_t frames = 0;
+	uint32_t fps = 0;
+};
+
+template <typename T>
+struct Point
+{
+	Point(T _x, T _y) : x(_x), y(_y) {}
+	T x, y;
+};
+
+struct Spline
+{
+	std::deque<SDL_FPoint> points;
+
+	SDL_FPoint getSplinePoint(float t, bool looped = false)
+	{
+		int p0, p1, p2, p3;
+		if (!looped)
+		{
+			p1 = static_cast<int>(t) + 1;
+			p2 = p1 + 1;
+			p3 = p2 + 1;
+			p0 = p1 - 1;
+		}
+		else
+		{
+			p1 = static_cast<int>(t);
+			p2 = (p1 + 1) % points.size();
+			p3 = (p2 + 1) % points.size();
+			p0 = p1 >= 1 ? p1 - 1 : points.size() - 1;
+		}
+		t = t - static_cast<int>(t);
+		const float tt = t * t;
+		const float ttt = tt * t;
+		const float q1 = -ttt + 2.0f * tt - t;
+		const float q2 = 3.0f * ttt - 5.0f * tt + 2.0f;
+		const float q3 = -3.0f * ttt + 4.0f * tt + t;
+		const float q4 = ttt - tt;
+		const float tx = 0.5f * (points[p0].x * q1 + points[p1].x * q2 + points[p2].x * q3 +
+								 points[p3].x * q4);
+		const float ty = 0.5f * (points[p0].y * q1 + points[p1].y * q2 + points[p2].y * q3 +
+								 points[p3].y * q4);
+		return {tx, ty};
+	}
+
+	SDL_FPoint getSplineGradient(float t, bool looped = false)
+	{
+		int p0, p1, p2, p3;
+		if (!looped)
+		{
+			p1 = (int)t + 1;
+			p2 = p1 + 1;
+			p3 = p2 + 1;
+			p0 = p1 - 1;
+		}
+		else
+		{
+			p1 = (int)t;
+			p2 = (p1 + 1) % points.size();
+			p3 = (p2 + 1) % points.size();
+			p0 = p1 >= 1 ? p1 - 1 : points.size() - 1;
+		}
+		t = t - (int)t;
+		const float tt = t * t;
+		const float q1 = -3.0f * tt + 4.0f * t - 1.0f;
+		const float q2 = 9.0f * tt - 10.0f * t;
+		const float q3 = -9.0f * tt + 8.0f * t + 1.0f;
+		const float q4 = 3.0f * tt - 2.0f * t;
+		const float tx = 0.5f * (points[p0].x * q1 + points[p1].x * q2 + points[p2].x * q3 +
+								 points[p3].x * q4);
+		const float ty = 0.5f * (points[p0].y * q1 + points[p1].y * q2 + points[p2].y * q3 +
+								 points[p3].y * q4);
+		return {tx, ty};
+	}
+};
+
+inline constexpr auto lerp_colors(const float colors[2][3], const float &value)
+{
+	return std::array{
+		colors[0][0] + (colors[1][0] - colors[0][0]) * value,
+		// std::lerp(colors[0][0],(colors[1][0], value),
+		colors[0][1] + (colors[1][1] - colors[0][1]) * value,
+		colors[0][2] + (colors[1][2] - colors[0][2]) * value};
+}
+
+void fillGradientRect(SDL_Renderer *renderer, const SDL_FRect &_rect, const SDL_Color &_left, const SDL_Color &_right)
+{
+	const float rt = 1.f / 255.f;
+	float norm_colors[2][3] = {{rt * _left.r, rt * _left.g, rt * _left.b}, {rt * _right.r, rt * _right.g, rt * _right.b}};
+	float t = 0.f;
+	const float dt = 1.f / _rect.w;
+	// SDL_Color result;
+	for (float x = 0.f; x < _rect.w; x += 1.f)
+	{
+		const auto tmp = lerp_colors(norm_colors, t);
+		const SDL_Color result = {(uint8_t)(tmp[0] * 255.f), (uint8_t)(tmp[1] * 255.f), (uint8_t)(tmp[2] * 255.f), 0xff};
+		SDL_SetRenderDrawColor(renderer, result.r, result.g, result.b, result.a);
+		SDL_RenderDrawLine(renderer, _rect.x + x, _rect.y, _rect.x + x, _rect.y + _rect.h);
+		t += dt;
+	}
+}
+
+inline auto rotate(const std::array<float, 2> &position, const float &angle) noexcept
+{
+	return std::array{
+		cosf(angle) * position[0] - sinf(angle) * position[1],
+		sinf(angle) * position[0] + cosf(angle) * position[1]};
+}
+inline constexpr auto translate(const std::array<float, 2> &position, const float &x, const float &y) noexcept
+{
+	return std::array{position[0] + x, position[1] + y};
+}
+
+void fillGradientRectAngle(SDL_Renderer *renderer, const SDL_FRect &_rect, const float &_angle, const SDL_Color &_left, const SDL_Color &_right)
+{
+	const float rt = 1.f / 255.f;
+	float norm_colors[2][3] = {{rt * _left.r, rt * _left.g, rt * _left.b}, {rt * _right.r, rt * _right.g, rt * _right.b}};
+
+	const auto mx = _rect.w / 2.f;
+	const auto my = _rect.h / 2.f;
+
+	// SDL_Color result;
+	for (float x = 0.f; x < _rect.w; x += 1.f)
+	{
+		for (float y = 0.f; y < _rect.h; y += 1.f)
+		{
+			const std::array<float, 2> tp = translate(rotate(translate({x, y}, -mx, -my), _angle), mx, my);
+			const auto tmp = lerp_colors(norm_colors, (1.f / _rect.w) * std::clamp(tp[0], 0.f, _rect.w));
+			const SDL_Color result = {(uint8_t)(tmp[0] * 255.f), (uint8_t)(tmp[1] * 255.f), (uint8_t)(tmp[2] * 255.f), 0xff};
+			SDL_SetRenderDrawColor(renderer, result.r, result.g, result.b, result.a);
+			SDL_RenderDrawPoint(renderer, _rect.x + x, _rect.y + y);
+		}
+	}
+}
+
+void fillGradientTexture(SDL_Renderer *renderer, SDL_Texture *_texture, const float &_angle, const SDL_Color &_left, const SDL_Color &_right)
+{
+	int w, h, pitch;
+	SDL_QueryTexture(_texture, 0, 0, &w, &h);
+	const float rt = 1.f / 255.f;
+	const float norm_colors[2][3] = {{rt * _left.r, rt * _left.g, rt * _left.b}, {rt * _right.r, rt * _right.g, rt * _right.b}};
+	// float t = 0.f;
+	// const float dt = 1.f / w;
+	const auto mx = w / 2.f;
+	const auto my = h / 2.f;
+
+	union PUN
+	{
+		uint32_t _rd;
+		uint8_t bs[4];
+	} pal;
+
+	void *pixels;
+	SDL_LockTexture(_texture, nullptr, &pixels, &pitch);
+	uint32_t *rdata = (uint32_t *)(pixels);
+	for (int x = 0; x < w; x++)
+	{
+		for (int y = 0; y < h; y++)
+		{
+			const auto tp = translate(rotate(translate({(float)x, (float)y}, -mx, -my), _angle), mx, my);
+			const auto tmp = lerp_colors(norm_colors, (1.f / (float)w) * std::clamp(tp[0], 0.f, (float)w));
+			const SDL_Color result = {(uint8_t)(tmp[0] * 255.f), (uint8_t)(tmp[1] * 255.f), (uint8_t)(tmp[2] * 255.f), 0xff};
+			pal.bs[0] = result.a;
+			pal.bs[1] = result.r;
+			pal.bs[2] = result.g;
+			pal.bs[3] = result.b;
+			rdata[(y * w) + x] = pal._rd;
+		}
+	}
+
+	SDL_UnlockTexture(_texture);
+}
+
+union UINT32PALLETE_UNON
+{
+	uint32_t ui32data;
+	uint8_t ui8data[4];
+};
+
+auto blurFunc = [](Uint32 *data, const int &dw, const int &dh, const int &blur_extent)
+{
+	UINT32PALLETE_UNON CD;
+	Uint32 color;
+	Uint32 rb = 0, gb = 0, bb = 0, ab = 0;
+	int numPix = 0;
+
+	for (int y = 0; y < dh; ++y)
+	{
+		for (int x = 0; x < dw; ++x)
+		{
+			CD.ui32data = data[(y * dw) + x];
+			color = CD.ui32data;
+			rb = 0, gb = 0, bb = 0, ab = 0;
+
+			// Within the two for-loops below, colors of adjacent pixels are added up
+			for (int yo = -blur_extent; yo <= blur_extent; yo++)
+			{
+				for (int xo = -blur_extent; xo <= blur_extent; xo++)
+				{
+					if (y + yo >= 0 && x + xo >= 0 && y + yo < dh && x + xo < dw)
+					{
+						CD.ui32data = data[(((y + yo) * dw) + (x + xo))];
+
+						rb += CD.ui8data[1];
+						gb += CD.ui8data[2];
+						bb += CD.ui8data[3];
+						ab += CD.ui8data[0];
+					}
+				}
+			}
+
+			// The sum is then, divided by the total number of
+			// pixels present in a block of blur radius
+
+			// For blur_extent 1, it will be 9
+			// For blur_extent 2, it will be 25
+			// and so on...
+
+			// In this way, we are getting the average of
+			// all the pixels in a block of blur radius
+
+			//(((blur_extent * 2) + 1) * ((blur_extent * 2) + 1)) calculates
+			// the total number of pixels present in a block of blur radius
+
+			// Bit shifting color bits to form a 32 bit proper colour
+			// color = (r) | (g << 8) | (b << 16) | (a << 24);
+			numPix = (((blur_extent * 2) + 1) * ((blur_extent * 2) + 1));
+			CD.ui8data[0] = (Uint8)(ab / numPix);
+			CD.ui8data[1] = (Uint8)(rb / numPix);
+			CD.ui8data[2] = (Uint8)(gb / numPix);
+			CD.ui8data[3] = (Uint8)(bb / numPix);
+			color = CD.ui32data;
+			data[(y * dw) + x] = color;
+		}
+	}
+};
+
+void blurIMG(SDL_Surface *imageSurface, const int &blurExtend, const int &iterations = 1) // This manipulates with SDL_Surface and gives it box blur effect
+{
+	const auto start = std::chrono::high_resolution_clock::now();
+	Uint32 *data = ((Uint32 *)imageSurface->pixels);
+	for (int i = 0; i < iterations; ++i)
+		blurFunc(data, imageSurface->w, imageSurface->h, blurExtend);
+	std::chrono::duration<double> dt = (std::chrono::high_resolution_clock::now() - start);
+	SDL_Log("bluring done: %f secs", dt.count());
+}
+
+// Function for loading an image to SDL_Texture
+static SDL_Texture *loadImage(SDL_Renderer *renderer, const char *path)
+{
+	SDL_Surface *img = IMG_Load(path);
+	// blurIMG(img,1);
+	if (img == NULL)
+	{
+		fprintf(stderr, "IMG_Load Error: %s\n", IMG_GetError());
+		return NULL;
+	}
+	SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, img);
+	SDL_FreeSurface(img);
+	if (texture == NULL)
+	{
+		fprintf(stderr, "SDL_CreateTextureFromSurface Error: %s\n", SDL_GetError());
+		return NULL;
+	}
+	return texture;
+}
+
+enum class QUADRANT : uint8_t
+{
+	TOP_LEFT,
+	TOP_RIGHT,
+	BOTTOM_LEFT,
+	BOTTOM_RIGHT
+};
+
+void drawPixelFWeight(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_weight, const SDL_Color &_color)
+{
+	const uint8_t alpha_ = static_cast<uint8_t>(_weight * static_cast<float>(_color.a));
+	SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, alpha_);
+	RenderPoint(_renderer, static_cast<int>(_x), static_cast<int>(_y));
+}
+
+void drawPixelWeight(SDL_Renderer *_renderer, const int &_x, const int &_y, const float &_weight, const SDL_Color &_color)
+{
+	const uint8_t alpha_ = static_cast<uint8_t>(_weight * static_cast<float>(_color.a));
+	SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, alpha_);
+	RenderPoint(_renderer, _x, _y);
+}
+
+// Function to rotate a point around the center
+SDL_FPoint rotatePoint(SDL_FPoint point, SDL_FPoint center, double angle)
+{
+	double radians = angle * 3.1415926 / 180.0;
+	double s = std::sin(radians);
+	double c = std::cos(radians);
+
+	// Translate point back to origin
+	point.x -= center.x;
+	point.y -= center.y;
+
+	// Rotate point
+	double xnew = point.x * c - point.y * s;
+	double ynew = point.x * s + point.y * c;
+
+	// Translate point back
+	point.x = xnew + center.x;
+	point.y = ynew + center.y;
+
+	return point;
+}
+
+void draw_ring(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r, const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+{
+	const float outer_r2_ = _outer_r * _outer_r;
+	const float inner_r2_ = _inner_r * _inner_r;
+	const float mid1 = inner_r2_ + ((outer_r2_ - inner_r2_) / 2.f);
+	const float max = (outer_r2_ - inner_r2_);
+	const float max1 = (_outer_r - _inner_r);
+	float bias = 1.f;
+	float prev_bias = 1.f;
+	float res = 1.f;
+	std::vector<SDL_FPoint> points_;
+	for (float y = 0.5f; y <= _outer_r; y += 1.f)
+	{
+		for (float x = 0.5f; x <= _outer_r; x += 1.f)
+		{
+			res = x * x + y * y;
+			if (res <= outer_r2_ && res >= inner_r2_)
+			{
+				bias = std::clamp(((1.f - ((fabs(mid1 - res) * 2.f) / max)) * (max1 / 2.f)), 0.f, 1.f);
+				points_.emplace_back(SDL_FPoint{(_x - x), (_y - y)});
+				points_.emplace_back(SDL_FPoint{(_x + x), (_y - y)});
+				points_.emplace_back(SDL_FPoint{(_x - x), (_y + y)});
+				points_.emplace_back(SDL_FPoint{(_x + x), (_y + y)});
+				if (bias != prev_bias)
+				{
+					const uint8_t alpha_ = static_cast<uint8_t>(prev_bias * static_cast<float>(_color.a));
+					SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, alpha_);
+					RenderPoints(_renderer, points_.data(), points_.size() - 4);
+					points_.clear();
 					points_.emplace_back(SDL_FPoint{(_x - x), (_y - y)});
 					points_.emplace_back(SDL_FPoint{(_x + x), (_y - y)});
 					points_.emplace_back(SDL_FPoint{(_x - x), (_y + y)});
 					points_.emplace_back(SDL_FPoint{(_x + x), (_y + y)});
-					if (bias != prev_bias)
-					{
-						const uint8_t alpha_ = static_cast<uint8_t>(prev_bias * static_cast<float>(_color.a));
-						SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, alpha_);
-						SDL_RenderPoints(_renderer, points_.data(), points_.size() - 4);
-						points_.clear();
-						points_.emplace_back(SDL_FPoint{(_x - x), (_y - y)});
-						points_.emplace_back(SDL_FPoint{(_x + x), (_y - y)});
-						points_.emplace_back(SDL_FPoint{(_x - x), (_y + y)});
-						points_.emplace_back(SDL_FPoint{(_x + x), (_y + y)});
-					}
-					prev_bias = bias;
 				}
+				prev_bias = bias;
 			}
 		}
 	}
+}
 
-	void draw_ring_4quad(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_w, const float &_h, const float &_inner_r, const float &_outer_r, const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+void draw_ring_4quad(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_w, const float &_h, const float &_inner_r, const float &_outer_r, const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+{
+	const float outer_r2_ = _outer_r * _outer_r;
+	const float inner_r2_ = _inner_r * _inner_r;
+	const float mid1 = inner_r2_ + ((outer_r2_ - inner_r2_) / 2.f);
+	const float max = (outer_r2_ - inner_r2_);
+	const float max1 = (_outer_r - _inner_r);
+	float bias = 1.f;
+	float prev_bias = 1.f;
+	float res = 1.f;
+	std::vector<SDL_FPoint> points_;
+	for (float y = 0.5f; y <= _outer_r; y += 1.f)
 	{
-		const float outer_r2_ = _outer_r * _outer_r;
-		const float inner_r2_ = _inner_r * _inner_r;
-		const float mid1 = inner_r2_ + ((outer_r2_ - inner_r2_) / 2.f);
-		const float max = (outer_r2_ - inner_r2_);
-		const float max1 = (_outer_r - _inner_r);
-		float bias = 1.f;
-		float prev_bias = 1.f;
-		float res = 1.f;
-		std::vector<SDL_FPoint> points_;
-		for (float y = 0.5f; y <= _outer_r; y += 1.f)
+		for (float x = 0.5f; x <= _outer_r; x += 1.f)
 		{
-			for (float x = 0.5f; x <= _outer_r; x += 1.f)
+			res = x * x + y * y;
+			if (res <= outer_r2_ && res >= inner_r2_)
 			{
-				res = x * x + y * y;
-				if (res <= outer_r2_ && res >= inner_r2_)
+				bias = std::clamp(((1.f - ((fabs(mid1 - res) * 2.f) / max)) * (max1 / 1.05f)), 0.f, 1.f);
+				points_.emplace_back(SDL_FPoint{(_x - x), (_y - y)});
+				points_.emplace_back(SDL_FPoint{(_x + x + _w), (_y - y)});
+				points_.emplace_back(SDL_FPoint{(_x - x), (_y + y + _h)});
+				points_.emplace_back(SDL_FPoint{(_x + x + _w), (_y + y + _h)});
+				if (bias != prev_bias)
 				{
-					bias = std::clamp(((1.f - ((fabs(mid1 - res) * 2.f) / max)) * (max1 / 1.05f)), 0.f, 1.f);
+					const uint8_t alpha_ = static_cast<uint8_t>(prev_bias * static_cast<float>(_color.a));
+					SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, alpha_);
+					RenderPoints(_renderer, points_.data(), points_.size() - 4);
+					points_.clear();
 					points_.emplace_back(SDL_FPoint{(_x - x), (_y - y)});
 					points_.emplace_back(SDL_FPoint{(_x + x + _w), (_y - y)});
 					points_.emplace_back(SDL_FPoint{(_x - x), (_y + y + _h)});
 					points_.emplace_back(SDL_FPoint{(_x + x + _w), (_y + y + _h)});
-					if (bias != prev_bias)
-					{
-						const uint8_t alpha_ = static_cast<uint8_t>(prev_bias * static_cast<float>(_color.a));
-						SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, alpha_);
-						SDL_RenderPoints(_renderer, points_.data(), points_.size() - 4);
-						points_.clear();
-						points_.emplace_back(SDL_FPoint{(_x - x), (_y - y)});
-						points_.emplace_back(SDL_FPoint{(_x + x + _w), (_y - y)});
-						points_.emplace_back(SDL_FPoint{(_x - x), (_y + y + _h)});
-						points_.emplace_back(SDL_FPoint{(_x + x + _w), (_y + y + _h)});
-					}
-					prev_bias = bias;
 				}
+				prev_bias = bias;
 			}
 		}
 	}
+}
+/*
+void draw_ring_top_left_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r,
+								 const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+{
+	SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
+	const float outer_r2_ = _outer_r * _outer_r;
+	const float inner_r2_ = _inner_r * _inner_r;
+	const float mid1 = inner_r2_ + ((outer_r2_ - inner_r2_) / 2.f);
+	const float max = (outer_r2_ - inner_r2_);
+	const float max1 = (_outer_r - _inner_r);
+	float bias = 1.f;
+	float res = 1.f;
+	for (float y = 0.5f; y <= _outer_r; y += 1.f)
+	{
+		for (float x = 0.5f; x <= _outer_r; x += 1.f)
+		{
+			res = x * x + y * y;
+			if (res <= outer_r2_ && res >= inner_r2_)
+			{
+				bias = std::clamp(((1.f - ((fabs(mid1 - res) * 2.f) / max)) * (max1 / 2.f)), 0.f, 1.f);
+				drawPixelFWeight(_renderer, _x - x, _y - y, bias, _color);
+			}
+		}
+	}
+}
 
-	void draw_ring_top_left_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r,
+void draw_ring_top_right_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r,
+								  const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+{
+	SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
+	const float outer_r2_ = _outer_r * _outer_r;
+	const float inner_r2_ = _inner_r * _inner_r;
+	const float mid1 = inner_r2_ + ((outer_r2_ - inner_r2_) / 2.f);
+	const float max = (outer_r2_ - inner_r2_);
+	const float max1 = (_outer_r - _inner_r);
+	float bias = 1.f;
+	float res = 1.f;
+	for (float y = 0.5f; y <= _outer_r; y += 1.f)
+	{
+		for (float x = 0.5f; x <= _outer_r; x += 1.f)
+		{
+			res = x * x + y * y;
+			if (res <= outer_r2_ && res >= inner_r2_)
+			{
+				bias = std::clamp(((1.f - ((fabs(mid1 - res) * 2.f) / max)) * (max1 / 2.f)), 0.f, 1.f);
+				drawPixelFWeight(_renderer, _x + x, _y - y, bias, _color);
+			}
+		}
+	}
+}
+
+void draw_ring_bottom_left_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r,
+									const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+{
+	SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
+	const float outer_r2_ = _outer_r * _outer_r;
+	const float inner_r2_ = _inner_r * _inner_r;
+	const float mid1 = inner_r2_ + ((outer_r2_ - inner_r2_) / 2.f);
+	const float max = (outer_r2_ - inner_r2_);
+	const float max1 = (_outer_r - _inner_r);
+	float bias = 1.f;
+	float res = 1.f;
+	for (float y = 0.5f; y <= _outer_r; y += 1.f)
+	{
+		for (float x = 0.5f; x <= _outer_r; x += 1.f)
+		{
+			res = x * x + y * y;
+			if (res <= outer_r2_ && res >= inner_r2_)
+			{
+				bias = std::clamp(((1.f - ((fabs(mid1 - res) * 2.f) / max)) * (max1 / 2.f)), 0.f, 1.f);
+				drawPixelFWeight(_renderer, _x - x, _y + y, bias, _color);
+			}
+		}
+	}
+}
+
+void draw_ring_bottom_right_quadrand(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r,
 									 const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+{
+	SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
+	const float outer_r2_ = _outer_r * _outer_r;
+	const float inner_r2_ = _inner_r * _inner_r;
+	const float mid1 = inner_r2_ + ((outer_r2_ - inner_r2_) / 2.f);
+	const float max = (outer_r2_ - inner_r2_);
+	const float max1 = (_outer_r - _inner_r);
+	float bias = 1.f;
+	float res = 1.f;
+	for (float y = 0.5f; y <= _outer_r; y += 1.f)
 	{
-		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
-		const float outer_r2_ = _outer_r * _outer_r;
-		const float inner_r2_ = _inner_r * _inner_r;
-		const float mid1 = inner_r2_ + ((outer_r2_ - inner_r2_) / 2.f);
-		const float max = (outer_r2_ - inner_r2_);
-		const float max1 = (_outer_r - _inner_r);
-		float bias = 1.f;
-		float res = 1.f;
-		for (float y = 0.5f; y <= _outer_r; y += 1.f)
+		for (float x = 0.5f; x <= _outer_r; x += 1.f)
 		{
-			for (float x = 0.5f; x <= _outer_r; x += 1.f)
+			res = x * x + y * y;
+			if (res <= outer_r2_ && res >= inner_r2_)
 			{
-				res = x * x + y * y;
-				if (res <= outer_r2_ && res >= inner_r2_)
-				{
-					bias = std::clamp(((1.f - ((fabs(mid1 - res) * 2.f) / max)) * (max1 / 2.f)), 0.f, 1.f);
-					drawPixelFWeight(_renderer, _x - x, _y - y, bias, _color);
-				}
+				bias = std::clamp(((1.f - ((fabs(mid1 - res) * 2.f) / max)) * (max1 / 2.f)), 0.f, 1.f);
+				drawPixelFWeight(_renderer, _x + x, _y + y, bias, _color);
 			}
 		}
 	}
+}
 
-	void draw_ring_top_right_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r,
-									  const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+void draw_ring_quadrand(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r,
+						const QUADRANT &_quadrant, const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+{
+	if (_quadrant == QUADRANT::TOP_LEFT)
+		draw_ring_top_left_quadrant(_renderer, _x, _y, _inner_r, _outer_r, _color);
+	else if (_quadrant == QUADRANT::TOP_RIGHT)
+		draw_ring_top_right_quadrant(_renderer, _x, _y, _inner_r, _outer_r, _color);
+	else if (_quadrant == QUADRANT::BOTTOM_LEFT)
+		draw_ring_bottom_left_quadrant(_renderer, _x, _y, _inner_r, _outer_r, _color);
+	else if (_quadrant == QUADRANT::BOTTOM_RIGHT)
+		draw_ring_bottom_right_quadrand(_renderer, _x, _y, _inner_r, _outer_r, _color);
+}*/
+
+void draw_ring_top_left_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r,
+								 const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+{
+	const float outer_r2_ = _outer_r * _outer_r;
+	const float inner_r2_ = _inner_r * _inner_r;
+	const float mid1 = inner_r2_ + ((outer_r2_ - inner_r2_) / 2.f);
+	const float max = (outer_r2_ - inner_r2_);
+	const float max1 = (_outer_r - _inner_r);
+
+	for (float y = 0.5f; y <= _outer_r; y += 1.f)
 	{
-		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
-		const float outer_r2_ = _outer_r * _outer_r;
-		const float inner_r2_ = _inner_r * _inner_r;
-		const float mid1 = inner_r2_ + ((outer_r2_ - inner_r2_) / 2.f);
-		const float max = (outer_r2_ - inner_r2_);
-		const float max1 = (_outer_r - _inner_r);
-		float bias = 1.f;
-		float res = 1.f;
-		for (float y = 0.5f; y <= _outer_r; y += 1.f)
+		for (float x = 0.5f; x <= _outer_r; x += 1.f)
 		{
-			for (float x = 0.5f; x <= _outer_r; x += 1.f)
+			float res = x * x + y * y;
+			if (res <= outer_r2_ && res >= inner_r2_)
 			{
-				res = x * x + y * y;
-				if (res <= outer_r2_ && res >= inner_r2_)
-				{
-					bias = std::clamp(((1.f - ((fabs(mid1 - res) * 2.f) / max)) * (max1 / 2.f)), 0.f, 1.f);
-					drawPixelFWeight(_renderer, _x + x, _y - y, bias, _color);
-				}
+				float bias = std::clamp(((1.f - ((fabs(mid1 - res) * 2.f) / max)) * (max1 / 2.f)), 0.f, 1.f);
+				drawPixelFWeight(_renderer, _x - x, _y - y, bias, _color);
 			}
 		}
 	}
+}
 
-	void draw_ring_bottom_left_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r,
-										const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+void draw_ring_top_right_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r,
+								  const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+{
+	const float outer_r2_ = _outer_r * _outer_r;
+	const float inner_r2_ = _inner_r * _inner_r;
+	const float mid1 = inner_r2_ + ((outer_r2_ - inner_r2_) / 2.f);
+	const float max = (outer_r2_ - inner_r2_);
+	const float max1 = (_outer_r - _inner_r);
+
+	for (float y = 0.5f; y <= _outer_r; y += 1.f)
 	{
-		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
-		const float outer_r2_ = _outer_r * _outer_r;
-		const float inner_r2_ = _inner_r * _inner_r;
-		const float mid1 = inner_r2_ + ((outer_r2_ - inner_r2_) / 2.f);
-		const float max = (outer_r2_ - inner_r2_);
-		const float max1 = (_outer_r - _inner_r);
-		float bias = 1.f;
-		float res = 1.f;
-		for (float y = 0.5f; y <= _outer_r; y += 1.f)
+		for (float x = 0.5f; x <= _outer_r; x += 1.f)
 		{
-			for (float x = 0.5f; x <= _outer_r; x += 1.f)
+			float res = x * x + y * y;
+			if (res <= outer_r2_ && res >= inner_r2_)
 			{
-				res = x * x + y * y;
-				if (res <= outer_r2_ && res >= inner_r2_)
-				{
-					bias = std::clamp(((1.f - ((fabs(mid1 - res) * 2.f) / max)) * (max1 / 2.f)), 0.f, 1.f);
-					drawPixelFWeight(_renderer, _x - x, _y + y, bias, _color);
-				}
+				float bias = std::clamp(((1.f - ((fabs(mid1 - res) * 2.f) / max)) * (max1 / 2.f)), 0.f, 1.f);
+				drawPixelFWeight(_renderer, _x + x, _y - y, bias, _color);
 			}
 		}
 	}
+}
 
-	void draw_ring_bottom_right_quadrand(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r,
-										 const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+void draw_ring_bottom_left_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r,
+									const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+{
+	const float outer_r2_ = _outer_r * _outer_r;
+	const float inner_r2_ = _inner_r * _inner_r;
+	const float mid1 = inner_r2_ + ((outer_r2_ - inner_r2_) / 2.f);
+	const float max = (outer_r2_ - inner_r2_);
+	const float max1 = (_outer_r - _inner_r);
+
+	for (float y = 0.5f; y <= _outer_r; y += 1.f)
 	{
-		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
-		const float outer_r2_ = _outer_r * _outer_r;
-		const float inner_r2_ = _inner_r * _inner_r;
-		const float mid1 = inner_r2_ + ((outer_r2_ - inner_r2_) / 2.f);
-		const float max = (outer_r2_ - inner_r2_);
-		const float max1 = (_outer_r - _inner_r);
-		float bias = 1.f;
-		float res = 1.f;
-		for (float y = 0.5f; y <= _outer_r; y += 1.f)
+		for (float x = 0.5f; x <= _outer_r; x += 1.f)
 		{
-			for (float x = 0.5f; x <= _outer_r; x += 1.f)
+			float res = x * x + y * y;
+			if (res <= outer_r2_ && res >= inner_r2_)
 			{
-				res = x * x + y * y;
-				if (res <= outer_r2_ && res >= inner_r2_)
-				{
-					bias = std::clamp(((1.f - ((fabs(mid1 - res) * 2.f) / max)) * (max1 / 2.f)), 0.f, 1.f);
-					drawPixelFWeight(_renderer, _x + x, _y + y, bias, _color);
-				}
+				float bias = std::clamp(((1.f - ((fabs(mid1 - res) * 2.f) / max)) * (max1 / 2.f)), 0.f, 1.f);
+				drawPixelFWeight(_renderer, _x - x, _y + y, bias, _color);
 			}
 		}
 	}
+}
 
-	void draw_ring_quadrand(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r,
-							const QUADRANT &_quadrant, const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
-	{
-		if (_quadrant == QUADRANT::TOP_LEFT)
-			draw_ring_top_left_quadrant(_renderer, _x, _y, _inner_r, _outer_r, _color);
-		else if (_quadrant == QUADRANT::TOP_RIGHT)
-			draw_ring_top_right_quadrant(_renderer, _x, _y, _inner_r, _outer_r, _color);
-		else if (_quadrant == QUADRANT::BOTTOM_LEFT)
-			draw_ring_bottom_left_quadrant(_renderer, _x, _y, _inner_r, _outer_r, _color);
-		else if (_quadrant == QUADRANT::BOTTOM_RIGHT)
-			draw_ring_bottom_right_quadrand(_renderer, _x, _y, _inner_r, _outer_r, _color);
-	}
+void draw_ring_bottom_right_quadrand(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r,
+									 const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+{
+	const float outer_r2_ = _outer_r * _outer_r;
+	const float inner_r2_ = _inner_r * _inner_r;
+	const float mid1 = inner_r2_ + ((outer_r2_ - inner_r2_) / 2.f);
+	const float max = (outer_r2_ - inner_r2_);
+	const float max1 = (_outer_r - _inner_r);
 
-	void draw_filled_circle(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
-							const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff}) noexcept
+	for (float y = 0.5f; y <= _outer_r; y += 1.f)
 	{
-		float bias = 1.f;
-		float prev_bias = 1.f;
-		float res = 1.f;
-		const float r2_ = _r * _r;
-		const float r_4 = _r / 2.f;
-		std::vector<SDL_FPoint> points_;
-		for (float y = 0.5f; y <= _r; y += 1.f)
+		for (float x = 0.5f; x <= _outer_r; x += 1.f)
 		{
-			for (float x = 0.5f; x <= _r; x += 1.f)
+			float res = x * x + y * y;
+			if (res <= outer_r2_ && res >= inner_r2_)
 			{
-				res = x * x + y * y;
-				if (res <= r2_)
-				{
-					bias = std::clamp(((1.f - (res / r2_)) * r_4), 0.f, 1.f);
+				float bias = std::clamp(((1.f - ((fabs(mid1 - res) * 2.f) / max)) * (max1 / 2.f)), 0.f, 1.f);
+				drawPixelFWeight(_renderer, _x + x, _y + y, bias, _color);
+			}
+		}
+	}
+}
+void draw_ring_quadrand(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r,
+						const QUADRANT &_quadrant, const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+{
+	switch (_quadrant)
+	{
+	case QUADRANT::TOP_LEFT:
+		draw_ring_top_left_quadrant(_renderer, _x, _y, _inner_r, _outer_r, _color);
+		break;
+	case QUADRANT::TOP_RIGHT:
+		draw_ring_top_right_quadrant(_renderer, _x, _y, _inner_r, _outer_r, _color);
+		break;
+	case QUADRANT::BOTTOM_LEFT:
+		draw_ring_bottom_left_quadrant(_renderer, _x, _y, _inner_r, _outer_r, _color);
+		break;
+	case QUADRANT::BOTTOM_RIGHT:
+		draw_ring_bottom_right_quadrand(_renderer, _x, _y, _inner_r, _outer_r, _color);
+		break;
+	}
+}
 
+// Assuming RenderPoints is defined elsewhere, e.g.:
+// void RenderPoints(SDL_Renderer* renderer, const SDL_FPoint* points, size_t count);
+/*
+void draw_filled_circle_optimized(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
+								  const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff}) noexcept
+{
+	const float r2_ = _r * _r;
+	const float r_4 = _r / 2.f;
+
+	// Convert scalar constants to NEON vectors
+	const float32x4_t r2_vec = vdupq_n_f32(r2_);
+	const float32x4_t r_4_vec = vdupq_n_f32(r_4);
+	const float32x4_t one_f_vec = vdupq_n_f32(1.f);
+	const float32x4_t zero_f_vec = vdupq_n_f32(0.f);
+
+	// Pre-calculate inverse of r2_vec for division approximation
+	float32x4_t inv_r2_vec = vrecpeq_f32(r2_vec);
+	// Refine reciprocal estimate for better precision (optional, but often good practice for division)
+	inv_r2_vec = vmulq_f32(vrecpsq_f32(r2_vec, inv_r2_vec), inv_r2_vec);
+	// You can repeat the refinement for even higher precision if needed:
+	// inv_r2_vec = vmulq_f32(vrecpsq_f32(r2_vec, inv_r2_vec), inv_r2_vec);
+
+	std::vector<SDL_FPoint> points_;
+	points_.reserve(static_cast<size_t>(_r * _r * 4)); // Pre-allocate to reduce reallocations
+
+	float prev_bias = 1.f; // Scalar prev_bias
+
+	// Process y values
+	for (float y_scalar = 0.5f; y_scalar <= _r; y_scalar += 1.f)
+	{
+		// Broadcast current y_scalar to a NEON vector
+		float32x4_t y_vec = vdupq_n_f32(y_scalar);
+		float32x4_t y2_vec = vmulq_f32(y_vec, y_vec); // y*y
+
+		// Process x values in steps of 4
+		for (float x_start = 0.5f; x_start <= _r; x_start += 4.f)
+		{
+			// Load x values into a NEON vector: [x, x+1, x+2, x+3]
+			// Note: x_start + 3.f might exceed _r in the last iteration,
+			// but the mask will handle it.
+			float32x4_t x_vec = {x_start, x_start + 1.f, x_start + 2.f, x_start + 3.f};
+			float32x4_t x2_vec = vmulq_f32(x_vec, x_vec); // x*x
+
+			// Calculate res = x*x + y*y for 4 elements
+			float32x4_t res_vec = vaddq_f32(x2_vec, y2_vec);
+
+			// Compare res <= r2_
+			uint32x4_t mask = vcleq_f32(res_vec, r2_vec); // mask will have all bits set (0xFFFFFFFF) for true, 0 for false
+
+			// Calculate bias = std::clamp(((1.f - (res / r2_)) * r_4), 0.f, 1.f) for 4 elements
+			// Use reciprocal multiplication for division
+			float32x4_t res_div_r2_vec = vmulq_f32(res_vec, inv_r2_vec);
+			float32x4_t one_minus_res_div_r2_vec = vsubq_f32(one_f_vec, res_div_r2_vec);
+			float32x4_t bias_vec = vmulq_f32(one_minus_res_div_r2_vec, r_4_vec);
+
+			// Clamp bias_vec between 0.f and 1.f
+			bias_vec = vmaxq_f32(bias_vec, zero_f_vec); // clamp lower bound (max(bias, 0))
+			bias_vec = vminq_f32(bias_vec, one_f_vec);	// clamp upper bound (min(bias, 1))
+
+			// Manual unrolling for processing each lane due to `vgetq_lane` limitations
+			// and complex scalar logic.
+			// This is the bottleneck for full vectorization.
+			// Process lane 0
+			if (vgetq_lane_u32(mask, 0) != 0) // if true
+			{
+				float current_x = vgetq_lane_f32(x_vec, 0);
+				// Adjust x for points_ if x_start + 0 was beyond _r (though mask handles it)
+				if (current_x > _r)
+					current_x = _r; // Clamp for correct point position if needed
+
+				float current_y = y_scalar;
+				float current_bias = vgetq_lane_f32(bias_vec, 0);
+
+				points_.emplace_back(SDL_FPoint{(_x - current_x), (_y - current_y)});
+				points_.emplace_back(SDL_FPoint{(_x + current_x), (_y - current_y)});
+				points_.emplace_back(SDL_FPoint{(_x - current_x), (_y + current_y)});
+				points_.emplace_back(SDL_FPoint{(_x + current_x), (_y + current_y)});
+				if (current_bias != prev_bias)
+				{
+					const uint8_t alpha_ = static_cast<uint8_t>(prev_bias * static_cast<float>(_color.a));
+					SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, alpha_);
+					if (!points_.empty())
+					{
+						RenderPoints(_renderer, points_.data(), points_.size() - 4);
+					}
+					points_.clear();
+					points_.emplace_back(SDL_FPoint{(_x - current_x), (_y - current_y)});
+					points_.emplace_back(SDL_FPoint{(_x + current_x), (_y - current_y)});
+					points_.emplace_back(SDL_FPoint{(_x - current_x), (_y + current_y)});
+					points_.emplace_back(SDL_FPoint{(_x + current_x), (_y + current_y)});
+				}
+				prev_bias = current_bias;
+			}
+
+			// Process lane 1
+			if (x_start + 1.f <= _r && vgetq_lane_u32(mask, 1) != 0)
+			{
+				float current_x = vgetq_lane_f32(x_vec, 1);
+				float current_y = y_scalar;
+				float current_bias = vgetq_lane_f32(bias_vec, 1);
+
+				points_.emplace_back(SDL_FPoint{(_x - current_x), (_y - current_y)});
+				points_.emplace_back(SDL_FPoint{(_x + current_x), (_y - current_y)});
+				points_.emplace_back(SDL_FPoint{(_x - current_x), (_y + current_y)});
+				points_.emplace_back(SDL_FPoint{(_x + current_x), (_y + current_y)});
+				if (current_bias != prev_bias)
+				{
+					const uint8_t alpha_ = static_cast<uint8_t>(prev_bias * static_cast<float>(_color.a));
+					SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, alpha_);
+					if (!points_.empty())
+					{
+						RenderPoints(_renderer, points_.data(), points_.size() - 4);
+					}
+					points_.clear();
+					points_.emplace_back(SDL_FPoint{(_x - current_x), (_y - current_y)});
+					points_.emplace_back(SDL_FPoint{(_x + current_x), (_y - current_y)});
+					points_.emplace_back(SDL_FPoint{(_x - current_x), (_y + current_y)});
+					points_.emplace_back(SDL_FPoint{(_x + current_x), (_y + current_y)});
+				}
+				prev_bias = current_bias;
+			}
+
+			// Process lane 2
+			if (x_start + 2.f <= _r && vgetq_lane_u32(mask, 2) != 0)
+			{
+				float current_x = vgetq_lane_f32(x_vec, 2);
+				float current_y = y_scalar;
+				float current_bias = vgetq_lane_f32(bias_vec, 2);
+
+				points_.emplace_back(SDL_FPoint{(_x - current_x), (_y - current_y)});
+				points_.emplace_back(SDL_FPoint{(_x + current_x), (_y - current_y)});
+				points_.emplace_back(SDL_FPoint{(_x - current_x), (_y + current_y)});
+				points_.emplace_back(SDL_FPoint{(_x + current_x), (_y + current_y)});
+				if (current_bias != prev_bias)
+				{
+					const uint8_t alpha_ = static_cast<uint8_t>(prev_bias * static_cast<float>(_color.a));
+					SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, alpha_);
+					if (!points_.empty())
+					{
+						RenderPoints(_renderer, points_.data(), points_.size() - 4);
+					}
+					points_.clear();
+					points_.emplace_back(SDL_FPoint{(_x - current_x), (_y - current_y)});
+					points_.emplace_back(SDL_FPoint{(_x + current_x), (_y - current_y)});
+					points_.emplace_back(SDL_FPoint{(_x - current_x), (_y + current_y)});
+					points_.emplace_back(SDL_FPoint{(_x + current_x), (_y + current_y)});
+				}
+				prev_bias = current_bias;
+			}
+
+			// Process lane 3
+			if (x_start + 3.f <= _r && vgetq_lane_u32(mask, 3) != 0)
+			{
+				float current_x = vgetq_lane_f32(x_vec, 3);
+				float current_y = y_scalar;
+				float current_bias = vgetq_lane_f32(bias_vec, 3);
+
+				points_.emplace_back(SDL_FPoint{(_x - current_x), (_y - current_y)});
+				points_.emplace_back(SDL_FPoint{(_x + current_x), (_y - current_y)});
+				points_.emplace_back(SDL_FPoint{(_x - current_x), (_y + current_y)});
+				points_.emplace_back(SDL_FPoint{(_x + current_x), (_y + current_y)});
+				if (current_bias != prev_bias)
+				{
+					const uint8_t alpha_ = static_cast<uint8_t>(prev_bias * static_cast<float>(_color.a));
+					SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, alpha_);
+					if (!points_.empty())
+					{
+						RenderPoints(_renderer, points_.data(), points_.size() - 4);
+					}
+					points_.clear();
+					points_.emplace_back(SDL_FPoint{(_x - current_x), (_y - current_y)});
+					points_.emplace_back(SDL_FPoint{(_x + current_x), (_y - current_y)});
+					points_.emplace_back(SDL_FPoint{(_x - current_x), (_y + current_y)});
+					points_.emplace_back(SDL_FPoint{(_x + current_x), (_y + current_y)});
+				}
+				prev_bias = current_bias;
+			}
+		}
+	}
+	// Render any remaining points after the loops
+	if (!points_.empty())
+	{
+		const uint8_t alpha_ = static_cast<uint8_t>(prev_bias * static_cast<float>(_color.a));
+		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, alpha_);
+		RenderPoints(_renderer, points_.data(), points_.size());
+	}
+}*/
+
+void draw_filled_circle2(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
+						 const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff}) noexcept
+{
+	float bias = 1.f;
+	float prev_bias = 1.f;
+	float res = 1.f;
+	const float r2_ = _r * _r;
+	const float r_4 = _r / 2.f;
+	std::vector<SDL_FPoint> points_;
+	for (float y = 0.5f; y <= _r; y += 1.f)
+	{
+		for (float x = 0.5f; x <= _r; x += 1.f)
+		{
+			res = x * x + y * y;
+			if (res <= r2_)
+			{
+				bias = std::clamp(((1.f - (res / r2_)) * r_4), 0.f, 1.f);
+
+				points_.emplace_back(SDL_FPoint{(_x - x), (_y - y)});
+				points_.emplace_back(SDL_FPoint{(_x + x), (_y - y)});
+				points_.emplace_back(SDL_FPoint{(_x - x), (_y + y)});
+				points_.emplace_back(SDL_FPoint{(_x + x), (_y + y)});
+				if (bias != prev_bias)
+				{
+					const uint8_t alpha_ = static_cast<uint8_t>(prev_bias * static_cast<float>(_color.a));
+					SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, alpha_);
+					RenderPoints(_renderer, points_.data(), points_.size() - 4);
+					points_.clear();
 					points_.emplace_back(SDL_FPoint{(_x - x), (_y - y)});
 					points_.emplace_back(SDL_FPoint{(_x + x), (_y - y)});
 					points_.emplace_back(SDL_FPoint{(_x - x), (_y + y)});
 					points_.emplace_back(SDL_FPoint{(_x + x), (_y + y)});
-					if (bias != prev_bias)
-					{
-						const uint8_t alpha_ = static_cast<uint8_t>(prev_bias * static_cast<float>(_color.a));
-						SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, alpha_);
-						SDL_RenderPoints(_renderer, points_.data(), points_.size() - 4);
-						points_.clear();
-						points_.emplace_back(SDL_FPoint{(_x - x), (_y - y)});
-						points_.emplace_back(SDL_FPoint{(_x + x), (_y - y)});
-						points_.emplace_back(SDL_FPoint{(_x - x), (_y + y)});
-						points_.emplace_back(SDL_FPoint{(_x + x), (_y + y)});
-					}
-					prev_bias = bias;
+				}
+				prev_bias = bias;
+			}
+		}
+	}
+}
+
+void draw_filled_circle(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
+						const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff}) noexcept
+{
+	float bias = 1.f;
+	float res = 1.f;
+	const float r2_ = _r * _r;
+	const float r_4 = _r / 2.f;
+	std::unordered_map<uint8_t, std::vector<SDL_FPoint>> fp{};
+	for (float y = 0.5f; y <= _r; y += 1.f)
+	{
+		for (float x = 0.5f; x <= _r; x += 1.f)
+		{
+			res = x * x + y * y;
+			if (res <= r2_)
+			{
+				bias = std::clamp(((1.f - (res / r2_)) * r_4), 0.f, 1.f);
+				const uint8_t alpha_ = static_cast<uint8_t>(bias * static_cast<float>(_color.a));
+				if (alpha_ > 0)
+				{
+					auto &points_ = fp[alpha_];
+					points_.emplace_back(SDL_FPoint{(_x - x), (_y - y)});
+					points_.emplace_back(SDL_FPoint{(_x + x), (_y - y)});
+					points_.emplace_back(SDL_FPoint{(_x - x), (_y + y)});
+					points_.emplace_back(SDL_FPoint{(_x + x), (_y + y)});
 				}
 			}
 		}
 	}
-
-	void draw_filled_circle_4quad(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_w, const float &_h, const float &_r,
-								  const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff}) noexcept
+	for (auto &[key, val] : fp)
 	{
-		float bias = 1.f;
-		float prev_bias = 1.f;
-		float res = 1.f;
-		const float r2_ = _r * _r;
-		const float r_4 = _r / 2.f;
-		std::vector<SDL_FPoint> points_;
-		for (float y = 0.5f; y <= _r; y += 1.f)
+		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, key);
+		RenderPoints(_renderer, val.data(), val.size());
+	}
+}
+
+void draw_filled_circle_4quad(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_w, const float &_h, const float &_r,
+							  const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff}) noexcept
+{
+	float bias = 1.f;
+	float prev_bias = 1.f;
+	float res = 1.f;
+	const float r2_ = _r * _r;
+	const float r_4 = _r / 2.f;
+	std::vector<SDL_FPoint> points_;
+	for (float y = 0.5f; y <= _r; y += 1.f)
+	{
+		for (float x = 0.5f; x <= _r; x += 1.f)
 		{
-			for (float x = 0.5f; x <= _r; x += 1.f)
+			res = x * x + y * y;
+			if (res <= r2_)
 			{
-				res = x * x + y * y;
-				if (res <= r2_)
+				bias = std::clamp(((1.f - (res / r2_)) * r_4), 0.f, 1.f);
+				points_.emplace_back(SDL_FPoint{(_x - x), (_y - y)});
+				points_.emplace_back(SDL_FPoint{(_x + x + _w), (_y - y)});
+				points_.emplace_back(SDL_FPoint{(_x - x), (_y + y + _h)});
+				points_.emplace_back(SDL_FPoint{(_x + x + _w), (_y + y + _h)});
+				if (bias != prev_bias)
 				{
-					bias = std::clamp(((1.f - (res / r2_)) * r_4), 0.f, 1.f);
+					const uint8_t alpha_ = static_cast<uint8_t>(prev_bias * static_cast<float>(_color.a));
+					SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, alpha_);
+					RenderPoints(_renderer, points_.data(), points_.size() - 4);
+					points_.clear();
 					points_.emplace_back(SDL_FPoint{(_x - x), (_y - y)});
 					points_.emplace_back(SDL_FPoint{(_x + x + _w), (_y - y)});
 					points_.emplace_back(SDL_FPoint{(_x - x), (_y + y + _h)});
 					points_.emplace_back(SDL_FPoint{(_x + x + _w), (_y + y + _h)});
-					if (bias != prev_bias)
-					{
-						const uint8_t alpha_ = static_cast<uint8_t>(prev_bias * static_cast<float>(_color.a));
-						SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, alpha_);
-						SDL_RenderPoints(_renderer, points_.data(), points_.size() - 4);
-						points_.clear();
-						points_.emplace_back(SDL_FPoint{(_x - x), (_y - y)});
-						points_.emplace_back(SDL_FPoint{(_x + x + _w), (_y - y)});
-						points_.emplace_back(SDL_FPoint{(_x - x), (_y + y + _h)});
-						points_.emplace_back(SDL_FPoint{(_x + x + _w), (_y + y + _h)});
-					}
-					prev_bias = bias;
 				}
+				prev_bias = bias;
 			}
 		}
 	}
-
-	void draw_filled_circle_4quad2(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_w, const float &_h, const float &_r,
-								   const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff}) noexcept
+	if (!points_.empty())
 	{
-		float bias = 1.f;
-		float prev_bias = 1.f;
-		float res = 1.f;
-		const float r2_ = _r * _r;
-		const float r_4 = _r / 2.f;
-		std::vector<SDL_FPoint> points_;
-		for (float y = 0.01f; y <= _r; y += 1.f)
+		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, static_cast<uint8_t>(bias));
+		RenderPoints(_renderer, points_.data(), points_.size());
+	}
+}
+
+void draw_filled_circle_4quad2(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_w, const float &_h, const float &_r,
+							   const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff}) noexcept
+{
+	float bias = 1.f;
+	float prev_bias = 1.f;
+	float res = 1.f;
+	const float r2_ = _r * _r;
+	const float r_4 = _r / 2.f;
+	std::vector<SDL_FPoint> points_;
+	for (float y = 0.01f; y <= _r; y += 1.f)
+	{
+		for (float x = 0.01f; x <= _r; x += 1.f)
 		{
-			for (float x = 0.01f; x <= _r; x += 1.f)
+			res = x * x + y * y;
+			if (res <= r2_)
 			{
-				res = x * x + y * y;
-				if (res <= r2_)
+				bias = std::clamp(((1.f - (res / r2_)) * r_4), 0.f, 1.f);
+				points_.emplace_back(SDL_FPoint{(_x + _r - x), (_y + _r - y)});
+				points_.emplace_back(SDL_FPoint{(_x + x + _w - _r), (_y + _r - y)});
+				points_.emplace_back(SDL_FPoint{(_x + _r - x), (_y + y + _h - _r)});
+				points_.emplace_back(SDL_FPoint{(_x + x + _w - _r), (_y + y + _h - _r)});
+				if (bias != prev_bias)
 				{
-					bias = std::clamp(((1.f - (res / r2_)) * r_4), 0.f, 1.f);
+					const uint8_t alpha_ = static_cast<uint8_t>(prev_bias * static_cast<float>(_color.a));
+					SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, alpha_);
+					RenderPoints(_renderer, points_.data(), points_.size() - 4);
+					points_.clear();
 					points_.emplace_back(SDL_FPoint{(_x + _r - x), (_y + _r - y)});
 					points_.emplace_back(SDL_FPoint{(_x + x + _w - _r), (_y + _r - y)});
 					points_.emplace_back(SDL_FPoint{(_x + _r - x), (_y + y + _h - _r)});
 					points_.emplace_back(SDL_FPoint{(_x + x + _w - _r), (_y + y + _h - _r)});
-					if (bias != prev_bias)
-					{
-						const uint8_t alpha_ = static_cast<uint8_t>(prev_bias * static_cast<float>(_color.a));
-						SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, alpha_);
-						SDL_RenderPoints(_renderer, points_.data(), points_.size() - 4);
-						points_.clear();
-						points_.emplace_back(SDL_FPoint{(_x + _r - x), (_y + _r - y)});
-						points_.emplace_back(SDL_FPoint{(_x + x + _w - _r), (_y + _r - y)});
-						points_.emplace_back(SDL_FPoint{(_x + _r - x), (_y + y + _h - _r)});
-						points_.emplace_back(SDL_FPoint{(_x + x + _w - _r), (_y + y + _h - _r)});
-					}
-					prev_bias = bias;
 				}
+				prev_bias = bias;
 			}
 		}
 	}
+}
 
-	void draw_circle(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
-					 const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff}) noexcept
-	{
-		draw_ring(_renderer, _x, _y, _r - 1.f, _r + 1.f, _color);
-	}
+void draw_circle(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
+				 const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff}) noexcept
+{
+	draw_ring(_renderer, _x, _y, _r - 1.f, _r + 1.f, _color);
+}
 
-	void draw_filled_topleft_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
-									  const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
-	{
-		float bias = 1.f;
-		float res = 1.f;
-		const float r2_ = _r * _r;
-		const float r_4 = _r / 2.f;
-		for (float y = 0.5f; y <= _r; y += 1.f)
-		{
-			for (float x = 0.5f; x <= _r; x += 1.f)
-			{
-				res = x * x + y * y;
-				if (res <= r2_)
-				{
-					bias = std::clamp(((1.f - (res / r2_)) * r_4), 0.f, 1.f);
-					drawPixelFWeight(_renderer, _x - x, _y - y, bias, _color);
-				}
-			}
-		}
-	}
-
-	void draw_filled_topright_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
-									   const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
-	{
-		float bias = 1.f;
-		float res = 1.f;
-		const float r2_ = _r * _r;
-		const float r_4 = _r / 2.f;
-		for (float y = 0.5f; y <= _r; y += 1.f)
-		{
-			for (float x = 0.5f; x <= _r; x += 1.f)
-			{
-				res = x * x + y * y;
-				if (res <= r2_)
-				{
-					bias = std::clamp(((1.f - (res / r2_)) * r_4), 0.f, 1.f);
-					drawPixelFWeight(_renderer, _x + x, _y - y, bias, _color);
-				}
-			}
-		}
-	}
-
-	void draw_filled_bottomleft_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
-										 const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
-	{
-		float bias = 1.f;
-		float res = 1.f;
-		const float r2_ = _r * _r;
-		const float r_4 = _r / 2.f;
-		for (float y = 0.5f; y <= _r; y += 1.f)
-		{
-			for (float x = 0.5f; x <= _r; x += 1.f)
-			{
-				res = x * x + y * y;
-				if (res <= r2_)
-				{
-					bias = std::clamp(((1.f - (res / r2_)) * r_4), 0.f, 1.f);
-					drawPixelFWeight(_renderer, _x - x, _y + y, bias, _color);
-				}
-			}
-		}
-	}
-
-	void draw_filled_bottomright_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
-										  const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
-	{
-		float bias = 1.f;
-		float res = 1.f;
-		const float r2_ = _r * _r;
-		const float r_4 = _r / 2.f;
-		for (float y = 0.5f; y <= _r; y += 1.f)
-		{
-			for (float x = 0.5f; x <= _r; x += 1.f)
-			{
-				res = x * x + y * y;
-				if (res <= r2_)
-				{
-					bias = std::clamp(((1.f - (res / r2_)) * r_4), 0.f, 1.f);
-					drawPixelFWeight(_renderer, _x + x, _y + y, bias, _color);
-				}
-			}
-		}
-	}
-
-	void draw_filled_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r, const QUADRANT &_quadrant,
-							  const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
-	{
-		if (_quadrant == QUADRANT::TOP_LEFT)
-			draw_filled_topleft_quadrant(_renderer, _x, _y, _r, _color);
-		else if (_quadrant == QUADRANT::TOP_RIGHT)
-			draw_filled_topright_quadrant(_renderer, _x, _y, _r, _color);
-		else if (_quadrant == QUADRANT::BOTTOM_LEFT)
-			draw_filled_bottomleft_quadrant(_renderer, _x, _y, _r, _color);
-		else if (_quadrant == QUADRANT::BOTTOM_RIGHT)
-			draw_filled_bottomright_quadrant(_renderer, _x, _y, _r, _color);
-	}
-
-	void draw_topleft_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
-							   const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
-	{
-		draw_ring_top_left_quadrant(_renderer, _x, _y, _r - 1.f, _r + 1.f, _color);
-	}
-
-	void draw_topright_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
-								const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
-	{
-		draw_ring_top_right_quadrant(_renderer, _x, _y, _r - 1.f, _r + 1.f, _color);
-	}
-
-	void draw_bottomleft_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
+void draw_filled_topleft_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
 								  const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+{
+	float bias = 1.f;
+	float res = 1.f;
+	const float r2_ = _r * _r;
+	const float r_4 = _r / 2.f;
+	for (float y = 0.5f; y <= _r; y += 1.f)
 	{
-		draw_ring_bottom_left_quadrant(_renderer, _x, _y, _r - 1.f, _r + 1.f, _color);
+		for (float x = 0.5f; x <= _r; x += 1.f)
+		{
+			res = x * x + y * y;
+			if (res <= r2_)
+			{
+				bias = std::clamp(((1.f - (res / r2_)) * r_4), 0.f, 1.f);
+				drawPixelFWeight(_renderer, _x - x, _y - y, bias, _color);
+			}
+		}
 	}
+}
 
-	void draw_bottomright_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
+void draw_filled_topright_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
 								   const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+{
+	float bias = 1.f;
+	float res = 1.f;
+	const float r2_ = _r * _r;
+	const float r_4 = _r / 2.f;
+	for (float y = 0.5f; y <= _r; y += 1.f)
 	{
-		draw_ring_bottom_right_quadrand(_renderer, _x, _y, _r - 1.f, _r + 1.f, _color);
+		for (float x = 0.5f; x <= _r; x += 1.f)
+		{
+			res = x * x + y * y;
+			if (res <= r2_)
+			{
+				bias = std::clamp(((1.f - (res / r2_)) * r_4), 0.f, 1.f);
+				drawPixelFWeight(_renderer, _x + x, _y - y, bias, _color);
+			}
+		}
+	}
+}
+
+void draw_filled_bottomleft_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
+									 const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+{
+	float bias = 1.f;
+	float res = 1.f;
+	const float r2_ = _r * _r;
+	const float r_4 = _r / 2.f;
+	for (float y = 0.5f; y <= _r; y += 1.f)
+	{
+		for (float x = 0.5f; x <= _r; x += 1.f)
+		{
+			res = x * x + y * y;
+			if (res <= r2_)
+			{
+				bias = std::clamp(((1.f - (res / r2_)) * r_4), 0.f, 1.f);
+				drawPixelFWeight(_renderer, _x - x, _y + y, bias, _color);
+			}
+		}
+	}
+}
+
+void draw_filled_bottomright_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
+									  const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+{
+	float bias = 1.f;
+	float res = 1.f;
+	const float r2_ = _r * _r;
+	const float r_4 = _r / 2.f;
+	for (float y = 0.5f; y <= _r; y += 1.f)
+	{
+		for (float x = 0.5f; x <= _r; x += 1.f)
+		{
+			res = x * x + y * y;
+			if (res <= r2_)
+			{
+				bias = std::clamp(((1.f - (res / r2_)) * r_4), 0.f, 1.f);
+				drawPixelFWeight(_renderer, _x + x, _y + y, bias, _color);
+			}
+		}
+	}
+}
+
+void draw_filled_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r, const QUADRANT &_quadrant,
+						  const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+{
+	if (_quadrant == QUADRANT::TOP_LEFT)
+		draw_filled_topleft_quadrant(_renderer, _x, _y, _r, _color);
+	else if (_quadrant == QUADRANT::TOP_RIGHT)
+		draw_filled_topright_quadrant(_renderer, _x, _y, _r, _color);
+	else if (_quadrant == QUADRANT::BOTTOM_LEFT)
+		draw_filled_bottomleft_quadrant(_renderer, _x, _y, _r, _color);
+	else if (_quadrant == QUADRANT::BOTTOM_RIGHT)
+		draw_filled_bottomright_quadrant(_renderer, _x, _y, _r, _color);
+}
+
+void draw_topleft_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
+						   const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+{
+	draw_ring_top_left_quadrant(_renderer, _x, _y, _r - 1.f, _r + 1.f, _color);
+}
+
+void draw_topright_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
+							const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+{
+	draw_ring_top_right_quadrant(_renderer, _x, _y, _r - 1.f, _r + 1.f, _color);
+}
+
+void draw_bottomleft_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
+							  const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+{
+	draw_ring_bottom_left_quadrant(_renderer, _x, _y, _r - 1.f, _r + 1.f, _color);
+}
+
+void draw_bottomright_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r,
+							   const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+{
+	draw_ring_bottom_right_quadrand(_renderer, _x, _y, _r - 1.f, _r + 1.f, _color);
+}
+
+void draw_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r, const QUADRANT &_quadrant,
+				   const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+{
+	if (_quadrant == QUADRANT::TOP_LEFT)
+		draw_topleft_quadrant(_renderer, _x, _y, _r, _color);
+	else if (_quadrant == QUADRANT::TOP_RIGHT)
+		draw_topright_quadrant(_renderer, _x, _y, _r, _color);
+	else if (_quadrant == QUADRANT::BOTTOM_LEFT)
+		draw_bottomleft_quadrant(_renderer, _x, _y, _r, _color);
+	else if (_quadrant == QUADRANT::BOTTOM_RIGHT)
+		draw_bottomright_quadrant(_renderer, _x, _y, _r, _color);
+}
+
+void fillRoundedRectF3(SDL_Renderer *_renderer, SDL_FRect _dest, float _rad,
+					   const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff}) noexcept
+{
+	_dest = {roundf(_dest.x), roundf(_dest.y), roundf(_dest.w), roundf(_dest.h)};
+	_rad = std::clamp(_rad, 0.f, 99.5f);
+	float final_rad = 1.f;
+	if (_dest.h > _dest.w)
+	{
+		final_rad = ((_rad / 2.f) * _dest.w) / 100.f;
+	}
+	else if (_dest.h <= _dest.w)
+	{
+		final_rad = ((_rad / 2.f) * _dest.h) / 100.f;
 	}
 
-	void draw_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_r, const QUADRANT &_quadrant,
-					   const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+	final_rad = roundf(final_rad);
+
+	if (final_rad >= 100.f && _dest.w == _dest.h)
 	{
-		if (_quadrant == QUADRANT::TOP_LEFT)
-			draw_topleft_quadrant(_renderer, _x, _y, _r, _color);
-		else if (_quadrant == QUADRANT::TOP_RIGHT)
-			draw_topright_quadrant(_renderer, _x, _y, _r, _color);
-		else if (_quadrant == QUADRANT::BOTTOM_LEFT)
-			draw_bottomleft_quadrant(_renderer, _x, _y, _r, _color);
-		else if (_quadrant == QUADRANT::BOTTOM_RIGHT)
-			draw_bottomright_quadrant(_renderer, _x, _y, _r, _color);
+		draw_filled_circle(_renderer, _dest.x + final_rad, _dest.y + final_rad, final_rad, _color);
+		return;
 	}
 
-	void fillRoundedRectF(SDL_Renderer *_renderer, SDL_FRect _dest, float _rad,
-						  const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff}) noexcept
+	const std::array<const SDL_FRect, 3> rects_ = {SDL_FRect{(_dest.x), (_dest.y + final_rad), (_dest.w), (_dest.h - (final_rad * 2.f))},
+												   {(_dest.x + final_rad), (_dest.y), (_dest.w - (final_rad * 2.f)), (final_rad)},
+												   {(_dest.x + final_rad), (_dest.y + _dest.h - final_rad), (_dest.w - (final_rad * 2.f)), (final_rad)}};
+
+	SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
+	RenderFillRectsF(_renderer, rects_.data(), rects_.size());
+	draw_filled_circle_4quad(_renderer, _dest.x + final_rad, _dest.y + final_rad, _dest.w - (final_rad * 2.f), _dest.h - (final_rad * 2.f), final_rad, _color);
+}
+
+void drawRoundedRectF(SDL_Renderer *_renderer, const SDL_FRect &_dest, const float &_rad,
+					  const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff}) noexcept
+{
+	float final_rad = 1.f;
+	if (_dest.h > _dest.w)
 	{
-		_dest = {roundf(_dest.x), roundf(_dest.y), roundf(_dest.w), roundf(_dest.h)};
-		_rad = std::clamp(_rad, 0.f, 99.5f);
-		float final_rad = 1.f;
-		if (_dest.h > _dest.w)
-		{
-			final_rad = ((_rad / 2.f) * _dest.w) / 100.f;
+		final_rad = ((_rad / 2.f) * _dest.w) / 100.f;
+	}
+	else if (_dest.h <= _dest.w)
+	{
+		final_rad = ((_rad / 2.f) * _dest.h) / 100.f;
+	}
+
+	SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
+	RenderLine(_renderer, _dest.x + final_rad, _dest.y, _dest.x + _dest.w - final_rad, _dest.y);
+	RenderLine(_renderer, _dest.x + final_rad, _dest.y + _dest.h, _dest.x + _dest.w - final_rad, _dest.y + _dest.h);
+	RenderLine(_renderer, _dest.x + _dest.w, _dest.y + final_rad, _dest.x + _dest.w, _dest.y + _dest.h - final_rad);
+	RenderLine(_renderer, _dest.x, _dest.y + final_rad, _dest.x, _dest.y + _dest.h - final_rad);
+
+	draw_quadrant(_renderer, _dest.x + final_rad + 1.f, _dest.y + final_rad + 1.f, final_rad, QUADRANT::TOP_LEFT, _color);
+	draw_quadrant(_renderer, _dest.x + _dest.w - final_rad, _dest.y + final_rad + 1.f, final_rad, QUADRANT::TOP_RIGHT, _color);
+	draw_quadrant(_renderer, _dest.x + final_rad + 1.f, _dest.y + _dest.h - final_rad, final_rad, QUADRANT::BOTTOM_LEFT, _color);
+	draw_quadrant(_renderer, _dest.x + _dest.w - final_rad, _dest.y + _dest.h - final_rad, final_rad, QUADRANT::BOTTOM_RIGHT, _color);
+}
+
+void fillRoundedRectOutline2(SDL_Renderer *_renderer, const SDL_FRect &rect, const float &_r, const float &_outline_psz, const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
+{
+	float final_rad = 1.f;
+	float outline_sz_ = 1.f;
+	SDL_FRect _rect = {roundf(rect.x), roundf(rect.y), roundf(rect.w), roundf(rect.h)};
+	if (_rect.h > _rect.w)
+	{
+		final_rad = ((_r / 2.f) * _rect.w) / 100.f;
+		outline_sz_ = ((_outline_psz / 2.f) * _rect.w) / 100.f;
+	}
+	else if (_rect.h <= _rect.w)
+	{
+		final_rad = ((_r / 2.f) * _rect.h) / 100.f;
+		outline_sz_ = ((_outline_psz / 2.f) * _rect.h) / 100.f;
+	}
+	final_rad = roundf(final_rad);
+	outline_sz_ = roundf(outline_sz_);
+
+	const std::array<SDL_FRect, 4> side_rects = {SDL_FRect{_rect.x + final_rad, _rect.y, _rect.w - (final_rad * 2.f), outline_sz_},
+												 {_rect.x + final_rad, _rect.y + _rect.h - outline_sz_, _rect.w - (final_rad * 2.f), outline_sz_},
+												 {_rect.x, _rect.y + final_rad, outline_sz_, _rect.h - (final_rad * 2.f)},
+												 {_rect.x + _rect.w - outline_sz_, _rect.y + final_rad, outline_sz_, _rect.h - (final_rad * 2.f)}};
+	SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
+	RenderFillRectsF(_renderer, side_rects.data(), side_rects.size());
+	draw_ring_4quad(_renderer, _rect.x + final_rad - 1.f, _rect.y + final_rad, side_rects[0].w, side_rects[3].h, final_rad - outline_sz_, final_rad, _color);
+}
+
+void DrawCircle(SDL_Renderer *renderer, float x, float y, float r,
+				SDL_Color color = {0xff, 0xff, 0xff, 0xff})
+{
+	draw_circle(renderer, x, y, r, color);
+}
+
+void FillCircle(SDL_Renderer *renderer, float x, float y, float r,
+				SDL_Color color = {0xff, 0xff, 0xff, 0xff}, Uint8 quadrant = 0)
+{
+	draw_filled_circle(renderer, x, y, r, color);
+}
+
+/*
+// Forward declaration for the corner drawing function
+static void DrawAAStrokedCornersSymmetricallyF(SDL_Renderer* renderer,
+											   float rect_x, float rect_y, float rect_w, float rect_h,
+											   float outer_radius_px, float inner_radius_px,
+											   const SDL_Color& color) noexcept;
+
+// Helper: Calculates coverage factor (0 to 1) based on signed distance to edge.
+// dist_to_edge: positive outside, negative inside.
+static float CalculatePixelCoverage(float dist_to_edge) noexcept {
+	if (dist_to_edge <= -0.5f) { // Pixel center is well inside the shape
+		return 1.0f;
+	}
+	if (dist_to_edge >= 0.5f) {  // Pixel center is well outside the shape
+		return 0.0f;
+	}
+	// Pixel center is on the anti-aliased boundary
+	return 0.5f - dist_to_edge;
+}
+
+// Draws all four anti-aliased STROKED corners symmetrically.
+static void DrawAAStrokedCornersSymmetricallyF(SDL_Renderer* renderer,
+											   float rect_x, float rect_y, float rect_w, float rect_h,
+											   float outer_radius_px, float inner_radius_px, /* Can be 0 or negative if stroke is thick */
+/*
+											   const SDL_Color& color) noexcept {
+	if (outer_radius_px <= 0.001f) return; // No radius, no corners to draw
+
+	// Ensure inner_radius is not excessively negative if stroke_width > outer_radius
+	// Effectively, if stroke is thicker than outer_radius, inner_radius becomes 0 for coverage calculation.
+	float effective_inner_radius_px = std::max(0.0f, inner_radius_px);
+
+	std::vector<SDL_FPoint> alpha_batches[256];
+	for (int i = 0; i < 256; ++i) {
+		alpha_batches[i].reserve(128); // Pre-allocate
+	}
+
+	// Iterate over the canonical top-left quadrant's bounding box (outer_radius_px x outer_radius_px).
+	int iteration_limit = static_cast<int>(std::ceil(outer_radius_px));
+	for (int qy = 0; qy < iteration_limit; ++qy) {
+		for (int qx = 0; qx < iteration_limit; ++qx) {
+			float pixel_center_qx = static_cast<float>(qx) + 0.5f;
+			float pixel_center_qy = static_cast<float>(qy) + 0.5f;
+
+			// Distance from pixel center to the common center of arcs in the canonical quadrant
+			// (which is at outer_radius_px, outer_radius_px)
+			float dist_to_common_center = std::sqrt(
+				std::pow(pixel_center_qx - outer_radius_px, 2) +
+				std::pow(pixel_center_qy - outer_radius_px, 2)
+			);
+
+			// SDF relative to the outer arc boundary
+			float sdf_outer_arc = dist_to_common_center - outer_radius_px;
+			// SDF relative to the inner arc boundary
+			float sdf_inner_arc = dist_to_common_center - effective_inner_radius_px;
+
+			float coverage_outer = CalculatePixelCoverage(sdf_outer_arc);
+			float coverage_inner = CalculatePixelCoverage(sdf_inner_arc);
+
+			// Stroke coverage is the part covered by outer arc but not by inner arc
+			float stroke_coverage_factor = std::max(0.0f, coverage_outer - coverage_inner);
+
+			if (stroke_coverage_factor > 0.001f) {
+				Uint8 final_pixel_alpha = static_cast<Uint8>(static_cast<float>(color.a) * stroke_coverage_factor);
+				if (final_pixel_alpha > 0) {
+					// Add points for all four corners using symmetry
+					alpha_batches[final_pixel_alpha].push_back({rect_x + static_cast<float>(qx), rect_y + static_cast<float>(qy)}); // TL
+					alpha_batches[final_pixel_alpha].push_back({rect_x + rect_w - 1.0f - static_cast<float>(qx), rect_y + static_cast<float>(qy)}); // TR
+					alpha_batches[final_pixel_alpha].push_back({rect_x + static_cast<float>(qx), rect_y + rect_h - 1.0f - static_cast<float>(qy)}); // BL
+					alpha_batches[final_pixel_alpha].push_back({rect_x + rect_w - 1.0f - static_cast<float>(qx), rect_y + rect_h - 1.0f - static_cast<float>(qy)}); // BR
+				}
+			}
 		}
-		else if (_dest.h <= _dest.w)
-		{
-			final_rad = ((_rad / 2.f) * _dest.h) / 100.f;
+	}
+
+	// Draw the batched points
+	for (int alpha_val = 1; alpha_val < 256; ++alpha_val) {
+		if (!alpha_batches[alpha_val].empty()) {
+			SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, static_cast<Uint8>(alpha_val));
+			SDL_RenderDrawPointsF(renderer, alpha_batches[alpha_val].data(),
+								 static_cast<int>(alpha_batches[alpha_val].size()));
+		}
+	}
+}
+
+
+// Draws an anti-aliased stroke (outline) of a rounded rectangle.
+// _renderer: The SDL renderer.
+// _dest: The SDL_FRect defining the outer bounding box of the stroke.
+// _rad_percent: Corner radius as a percentage (0-100) of the rectangle's smallest side.
+// _stroke_width: Width of the stroke in pixels.
+// _color: The stroke color (including alpha).
+void strokeRoundedRectF(SDL_Renderer* _renderer, SDL_FRect _dest, float _rad_percent,
+						float _stroke_width, const SDL_Color& _color = {0xff, 0xff, 0xff, 0xff}) noexcept {
+
+	if (_dest.w <= 0.001f || _dest.h <= 0.001f || _stroke_width <= 0.001f) {
+		return; // Nothing to draw
+	}
+
+	_rad_percent = std::max(0.0f, std::min(100.0f, _rad_percent));
+	_stroke_width = std::max(0.001f, _stroke_width); // Ensure stroke has some thickness
+
+	float smallest_side_outer = std::min(_dest.w, _dest.h);
+	float outer_radius_px = (smallest_side_outer * _rad_percent) / 200.0f;
+
+	outer_radius_px = std::min(outer_radius_px, _dest.w / 2.0f);
+	outer_radius_px = std::min(outer_radius_px, _dest.h / 2.0f);
+	outer_radius_px = std::max(0.0f, outer_radius_px);
+
+	float inner_radius_px = outer_radius_px - _stroke_width;
+	// inner_radius_px can be negative if stroke_width > outer_radius_px.
+	// DrawAAStrokedCornersSymmetricallyF will handle this by effectively making the inner hole disappear.
+
+	SDL_BlendMode old_blend_mode;
+	SDL_GetRenderDrawBlendMode(_renderer, &old_blend_mode);
+	Uint8 old_r, old_g, old_b, old_a;
+	SDL_GetRenderDrawColor(_renderer, &old_r, &old_g, &old_b, &old_a);
+
+	SDL_SetRenderDrawBlendMode(_renderer, SDL_BLENDMODE_BLEND);
+	SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a); // Base color for solid parts
+
+	// --- Special case: No radius (sharp corners) ---
+	if (outer_radius_px < 0.01f) {
+		// Top edge
+		SDL_FRect top_edge = {_dest.x, _dest.y, _dest.w, _stroke_width};
+		SDL_RenderFillRectF(_renderer, &top_edge);
+		// Bottom edge
+		SDL_FRect bottom_edge = {_dest.x, _dest.y + _dest.h - _stroke_width, _dest.w, _stroke_width};
+		SDL_RenderFillRectF(_renderer, &bottom_edge);
+		// Left edge (avoid overdrawing corners of top/bottom)
+		SDL_FRect left_edge = {_dest.x, _dest.y + _stroke_width, _stroke_width, _dest.h - 2.0f * _stroke_width};
+		if (left_edge.h > 0.0f) SDL_RenderFillRectF(_renderer, &left_edge);
+		// Right edge (avoid overdrawing corners of top/bottom)
+		SDL_FRect right_edge = {_dest.x + _dest.w - _stroke_width, _dest.y + _stroke_width, _stroke_width, _dest.h - 2.0f * _stroke_width};
+		if (right_edge.h > 0.0f) SDL_RenderFillRectF(_renderer, &right_edge);
+	} else {
+		// --- Draw the four straight segments of the stroke ---
+		// Top horizontal segment
+		float straight_w = _dest.w - 2.0f * outer_radius_px;
+		if (straight_w > 0.0f) {
+			SDL_FRect top_stroke = {_dest.x + outer_radius_px, _dest.y, straight_w, _stroke_width};
+			SDL_RenderFillRectF(_renderer, &top_stroke);
 		}
 
-		final_rad = roundf(final_rad);
+		// Bottom horizontal segment
+		if (straight_w > 0.0f) {
+			SDL_FRect bottom_stroke = {_dest.x + outer_radius_px, _dest.y + _dest.h - _stroke_width, straight_w, _stroke_width};
+			SDL_RenderFillRectF(_renderer, &bottom_stroke);
+		}
 
-		if (final_rad >= 100.f && _dest.w == _dest.h)
+		// Left vertical segment
+		float straight_h = _dest.h - 2.0f * outer_radius_px;
+		if (straight_h > 0.0f) {
+			SDL_FRect left_stroke = {_dest.x, _dest.y + outer_radius_px, _stroke_width, straight_h};
+			SDL_RenderFillRectF(_renderer, &left_stroke);
+		}
+
+		// Right vertical segment
+		if (straight_h > 0.0f) {
+			SDL_FRect right_stroke = {_dest.x + _dest.w - _stroke_width, _dest.y + outer_radius_px, _stroke_width, straight_h};
+			SDL_RenderFillRectF(_renderer, &right_stroke);
+		}
+
+		// --- Draw the four anti-aliased corner strokes ---
+		DrawAAStrokedCornersSymmetricallyF(_renderer, _dest.x, _dest.y, _dest.w, _dest.h,
+										   outer_radius_px, inner_radius_px, _color);
+	}
+
+	SDL_SetRenderDrawBlendMode(_renderer, old_blend_mode);
+	SDL_SetRenderDrawColor(_renderer, old_r, old_g, old_b, old_a);
+}
+
+*/
+
+// Forward declaration for the corner drawing function
+static void DrawAAStrokedCornersSymmetricallyF(SDL_Renderer *renderer,
+											   float rect_x, float rect_y, float rect_w, float rect_h,
+											   float outer_radius_px, float inner_radius_px,
+											   const SDL_Color &color) noexcept;
+
+// Helper: Calculates coverage factor (0 to 1) based on signed distance to edge.
+// dist_to_edge: positive outside, negative inside.
+static float CalculatePixelCoverage(float dist_to_edge) noexcept
+{
+	if (dist_to_edge <= -0.5f)
+	{ // Pixel center is well inside the shape
+		return 1.0f;
+	}
+	if (dist_to_edge >= 0.5f)
+	{ // Pixel center is well outside the shape
+		return 0.0f;
+	}
+	// Pixel center is on the anti-aliased boundary
+	return 0.5f - dist_to_edge;
+}
+
+// Draws all four anti-aliased STROKED corners symmetrically using single vector batching.
+static void DrawAAStrokedCornersSymmetricallyF(SDL_Renderer *renderer,
+											   float rect_x, float rect_y, float rect_w, float rect_h,
+											   float outer_radius_px, float inner_radius_px,
+											   const SDL_Color &color) noexcept
+{
+	if (outer_radius_px <= 0.001f)
+		return; // No radius, no corners to draw
+
+	float effective_inner_radius_px = std::max(0.0f, inner_radius_px);
+	std::unordered_map<uint8_t, std::vector<SDL_FPoint>> fp{};
+
+	std::vector<SDL_FPoint> point_batch;
+	// Reserve some space; average number of points per batch might be small, but total can be large.
+	// Max points in one quadrant for a radius R is roughly R*R. Times 4 for symmetry.
+	// This is a heuristic.
+	point_batch.reserve(static_cast<size_t>(std::ceil(outer_radius_px) * std::ceil(outer_radius_px) * 0.5) * 4);
+
+	Uint8 current_batch_alpha = 0; // Alpha of the points currently in point_batch
+
+	int iteration_limit = static_cast<int>(std::ceil(outer_radius_px));
+	for (int qy = 0; qy < iteration_limit; ++qy)
+	{
+		for (int qx = 0; qx < iteration_limit; ++qx)
 		{
-			draw_filled_circle(_renderer, _dest.x + final_rad, _dest.y + final_rad, final_rad, _color);
+			float pixel_center_qx = static_cast<float>(qx) + 0.5f;
+			float pixel_center_qy = static_cast<float>(qy) + 0.5f;
+
+			float dist_to_common_center = std::sqrt(
+				std::pow(pixel_center_qx - outer_radius_px, 2) +
+				std::pow(pixel_center_qy - outer_radius_px, 2));
+
+			float sdf_outer_arc = dist_to_common_center - outer_radius_px;
+			float sdf_inner_arc = dist_to_common_center - effective_inner_radius_px;
+
+			float coverage_outer = CalculatePixelCoverage(sdf_outer_arc);
+			float coverage_inner = CalculatePixelCoverage(sdf_inner_arc);
+
+			float stroke_coverage_factor = std::max(0.0f, coverage_outer - coverage_inner);
+			Uint8 final_pixel_alpha = 0;
+
+			if (stroke_coverage_factor > 0.001f)
+			{
+				final_pixel_alpha = static_cast<Uint8>(static_cast<float>(color.a) * stroke_coverage_factor);
+			}
+			if (final_pixel_alpha > 0)
+			{
+				// If alpha changes and there are points in the batch, draw them
+				if (final_pixel_alpha != current_batch_alpha && !point_batch.empty())
+				{
+					concat_rng(fp[current_batch_alpha], point_batch.begin(), point_batch.end());
+					point_batch.clear(); // Prepare for new batch
+				}
+
+				current_batch_alpha = final_pixel_alpha; // Update current batch alpha
+
+				//	if (final_pixel_alpha > 0)
+				//{
+				// Add points for all four corners using symmetry
+				point_batch.emplace_back(SDL_FPoint{rect_x + static_cast<float>(qx), rect_y + static_cast<float>(qy)});									// TL
+				point_batch.emplace_back(SDL_FPoint{rect_x + rect_w - 1.0f - static_cast<float>(qx), rect_y + static_cast<float>(qy)});					// TR
+				point_batch.emplace_back(SDL_FPoint{rect_x + static_cast<float>(qx), rect_y + rect_h - 1.0f - static_cast<float>(qy)});					// BL
+				point_batch.emplace_back(SDL_FPoint{rect_x + rect_w - 1.0f - static_cast<float>(qx), rect_y + rect_h - 1.0f - static_cast<float>(qy)}); // BR
+			}
+		}
+	}
+
+	// Draw any remaining points in the last batch
+	if (!point_batch.empty() && current_batch_alpha > 0)
+	{
+		SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, current_batch_alpha);
+		SDL_RenderDrawPointsF(renderer, point_batch.data(), static_cast<int>(point_batch.size()));
+	}
+	for (auto &[key, val] : fp)
+	{
+		SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, key);
+		RenderPoints(renderer, val.data(), val.size());
+	}
+}
+
+// Draws an anti-aliased stroke (outline) of a rounded rectangle.
+// _renderer: The SDL renderer.
+// _dest: The SDL_FRect defining the outer bounding box of the stroke.
+// _rad_percent: Corner radius as a percentage (0-100) of the rectangle's smallest side.
+// _stroke_width: Width of the stroke in pixels.
+// _color: The stroke color (including alpha).
+void fillRoundedRectOutline(SDL_Renderer *_renderer, SDL_FRect _dest, float _rad_percent,
+							float _stroke_width, const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff}) noexcept
+{
+	if (_dest.w <= 0.001f || _dest.h <= 0.001f || _stroke_width <= 0.001f)
+	{
+		return; // Nothing to draw
+	}
+
+	_rad_percent = std::max(0.0f, std::min(100.0f, _rad_percent));
+	_stroke_width = std::max(0.001f, _stroke_width);
+
+	float smallest_side_outer = std::min(_dest.w, _dest.h);
+	float outer_radius_px = (smallest_side_outer * _rad_percent) / 200.0f;
+
+	outer_radius_px = std::min(outer_radius_px, _dest.w / 2.0f);
+	outer_radius_px = std::min(outer_radius_px, _dest.h / 2.0f);
+	outer_radius_px = std::max(0.0f, outer_radius_px);
+
+	float inner_radius_px = outer_radius_px - _stroke_width;
+
+	SDL_BlendMode old_blend_mode;
+	SDL_GetRenderDrawBlendMode(_renderer, &old_blend_mode);
+	Uint8 old_r, old_g, old_b, old_a;
+	SDL_GetRenderDrawColor(_renderer, &old_r, &old_g, &old_b, &old_a);
+
+	SDL_SetRenderDrawBlendMode(_renderer, SDL_BLENDMODE_BLEND);
+	// Base color for solid parts will be set with full alpha, corners use calculated alpha.
+	SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
+
+	if (outer_radius_px < 0.01f)
+	{ // Special case: No radius (sharp corners)
+		std::vector<SDL_FRect> batch{
+			// Top edge
+			SDL_FRect{_dest.x, _dest.y, _dest.w, _stroke_width},
+			// Bottom edge
+			SDL_FRect{_dest.x, _dest.y + _dest.h - _stroke_width, _dest.w, _stroke_width},
+			// Left edge
+			SDL_FRect{_dest.x, _dest.y + _stroke_width, _stroke_width, _dest.h - 2.0f * _stroke_width},
+			// Right edge
+			SDL_FRect{_dest.x + _dest.w - _stroke_width, _dest.y + _stroke_width, _stroke_width, _dest.h - 2.0f * _stroke_width}};
+
+		RenderFillRectsF(_renderer, batch.data(), batch.size()); // Check height before drawing
+	}
+	else
+	{
+		// --- Draw the four straight segments of the stroke (with full original alpha) ---
+		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
+
+		float straight_w = _dest.w - 2.0f * outer_radius_px;
+		float straight_h = _dest.h - 2.0f * outer_radius_px;
+		std::vector<SDL_FRect> batch{
+			SDL_FRect{_dest.x + outer_radius_px, _dest.y, straight_w, _stroke_width},
+			SDL_FRect{_dest.x + outer_radius_px, _dest.y + _dest.h - _stroke_width, straight_w, _stroke_width},
+			SDL_FRect{_dest.x, _dest.y + outer_radius_px, _stroke_width, straight_h},
+			SDL_FRect{_dest.x + _dest.w - _stroke_width, _dest.y + outer_radius_px, _stroke_width, straight_h}};
+		RenderFillRectsF(_renderer, batch.data(), batch.size()); // Check height before drawing
+
+		// --- Draw the four anti-aliased corner strokes ---
+		// The helper function will manage its own SDL_SetRenderDrawColor calls for varying alphas.
+		DrawAAStrokedCornersSymmetricallyF(_renderer, _dest.x, _dest.y, _dest.w, _dest.h,
+										   outer_radius_px, inner_radius_px, _color);
+	}
+
+	SDL_SetRenderDrawBlendMode(_renderer, old_blend_mode);
+	SDL_SetRenderDrawColor(_renderer, old_r, old_g, old_b, old_a);
+}
+
+// Helper function to calculate anti-aliased alpha.
+// dist_to_edge: Distance from pixel center to the ideal circle edge.
+//               Negative means inside, positive means outside.
+// base_alpha: The original alpha value of the color.
+static Uint8 CalculateAlpha(float dist_to_edge, Uint8 base_alpha) noexcept
+{
+	float alpha_factor = 0.0f;
+	// Pixel center is more than 0.5 units inside the edge (fully opaque for this pixel)
+	if (dist_to_edge <= -0.5f)
+	{
+		alpha_factor = 1.0f;
+	}
+	// Pixel center is between 0.5 units inside and 0.5 units outside (anti-aliased)
+	else if (dist_to_edge < 0.5f)
+	{										// Note: strictly < 0.5f, not <=
+		alpha_factor = 0.5f - dist_to_edge; // Linearly interpolate alpha
+	}
+	// Pixel center is more than 0.5 units outside the edge (fully transparent for this pixel)
+	else
+	{
+		alpha_factor = 0.0f;
+	}
+	return static_cast<Uint8>(static_cast<float>(base_alpha) * alpha_factor);
+}
+
+static void DrawAACornersSymmetrically_Scanline(SDL_Renderer *renderer,
+												float rect_x, float rect_y, float rect_w, float rect_h,
+												float radius_px, SDL_Color color) noexcept
+{
+	if (radius_px <= 0.0f)
+		return;
+
+	const int int_radius = static_cast<int>(std::ceil(radius_px));
+	const float radius_sq = radius_px * radius_px;
+
+	// Use a cache for alpha values per row to avoid recalculating for symmetric points
+	std::vector<Uint8> alpha_cache(int_radius);
+
+	for (int qy = 0; qy < int_radius; ++qy)
+	{
+		Uint8 last_alpha = 0;
+		int run_start_qx = 0;
+
+		for (int qx = 0; qx < int_radius; ++qx)
+		{
+			const float pixel_center_qy = static_cast<float>(qy) + 0.5f;
+			const float dist_y_from_center = pixel_center_qy - radius_px;
+
+			// Check if this pixel can possibly be inside the circle
+			if (dist_y_from_center * dist_y_from_center > radius_sq)
+			{
+				alpha_cache[qx] = 0;
+			}
+			else
+			{
+				const float pixel_center_qx = static_cast<float>(qx) + 0.5f;
+				const float dist_x_from_center = pixel_center_qx - radius_px;
+				const float dist_sq = dist_x_from_center * dist_x_from_center + dist_y_from_center * dist_y_from_center;
+
+				if (dist_sq > radius_sq)
+				{
+					// Use the optimized sqrt from recommendation #1 for AA band
+					const float radius_outer_sq = (radius_px + 0.5f) * (radius_px + 0.5f);
+					if (dist_sq < radius_outer_sq)
+					{
+						alpha_cache[qx] = CalculateAlpha(std::sqrt(dist_sq) - radius_px, color.a);
+					}
+					else
+					{
+						alpha_cache[qx] = 0;
+					}
+				}
+				else
+				{
+					// Inside, but check if it's in the AA band on the inner side
+					const float radius_inner_sq = std::max(0.0f, (radius_px - 0.5f) * (radius_px - 0.5f));
+					if (dist_sq > radius_inner_sq)
+					{
+						alpha_cache[qx] = CalculateAlpha(std::sqrt(dist_sq) - radius_px, color.a);
+					}
+					else
+					{
+						alpha_cache[qx] = color.a; // Fully opaque
+					}
+				}
+			}
+
+			// If the alpha changes, draw the run of previous pixels
+			if (alpha_cache[qx] != last_alpha)
+			{
+				if (last_alpha > 0)
+				{
+					SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, last_alpha);
+					// Top-left
+					SDL_RenderDrawLineF(renderer, rect_x + run_start_qx, rect_y + qy, rect_x + qx - 1, rect_y + qy);
+					// Top-right
+					SDL_RenderDrawLineF(renderer, rect_x + rect_w - qx, rect_y + qy, rect_x + rect_w - 1 - run_start_qx, rect_y + qy);
+					// Bottom-left
+					SDL_RenderDrawLineF(renderer, rect_x + run_start_qx, rect_y + rect_h - 1 - qy, rect_x + qx - 1, rect_y + rect_h - 1 - qy);
+					// Bottom-right
+					SDL_RenderDrawLineF(renderer, rect_x + rect_w - qx, rect_y + rect_h - 1 - qy, rect_x + rect_w - 1 - run_start_qx, rect_y + rect_h - 1 - qy);
+				}
+				run_start_qx = qx;
+				last_alpha = alpha_cache[qx];
+			}
+		}
+		// Draw the last run of the scanline
+		if (last_alpha > 0)
+		{
+			SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, last_alpha);
+			int qx = int_radius;
+			SDL_RenderDrawLineF(renderer, rect_x + run_start_qx, rect_y + qy, rect_x + qx - 1, rect_y + qy);
+			SDL_RenderDrawLineF(renderer, rect_x + rect_w - qx, rect_y + qy, rect_x + rect_w - 1 - run_start_qx, rect_y + qy);
+			SDL_RenderDrawLineF(renderer, rect_x + run_start_qx, rect_y + rect_h - 1 - qy, rect_x + qx - 1, rect_y + rect_h - 1 - qy);
+			SDL_RenderDrawLineF(renderer, rect_x + rect_w - qx, rect_y + rect_h - 1 - qy, rect_x + rect_w - 1 - run_start_qx, rect_y + rect_h - 1 - qy);
+		}
+	}
+}
+// Draws all four anti-aliased rounded corners symmetrically by processing one quadrant
+// and mirroring points, batching by alpha. Uses float coordinates.
+// renderer: The SDL renderer.
+// rect_x, rect_y: Top-left coordinates of the entire rounded rectangle.
+// rect_w, rect_h: Width and height of the entire rounded rectangle.
+// radius_px: The corner radius in pixels.
+// color: The fill color (including base alpha).
+static void DrawAACornersSymmetricallyF(SDL_Renderer *renderer,
+										float rect_x, float rect_y, float rect_w, float rect_h,
+										float radius_px, SDL_Color color) noexcept
+{
+	if (radius_px <= 0.0f)
+		return;
+	// std::unordered_map<uint8_t, std::vector<SDL_FPoint>> fp{};
+	std::vector<SDL_FPoint> point_batch;
+	// point_batch.reserve(static_cast<size_t>(std::ceil(radius_px) * 4)); // Pre-reserve some space
+	Uint8 current_batch_alpha = 0;
+
+	// Iterate over the canonical top-left quadrant's bounding box.
+	// qx, qy are 0-indexed integer offsets for pixels within this canonical quadrant.
+	// Loop up to ceil(radius_px) to cover all pixels potentially affected by the radius.
+	for (int qy = 0; qy < static_cast<int>(std::ceil(radius_px)); ++qy)
+	{
+		for (int qx = 0; qx < static_cast<int>(std::ceil(radius_px)); ++qx)
+		{
+			// Calculate pixel center in the canonical quadrant's local space
+			float pixel_center_qx = static_cast<float>(qx) + 0.5f;
+			float pixel_center_qy = static_cast<float>(qy) + 0.5f;
+
+			// Calculate distance from this pixel's center to the canonical circle's center (radius_px, radius_px)
+			float dist_x_from_center = pixel_center_qx - radius_px;
+			float dist_y_from_center = pixel_center_qy - radius_px;
+			float dist_from_center_val = std::sqrt(dist_x_from_center * dist_x_from_center +
+												   dist_y_from_center * dist_y_from_center);
+
+			// Distance to the edge of the circle
+			float dist_to_edge = dist_from_center_val - radius_px;
+
+			Uint8 pixel_alpha = CalculateAlpha(dist_to_edge, color.a);
+
+			if (pixel_alpha > 0)
+			{
+				// If the alpha for this pixel is different from the current batch's alpha,
+				// draw the old batch and start a new one.
+				if (pixel_alpha != current_batch_alpha && !point_batch.empty())
+				{
+					// concat_rng(fp[current_batch_alpha], point_batch.begin(), point_batch.end());
+					SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, current_batch_alpha);
+					SDL_RenderDrawPointsF(renderer, point_batch.data(), static_cast<int>(point_batch.size()));
+					point_batch.clear();
+				}
+				current_batch_alpha = pixel_alpha;
+
+				// Add points for all four corners using symmetry.
+				// These are the top-left pixels of each corner's quadrant.
+				point_batch.emplace_back(SDL_FPoint{rect_x + static_cast<float>(qx), rect_y + static_cast<float>(qy)});									// TL
+				point_batch.emplace_back(SDL_FPoint{rect_x + rect_w - 1.0f - static_cast<float>(qx), rect_y + static_cast<float>(qy)});					// TR
+				point_batch.emplace_back(SDL_FPoint{rect_x + static_cast<float>(qx), rect_y + rect_h - 1.0f - static_cast<float>(qy)});					// BL
+				point_batch.emplace_back(SDL_FPoint{rect_x + rect_w - 1.0f - static_cast<float>(qx), rect_y + rect_h - 1.0f - static_cast<float>(qy)}); // BR
+			}
+		}
+	}
+
+	// Draw any remaining points in the last batch
+	if (!point_batch.empty())
+	{
+		SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, current_batch_alpha);
+		SDL_RenderDrawPointsF(renderer, point_batch.data(), static_cast<int>(point_batch.size()));
+	} /*
+	for (auto &[key, val] : fp)
+	{
+		SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, key);
+		RenderPoints(renderer, val.data(), val.size());
+	}*/
+}
+
+// Draws a filled rectangle with rounded corners, anti-aliased, using float coordinates.
+// _renderer: The SDL renderer to draw on.
+// _dest: The destination SDL_FRect defining the rectangle's position and size.
+// _rad_percent: The corner radius as a percentage (0-100) of the rectangle's smallest side.
+//               100% means the radius is half the smallest side.
+// _color: The fill color of the rectangle (including alpha).
+void fillRoundedRectF(SDL_Renderer *_renderer, SDL_FRect _dest, float _rad_percent,
+					  const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff}) noexcept
+{
+	// Ensure width and height are positive
+	if (_dest.w <= 0.0f || _dest.h <= 0.0f)
+	{
+		return;
+	}
+
+	// Calculate actual radius in pixels
+	float smallest_side = std::min(_dest.w, _dest.h);
+	float radius_px = (smallest_side * _rad_percent) / 200.0f; // /200 because 100% rad = smallest_side/2
+
+	// Validate and clamp radius_px:
+	if (radius_px < 0.0f)
+		radius_px = 0.0f;
+
+	float max_radius_possible = std::min(_dest.w / 2.0f, _dest.h / 2.0f);
+	if (radius_px > max_radius_possible)
+		radius_px = max_radius_possible;
+
+	// Store original renderer state to restore later
+	SDL_BlendMode old_blend_mode;
+	SDL_GetRenderDrawBlendMode(_renderer, &old_blend_mode);
+	Uint8 old_r, old_g, old_b, old_a;
+	SDL_GetRenderDrawColor(_renderer, &old_r, &old_g, &old_b, &old_a);
+
+	// Enable alpha blending for anti-aliasing
+	SDL_SetRenderDrawBlendMode(_renderer, SDL_BLENDMODE_BLEND);
+
+	// If radius is effectively zero, draw a simple, non-rounded rectangle.
+	if (radius_px < 0.01f)
+	{ // Use a small epsilon for float comparison
+		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
+		SDL_RenderFillRectF(_renderer, &_dest);
+	}
+	else
+	{
+		// --- Draw the opaque central parts of the rounded rectangle ---
+		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
+
+		// 1. Central horizontal rectangle
+		if (_dest.w - 2.0f * radius_px > 0.0f)
+		{
+			SDL_FRect center_rect_h = {_dest.x + radius_px, _dest.y, _dest.w - 2.0f * radius_px, _dest.h};
+			SDL_RenderFillRectF(_renderer, &center_rect_h);
+		}
+
+		// 2. Side vertical strips (to fill the parts of the + shape not covered by center_rect_h)
+		if (_dest.h - 2.0f * radius_px > 0.0f)
+		{
+			// Left strip
+			SDL_FRect left_strip_rect = {_dest.x, _dest.y + radius_px, radius_px, _dest.h - 2.0f * radius_px};
+			SDL_RenderFillRectF(_renderer, &left_strip_rect);
+
+			// Right strip
+			SDL_FRect right_strip_rect = {_dest.x + _dest.w - radius_px, _dest.y + radius_px, radius_px, _dest.h - 2.0f * radius_px};
+			SDL_RenderFillRectF(_renderer, &right_strip_rect);
+		}
+
+		// --- Draw the anti-aliased corner quadrants ---
+		// The DrawAACornersSymmetricallyF function handles all four corners.
+		DrawAACornersSymmetricallyF(_renderer, _dest.x, _dest.y, _dest.w, _dest.h, radius_px, _color);
+	}
+
+	// Restore original renderer state
+	SDL_SetRenderDrawBlendMode(_renderer, old_blend_mode);
+	SDL_SetRenderDrawColor(_renderer, old_r, old_g, old_b, old_a);
+}
+
+void fillRoundedRectFScanline(SDL_Renderer *_renderer, SDL_FRect _dest, float _rad_percent,
+							  const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff}) noexcept
+{
+	// Ensure width and height are positive
+	if (_dest.w <= 0.0f || _dest.h <= 0.0f)
+	{
+		return;
+	}
+
+	// Calculate actual radius in pixels
+	float smallest_side = std::min(_dest.w, _dest.h);
+	float radius_px = (smallest_side * _rad_percent) / 200.0f; // /200 because 100% rad = smallest_side/2
+
+	// Validate and clamp radius_px:
+	if (radius_px < 0.0f)
+		radius_px = 0.0f;
+
+	float max_radius_possible = std::min(_dest.w / 2.0f, _dest.h / 2.0f);
+	if (radius_px > max_radius_possible)
+		radius_px = max_radius_possible;
+
+	// Store original renderer state to restore later
+	SDL_BlendMode old_blend_mode;
+	SDL_GetRenderDrawBlendMode(_renderer, &old_blend_mode);
+	Uint8 old_r, old_g, old_b, old_a;
+	SDL_GetRenderDrawColor(_renderer, &old_r, &old_g, &old_b, &old_a);
+
+	// Enable alpha blending for anti-aliasing
+	SDL_SetRenderDrawBlendMode(_renderer, SDL_BLENDMODE_BLEND);
+
+	// If radius is effectively zero, draw a simple, non-rounded rectangle.
+	if (radius_px < 0.01f)
+	{ // Use a small epsilon for float comparison
+		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
+		SDL_RenderFillRectF(_renderer, &_dest);
+	}
+	else
+	{
+		// --- Draw the opaque central parts of the rounded rectangle ---
+		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
+
+		// 1. Central horizontal rectangle
+		if (_dest.w - 2.0f * radius_px > 0.0f)
+		{
+			SDL_FRect center_rect_h = {_dest.x + radius_px, _dest.y, _dest.w - 2.0f * radius_px, _dest.h};
+			SDL_RenderFillRectF(_renderer, &center_rect_h);
+		}
+
+		// 2. Side vertical strips (to fill the parts of the + shape not covered by center_rect_h)
+		if (_dest.h - 2.0f * radius_px > 0.0f)
+		{
+			// Left strip
+			SDL_FRect left_strip_rect = {_dest.x, _dest.y + radius_px, radius_px, _dest.h - 2.0f * radius_px};
+			SDL_RenderFillRectF(_renderer, &left_strip_rect);
+
+			// Right strip
+			SDL_FRect right_strip_rect = {_dest.x + _dest.w - radius_px, _dest.y + radius_px, radius_px, _dest.h - 2.0f * radius_px};
+			SDL_RenderFillRectF(_renderer, &right_strip_rect);
+		}
+
+		// --- Draw the anti-aliased corner quadrants ---
+		// The DrawAACornersSymmetricallyF function handles all four corners.
+		DrawAACornersSymmetrically_Scanline(_renderer, _dest.x, _dest.y, _dest.w, _dest.h, radius_px, _color);
+	}
+
+	// Restore original renderer state
+	SDL_SetRenderDrawBlendMode(_renderer, old_blend_mode);
+	SDL_SetRenderDrawColor(_renderer, old_r, old_g, old_b, old_a);
+}
+
+// Helper to get a 32-bit pixel value from a surface (assuming ARGB8888 or similar).
+// Assumes surface is locked.
+static Uint32 GetPixel32FromSurface(SDL_Surface *surface, int x, int y)
+{
+	Uint32 *pixels = static_cast<Uint32 *>(surface->pixels);
+	return pixels[(y * (surface->pitch / 4)) + x];
+}
+
+// Helper to put a 32-bit pixel value to a surface (assuming ARGB8888 or similar).
+// Assumes surface is locked.
+static void PutPixel32ToSurface(SDL_Surface *surface, int x, int y, Uint32 pixel)
+{
+	Uint32 *pixels = static_cast<Uint32 *>(surface->pixels);
+	pixels[(y * (surface->pitch / 4)) + x] = pixel;
+}
+
+// Transforms a texture by rounding its corners, making parts outside the rounded shape transparent.
+// renderer: The SDL renderer.
+// source_texture: The original texture to transform.
+// radius_percent: Corner radius as a percentage (0-100) of the texture's smallest side.
+// Returns a new SDL_Texture* with rounded corners, or nullptr on failure.
+// The caller is responsible for destroying the returned texture.
+SDL_Texture *newRoundedTextureFromTexture(SDL_Renderer *renderer, SDL_Texture *source_texture, float radius_percent)
+{
+	if (!renderer)
+	{
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "transformToRoundedTexture: Renderer is NULL.");
+		return nullptr;
+	}
+	if (!source_texture)
+	{
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "transformToRoundedTexture: Source_texture is NULL.");
+		return nullptr;
+	}
+
+	int w, h;
+	Uint32 source_format_enum;
+	// Query the source texture for its properties
+	if (SDL_QueryTexture(source_texture, &source_format_enum, nullptr, &w, &h) != 0)
+	{
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "transformToRoundedTexture: SDL_QueryTexture failed: %s", SDL_GetError());
+		return nullptr;
+	}
+
+	if (w <= 0 || h <= 0)
+	{
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "transformToRoundedTexture: Source_texture has invalid dimensions (w=%d, h=%d).", w, h);
+		return nullptr;
+	}
+
+	// --- 1. Read source_texture pixels into a CPU-accessible surface in a standard ARGB8888 format ---
+	SDL_Surface *source_surface_std_format = nullptr;
+
+	// Create a temporary texture that can be used as a render target to read pixels from.
+	// This is a robust way to get pixels regardless of original source_texture's SDL_TEXTUREACCESS.
+	SDL_Texture *temp_render_target = SDL_CreateTexture(renderer, source_format_enum, SDL_TEXTUREACCESS_TARGET, w, h);
+	if (!temp_render_target)
+	{
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "transformToRoundedTexture: Failed to create temporary render target texture: %s", SDL_GetError());
+		return nullptr;
+	}
+
+	SDL_Texture *old_target = SDL_GetRenderTarget(renderer); // Store the current render target
+	SDL_SetRenderTarget(renderer, temp_render_target);		 // Set our temporary texture as the render target
+
+	// Ensure source texture is copied as-is, without unexpected blending from its own blend mode.
+	SDL_BlendMode old_source_blend_mode;
+	SDL_GetTextureBlendMode(source_texture, &old_source_blend_mode);
+	SDL_SetTextureBlendMode(source_texture, SDL_BLENDMODE_NONE);
+
+	SDL_RenderCopy(renderer, source_texture, nullptr, nullptr); // Copy the source texture to our temporary target
+
+	SDL_SetTextureBlendMode(source_texture, old_source_blend_mode); // Restore source texture's blend mode
+
+	// Create an SDL_Surface in a known 32-bit format with an alpha channel.
+	// SDL_PIXELFORMAT_ARGB8888 is a common choice for such operations.
+	source_surface_std_format = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32, SDL_PIXELFORMAT_ARGB8888);
+	if (!source_surface_std_format)
+	{
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "transformToRoundedTexture: Failed to create ARGB8888 surface for reading pixels: %s", SDL_GetError());
+		SDL_DestroyTexture(temp_render_target);
+		SDL_SetRenderTarget(renderer, old_target); // Restore original render target
+		return nullptr;
+	}
+
+	// Read the pixels from the temporary render target into our surface.
+	if (SDL_RenderReadPixels(renderer, nullptr, source_surface_std_format->format->format,
+							 source_surface_std_format->pixels, source_surface_std_format->pitch) != 0)
+	{
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "transformToRoundedTexture: SDL_RenderReadPixels failed: %s", SDL_GetError());
+		SDL_FreeSurface(source_surface_std_format);
+		SDL_DestroyTexture(temp_render_target);
+		SDL_SetRenderTarget(renderer, old_target); // Restore original render target
+		return nullptr;
+	}
+
+	SDL_DestroyTexture(temp_render_target);	   // Clean up the temporary texture
+	SDL_SetRenderTarget(renderer, old_target); // Restore the original render target
+
+	// --- 2. Create target_surface by duplicating source_surface_std_format ---
+	// This target_surface will have its alpha channel modified.
+	SDL_Surface *target_surface = SDL_DuplicateSurface(source_surface_std_format);
+	SDL_FreeSurface(source_surface_std_format); // The original standard format surface is no longer needed
+
+	if (!target_surface)
+	{
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "transformToRoundedTexture: SDL_DuplicateSurface failed: %s", SDL_GetError());
+		return nullptr;
+	}
+	// Ensure the surface can be blended if it were to be blitted (though we create a texture from it).
+	SDL_SetSurfaceBlendMode(target_surface, SDL_BLENDMODE_BLEND);
+
+	// --- 3. Calculate radius in pixels ---
+	radius_percent = std::max(0.0f, std::min(100.0f, radius_percent)); // Clamp radius_percent to [0, 100]
+	float smallest_side = static_cast<float>(std::min(target_surface->w, target_surface->h));
+	float radius_px = (smallest_side * radius_percent) / 200.0f; // /200 because 100% radius = smallest_side/2
+
+	// Clamp radius_px to be valid for the texture dimensions
+	radius_px = std::min(radius_px, static_cast<float>(target_surface->w) / 2.0f);
+	radius_px = std::min(radius_px, static_cast<float>(target_surface->h) / 2.0f);
+	radius_px = std::max(0.0f, radius_px); // Ensure radius is not negative
+
+	// --- 4. Lock target_surface and apply alpha modifications for corners ---
+	if (SDL_LockSurface(target_surface) != 0)
+	{
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "transformToRoundedTexture: SDL_LockSurface failed: %s", SDL_GetError());
+		SDL_FreeSurface(target_surface);
+		return nullptr;
+	}
+
+	SDL_PixelFormat *fmt = target_surface->format; // Get pixel format for SDL_GetRGBA and SDL_MapRGBA
+
+	// Only process corners if the radius is significant. Otherwise, the texture is rectangular.
+	// Pixels outside these corner regions will retain their original alpha from the duplication.
+	int iteration_radius = static_cast<int>(std::ceil(radius_px));
+	if (radius_px > 0.01f)
+	{
+		for (int qy = 0; qy < iteration_radius; ++qy)
+		{ // Iterate y in canonical quadrant
+			for (int qx = 0; qx < iteration_radius; ++qx)
+			{ // Iterate x in canonical quadrant
+				// Calculate center of the current canonical pixel (relative to 0,0 of the quadrant)
+				float pixel_center_qx = static_cast<float>(qx) + 0.5f;
+				float pixel_center_qy = static_cast<float>(qy) + 0.5f;
+
+				// Distance from this pixel's center to the canonical circle's center (which is at radius_px, radius_px)
+				float dist_to_arc_center = std::sqrt(
+					std::pow(pixel_center_qx - radius_px, 2) +
+					std::pow(pixel_center_qy - radius_px, 2));
+
+				// Signed distance to the edge of the rounding circle for this canonical pixel.
+				// Negative if inside, positive if outside.
+				float sdf_to_arc_edge = dist_to_arc_center - radius_px;
+
+				// aa_mask_factor determines how much of the original alpha to keep.
+				// 1.0 means fully keep (pixel is inside the curve), 0.0 means fully transparent (pixel is outside).
+				// Values between 0 and 1 create the anti-aliased edge.
+				float aa_mask_factor = CalculatePixelCoverage(sdf_to_arc_edge);
+
+				// Define the four symmetric points on the target surface
+				// Top-Left, Top-Right, Bottom-Left, Bottom-Right
+				int points_x[4] = {qx, target_surface->w - 1 - qx, qx, target_surface->w - 1 - qx};
+				int points_y[4] = {qy, qy, target_surface->h - 1 - qy, target_surface->h - 1 - qy};
+
+				for (int i = 0; i < 4; ++i)
+				{
+					int actual_x = points_x[i];
+					int actual_y = points_y[i];
+
+					// Ensure the symmetric point is within the surface bounds
+					if (actual_x >= 0 && actual_x < target_surface->w && actual_y >= 0 && actual_y < target_surface->h)
+					{
+						// Get the original pixel value (color and alpha) from the duplicated surface
+						Uint32 original_pixel_value = GetPixel32FromSurface(target_surface, actual_x, actual_y);
+						Uint8 r_orig, g_orig, b_orig, a_orig;
+						SDL_GetRGBA(original_pixel_value, fmt, &r_orig, &g_orig, &b_orig, &a_orig);
+
+						// Modulate the original alpha with our mask factor
+						Uint8 new_alpha = static_cast<Uint8>(static_cast<float>(a_orig) * aa_mask_factor);
+
+						// Write the pixel back with original color but new alpha
+						PutPixel32ToSurface(target_surface, actual_x, actual_y, SDL_MapRGBA(fmt, r_orig, g_orig, b_orig, new_alpha));
+					}
+				}
+			}
+		}
+	}
+	// If radius_px <= 0.01f, no corner processing is done, and the target_surface (a full copy) is used directly.
+
+	SDL_UnlockSurface(target_surface);
+
+	// --- 5. Create the final SDL_Texture from the modified target_surface ---
+	SDL_Texture *final_texture = SDL_CreateTextureFromSurface(renderer, target_surface);
+	if (!final_texture)
+	{
+		SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "transformToRoundedTexture: SDL_CreateTextureFromSurface failed: %s", SDL_GetError());
+		// target_surface will be freed below regardless
+	}
+	else
+	{
+		// Set blend mode for the new texture to allow its alpha channel to be used correctly
+		SDL_SetTextureBlendMode(final_texture, SDL_BLENDMODE_BLEND);
+	}
+
+	SDL_FreeSurface(target_surface); // Clean up the target surface
+
+	return final_texture; // Return the new, rounded texture (or nullptr on error)
+}
+
+// Modifies a texture in-place by rounding its corners, making parts outside the rounded shape transparent.
+// renderer: The SDL renderer
+// source_texture: The texture to modify. Must be STREAMING (with alpha channel) or TARGET.
+// radius_percent: Corner radius as a percentage (0-100) of the texture's smallest side
+void transformToRoundedTexture(SDL_Renderer *renderer, SDL_Texture *source_texture, float radius_percent)
+{
+	if (!renderer)
+	{
+		SDL_Log("transformToRoundedTextureInPlace: Renderer is NULL.");
+		return;
+	}
+	if (!source_texture)
+	{
+		SDL_Log("transformToRoundedTextureInPlace: Source_texture is NULL.");
+		return;
+	}
+
+	int w, h;
+	Uint32 source_format_enum;
+	int source_access;
+	if (SDL_QueryTexture(source_texture, &source_format_enum, &source_access, &w, &h) != 0)
+	{
+		SDL_Log("transformToRoundedTextureInPlace: SDL_QueryTexture failed: %s", SDL_GetError());
+		return;
+	}
+
+	if (w <= 0 || h <= 0)
+	{
+		SDL_Log("transformToRoundedTextureInPlace: Source_texture has invalid dimensions (w=%d, h=%d).", w, h);
+		return;
+	}
+
+	// Calculate and clamp radius
+	radius_percent = std::max(0.0f, std::min(100.0f, radius_percent));
+	float smallest_side = static_cast<float>(std::min(w, h));
+	float radius_px = (smallest_side * radius_percent) / 200.0f;
+	radius_px = std::min(radius_px, static_cast<float>(w) / 2.0f);
+	radius_px = std::min(radius_px, static_cast<float>(h) / 2.0f);
+	radius_px = std::max(0.0f, radius_px);
+
+	// Pixel format for intermediate surface if needed (Target Path)
+	// User requested to assume RGBA8888 as default
+	Uint32 intermediate_pixel_format_enum = SDL_PIXELFORMAT_RGBA8888;
+	SDL_PixelFormat *intermediate_format_details = SDL_AllocFormat(intermediate_pixel_format_enum);
+	if (!intermediate_format_details)
+	{
+		SDL_Log("transformToRoundedTextureInPlace: Failed to allocate pixel format %s: %s",
+				SDL_GetPixelFormatName(intermediate_pixel_format_enum), SDL_GetError());
+		return;
+	}
+
+	bool success = false;
+
+	if (source_access == SDL_TEXTUREACCESS_STREAMING)
+	{
+		// SDL_Log("transformToRoundedTextureInPlace: Processing STREAMING texture.");
+		void *pixels_ptr; // Changed name to avoid conflict
+		int pitch;
+
+		SDL_PixelFormat *streaming_texture_format_details = SDL_AllocFormat(source_format_enum);
+		if (!streaming_texture_format_details)
+		{
+			SDL_Log("transformToRoundedTextureInPlace (Streaming): Failed to allocate pixel format for source texture (format %s): %s",
+					SDL_GetPixelFormatName(source_format_enum), SDL_GetError());
+			SDL_FreeFormat(intermediate_format_details);
 			return;
 		}
 
-		const std::array<const SDL_FRect, 3> rects_ = {SDL_FRect{(_dest.x), (_dest.y + final_rad), (_dest.w), (_dest.h - (final_rad * 2.f))},
-													   {(_dest.x + final_rad), (_dest.y), (_dest.w - (final_rad * 2.f)), (final_rad)},
-													   {(_dest.x + final_rad), (_dest.y + _dest.h - final_rad), (_dest.w - (final_rad * 2.f)), (final_rad)}};
-
-		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
-		SDL_RenderFillRects(_renderer, rects_.data(), rects_.size());
-		draw_filled_circle_4quad(_renderer, _dest.x + final_rad - 1.f, _dest.y + final_rad, _dest.w - (final_rad * 2.f), _dest.h - (final_rad * 2.f), final_rad, _color);
-	}
-
-	void drawRoundedRectF(SDL_Renderer *_renderer, const SDL_FRect &_dest, const float &_rad,
-						  const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff}) noexcept
-	{
-		float final_rad = 1.f;
-		if (_dest.h > _dest.w)
+		// Simplified check: For direct manipulation, we expect a 32-bit format.
+		if (streaming_texture_format_details->BytesPerPixel != 4)
 		{
-			final_rad = ((_rad / 2.f) * _dest.w) / 100.f;
-		}
-		else if (_dest.h <= _dest.w)
-		{
-			final_rad = ((_rad / 2.f) * _dest.h) / 100.f;
+			SDL_Log("transformToRoundedTextureInPlace (Streaming): Texture format (BytesPerPixel=%d) is not 4. This example requires a 32-bit format for direct pixel manipulation.", streaming_texture_format_details->BytesPerPixel);
+			SDL_FreeFormat(streaming_texture_format_details);
+			SDL_FreeFormat(intermediate_format_details);
+			return;
 		}
 
-		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
-		SDL_RenderLine(_renderer, _dest.x + final_rad, _dest.y, _dest.x + _dest.w - final_rad, _dest.y);
-		SDL_RenderLine(_renderer, _dest.x + final_rad, _dest.y + _dest.h, _dest.x + _dest.w - final_rad, _dest.y + _dest.h);
-		SDL_RenderLine(_renderer, _dest.x + _dest.w, _dest.y + final_rad, _dest.x + _dest.w, _dest.y + _dest.h - final_rad);
-		SDL_RenderLine(_renderer, _dest.x, _dest.y + final_rad, _dest.x, _dest.y + _dest.h - final_rad);
-
-		draw_quadrant(_renderer, _dest.x + final_rad + 1.f, _dest.y + final_rad + 1.f, final_rad, QUADRANT::TOP_LEFT, _color);
-		draw_quadrant(_renderer, _dest.x + _dest.w - final_rad, _dest.y + final_rad + 1.f, final_rad, QUADRANT::TOP_RIGHT, _color);
-		draw_quadrant(_renderer, _dest.x + final_rad + 1.f, _dest.y + _dest.h - final_rad, final_rad, QUADRANT::BOTTOM_LEFT, _color);
-		draw_quadrant(_renderer, _dest.x + _dest.w - final_rad, _dest.y + _dest.h - final_rad, final_rad, QUADRANT::BOTTOM_RIGHT, _color);
-	}
-
-	void fillRoundedRectOutline(SDL_Renderer *_renderer, const SDL_FRect &rect, const float &_r, const float &_outline_psz, const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
-	{
-		float final_rad = 1.f;
-		float outline_sz_ = 1.f;
-		SDL_FRect _rect = {roundf(rect.x), roundf(rect.y), roundf(rect.w), roundf(rect.h)};
-		if (_rect.h > _rect.w)
+		if (SDL_LockTexture(source_texture, nullptr, &pixels_ptr, &pitch) != 0)
 		{
-			final_rad = ((_r / 2.f) * _rect.w) / 100.f;
-			outline_sz_ = ((_outline_psz / 2.f) * _rect.w) / 100.f;
+			SDL_Log("transformToRoundedTextureInPlace (Streaming): SDL_LockTexture failed: %s", SDL_GetError());
 		}
-		else if (_rect.h <= _rect.w)
+		else
 		{
-			final_rad = ((_r / 2.f) * _rect.h) / 100.f;
-			outline_sz_ = ((_outline_psz / 2.f) * _rect.h) / 100.f;
-		}
-		final_rad = roundf(final_rad);
-		outline_sz_ = roundf(outline_sz_);
-
-		const std::array<SDL_FRect, 4> side_rects = {SDL_FRect{_rect.x + final_rad, _rect.y, _rect.w - (final_rad * 2.f), outline_sz_},
-													 {_rect.x + final_rad, _rect.y + _rect.h - outline_sz_, _rect.w - (final_rad * 2.f), outline_sz_},
-													 {_rect.x, _rect.y + final_rad, outline_sz_, _rect.h - (final_rad * 2.f)},
-													 {_rect.x + _rect.w - outline_sz_, _rect.y + final_rad, outline_sz_, _rect.h - (final_rad * 2.f)}};
-		SDL_SetRenderDrawColor(_renderer, _color.r, _color.g, _color.b, _color.a);
-		SDL_RenderFillRects(_renderer, side_rects.data(), side_rects.size());
-		draw_ring_4quad(_renderer, _rect.x + final_rad - 1.f, _rect.y + final_rad, side_rects[0].w, side_rects[3].h, final_rad - outline_sz_, final_rad, _color);
-	}
-
-	void DrawCircle(SDL_Renderer *renderer, float x, float y, float r,
-					SDL_Color color = {0xff, 0xff, 0xff, 0xff})
-	{
-		draw_circle(renderer, x, y, r, color);
-	}
-
-	void FillCircle(SDL_Renderer *renderer, float x, float y, float r,
-					SDL_Color color = {0xff, 0xff, 0xff, 0xff}, Uint8 quadrant = 0)
-	{
-		draw_filled_circle(renderer, x, y, r, color);
-	}
-
-	void RenderClear(SDL_Renderer *renderer, const uint8_t &red, const uint8_t &green,
-					 const uint8_t &blue,
-					 const uint8_t &alpha = 0xFF)
-	{
-		SDL_SetRenderDrawColor(renderer, red, green, blue, alpha);
-		SDL_RenderClear(renderer);
-	}
-
-	namespace Experimental
-	{
-		namespace ImageManip
-		{
-			uint32_t getCommonColor(SDL_Surface *_surface)
-			{
-				SDL_Surface *cv_surf;
-				cv_surf = SDL_ConvertSurfaceFormat(_surface, SDL_PIXELFORMAT_RGBA8888);
-				uint32_t res = 0;
-				int w = cv_surf->w;
-				int h = cv_surf->h;
-				std::span pixels{(uint32_t *)(cv_surf->pixels), (uint32_t)(w * h)};
-				std::cout << w << " " << h << std::endl;
-
-				union ColorPallet
+			int iteration_radius = static_cast<int>(std::ceil(radius_px));
+			if (radius_px > 0.01f)
+			{ // Only process if radius is significant
+				for (int qy = 0; qy < iteration_radius; ++qy)
 				{
-					uint32_t cl;
-					uint8_t i[4];
-				};
-
-				ColorPallet clr;
-				uint64_t r = 0, g = 0, b = 0, a = 0;
-
-				for (const auto &px : pixels)
-				{
-					clr.cl = px;
-					r += clr.i[1];
-					g += clr.i[2];
-					b += clr.i[3];
-					a += clr.i[0];
-				}
-
-				clr.i[1] = b / (w * h);
-				clr.i[2] = g / (w * h);
-				clr.i[3] = r / (w * h);
-				clr.i[0] = a / (w * h);
-				std::cout << "R:" << r / (w * h) << " G:" << g / (w * h) << " B:" << b / (w * h) << " A:" << a / (w * h) << std::endl;
-				res = clr.cl;
-				SDL_DestroySurface(cv_surf);
-				return res;
-			}
-		};
-		namespace Gradient
-		{
-			constexpr auto lerp_colors(const float colors[2][3], const float &value)
-			{
-				return std::array{
-					colors[0][0] + (colors[1][0] - colors[0][0]) * value,
-					// std::lerp(colors[0][0],(colors[1][0], value),
-					colors[0][1] + (colors[1][1] - colors[0][1]) * value,
-					colors[0][2] + (colors[1][2] - colors[0][2]) * value};
-			}
-
-			void fillGradientRect(SDL_Renderer *renderer, const SDL_FRect &_rect, const SDL_Color &_left, const SDL_Color &_right)
-			{
-				const float rt = 1.f / 255.f;
-				float norm_colors[2][3] = {{rt * _left.r, rt * _left.g, rt * _left.b}, {rt * _right.r, rt * _right.g, rt * _right.b}};
-				float t = 0.f;
-				const float dt = 1.f / _rect.w;
-				// SDL_Color result;
-				for (float x = 0.f; x < _rect.w; x += 1.f)
-				{
-					const auto tmp = lerp_colors(norm_colors, t);
-					const SDL_Color result = {(uint8_t)(tmp[0] * 255.f), (uint8_t)(tmp[1] * 255.f), (uint8_t)(tmp[2] * 255.f), 0xff};
-					SDL_SetRenderDrawColor(renderer, result.r, result.g, result.b, result.a);
-					SDL_RenderLine(renderer, _rect.x + x, _rect.y, _rect.x + x, _rect.y + _rect.h);
-					t += dt;
-				}
-			}
-
-			auto rotate(const std::array<float, 2> &position, const float &angle) noexcept
-			{
-				return std::array{
-					cosf(angle) * position[0] - sinf(angle) * position[1],
-					sinf(angle) * position[0] + cosf(angle) * position[1]};
-			}
-			constexpr auto translate(const std::array<float, 2> &position, const float &x, const float &y) noexcept
-			{
-				return std::array{position[0] + x, position[1] + y};
-			}
-
-			void fillGradientRectAngle(SDL_Renderer *renderer, const SDL_FRect &_rect, const float &_angle, const SDL_Color &_left, const SDL_Color &_right)
-			{
-				const float rt = 1.f / 255.f;
-				float norm_colors[2][3] = {{rt * _left.r, rt * _left.g, rt * _left.b}, {rt * _right.r, rt * _right.g, rt * _right.b}};
-				float t = 0.f;
-				const float dt = 1.f / _rect.w;
-				const auto mx = _rect.w / 2.f;
-				const auto my = _rect.h / 2.f;
-
-				// SDL_Color result;
-				for (float x = 0.f; x < _rect.w; x += 1.f)
-				{
-					for (float y = 0.f; y < _rect.h; y += 1.f)
+					for (int qx = 0; qx < iteration_radius; ++qx)
 					{
-						const std::array<float, 2> tp = translate(rotate(translate({x, y}, -mx, -my), _angle), mx, my);
-						const auto tmp = lerp_colors(norm_colors, (1.f / _rect.w) * std::clamp(tp[0], 0.f, _rect.w));
-						const SDL_Color result = {(uint8_t)(tmp[0] * 255.f), (uint8_t)(tmp[1] * 255.f), (uint8_t)(tmp[2] * 255.f), 0xff};
-						SDL_SetRenderDrawColor(renderer, result.r, result.g, result.b, result.a);
-						SDL_RenderPoint(renderer, _rect.x + x, _rect.y + y);
-					}
-				}
-			}
+						float pixel_center_qx = static_cast<float>(qx) + 0.5f;
+						float pixel_center_qy = static_cast<float>(qy) + 0.5f;
+						float dist_to_arc_center = std::sqrt(std::pow(pixel_center_qx - radius_px, 2) + std::pow(pixel_center_qy - radius_px, 2));
+						float sdf_to_arc_edge = dist_to_arc_center - radius_px;
+						float aa_mask_factor = CalculatePixelCoverage(sdf_to_arc_edge);
 
-			void fillGradientTexture(SDL_Renderer *renderer, SDL_Texture *_texture, const float &_angle, const SDL_Color &_left, const SDL_Color &_right)
-			{
-				int w, h, pitch;
-				SDL_QueryTexture(_texture, 0, 0, &w, &h);
-				const float rt = 1.f / 255.f;
-				const float norm_colors[2][3] = {{rt * _left.r, rt * _left.g, rt * _left.b}, {rt * _right.r, rt * _right.g, rt * _right.b}};
-				float t = 0.f;
-				const float dt = 1.f / w;
-				const auto mx = w / 2.f;
-				const auto my = h / 2.f;
+						int points_x[4] = {qx, w - 1 - qx, qx, w - 1 - qx};
+						int points_y[4] = {qy, qy, h - 1 - qy, h - 1 - qy};
 
-				union PUN
-				{
-					uint32_t _rd;
-					uint8_t bs[4];
-				} pal;
-
-				void *pixels;
-				SDL_LockTexture(_texture, nullptr, &pixels, &pitch);
-				uint32_t *rdata = (uint32_t *)(pixels);
-				for (int x = 0; x < w; x++)
-				{
-					for (int y = 0; y < h; y++)
-					{
-						const auto tp = translate(rotate(translate({(float)x, (float)y}, -mx, -my), _angle), mx, my);
-						const auto tmp = lerp_colors(norm_colors, (1.f / (float)w) * std::clamp(tp[0], 0.f, (float)w));
-						const SDL_Color result = {(uint8_t)(tmp[0] * 255.f), (uint8_t)(tmp[1] * 255.f), (uint8_t)(tmp[2] * 255.f), 0xff};
-						pal.bs[0] = result.a;
-						pal.bs[1] = result.r;
-						pal.bs[2] = result.g;
-						pal.bs[3] = result.b;
-						rdata[(y * w) + x] = pal._rd;
-					}
-				}
-
-				SDL_UnlockTexture(_texture);
-			}
-		};
-
-		union UINT32PALLETE_UNON
-		{
-			uint32_t ui32data;
-			uint8_t ui8data[4];
-		};
-
-		auto blurFunc = [](Uint32 *data, const int &dw, const int &dh, const int &blur_extent)
-		{
-			UINT32PALLETE_UNON CD;
-			Uint32 color;
-			Uint32 rb = 0, gb = 0, bb = 0, ab = 0;
-			int numPix = 0;
-
-			for (int y = 0; y < dh; ++y)
-			{
-				for (int x = 0; x < dw; ++x)
-				{
-					CD.ui32data = data[(y * dw) + x];
-					color = CD.ui32data;
-					rb = 0, gb = 0, bb = 0, ab = 0;
-
-					// Within the two for-loops below, colors of adjacent pixels are added up
-					for (int yo = -blur_extent; yo <= blur_extent; yo++)
-					{
-						for (int xo = -blur_extent; xo <= blur_extent; xo++)
+						for (int i = 0; i < 4; ++i)
 						{
-							if (y + yo >= 0 && x + xo >= 0 && y + yo < dh && x + xo < dw)
+							int actual_x = points_x[i];
+							int actual_y = points_y[i];
+							if (actual_x >= 0 && actual_x < w && actual_y >= 0 && actual_y < h)
 							{
-								CD.ui32data = data[(((y + yo) * dw) + (x + xo))];
-
-								rb += CD.ui8data[1];
-								gb += CD.ui8data[2];
-								bb += CD.ui8data[3];
-								ab += CD.ui8data[0];
+								Uint32 *target_pixel_ptr = reinterpret_cast<Uint32 *>(static_cast<Uint8 *>(pixels_ptr) + actual_y * pitch + actual_x * streaming_texture_format_details->BytesPerPixel);
+								Uint32 original_pixel_value = *target_pixel_ptr;
+								Uint8 r_orig, g_orig, b_orig, a_orig;
+								SDL_GetRGBA(original_pixel_value, streaming_texture_format_details, &r_orig, &g_orig, &b_orig, &a_orig);
+								Uint8 new_alpha = static_cast<Uint8>(static_cast<float>(a_orig) * aa_mask_factor);
+								*target_pixel_ptr = SDL_MapRGBA(streaming_texture_format_details, r_orig, g_orig, b_orig, new_alpha);
 							}
 						}
 					}
-
-					// The sum is then, divided by the total number of
-					// pixels present in a block of blur radius
-
-					// For blur_extent 1, it will be 9
-					// For blur_extent 2, it will be 25
-					// and so on...
-
-					// In this way, we are getting the average of
-					// all the pixels in a block of blur radius
-
-					//(((blur_extent * 2) + 1) * ((blur_extent * 2) + 1)) calculates
-					// the total number of pixels present in a block of blur radius
-
-					// Bit shifting color bits to form a 32 bit proper colour
-					// color = (r) | (g << 8) | (b << 16) | (a << 24);
-					numPix = (((blur_extent * 2) + 1) * ((blur_extent * 2) + 1));
-					CD.ui8data[0] = (Uint8)(ab / numPix);
-					CD.ui8data[1] = (Uint8)(rb / numPix);
-					CD.ui8data[2] = (Uint8)(gb / numPix);
-					CD.ui8data[3] = (Uint8)(bb / numPix);
-					color = CD.ui32data;
-					data[(y * dw) + x] = color;
 				}
 			}
-		};
-
-		void blurIMG(SDL_Surface *imageSurface, const int &blurExtend, const int &iterations = 1) // This manipulates with SDL_Surface and gives it box blur effect
-		{
-			const auto start = std::chrono::high_resolution_clock::now();
-			Uint32 *data = ((Uint32 *)imageSurface->pixels);
-			for (int i = 0; i < iterations; ++i)
-				blurFunc(data, imageSurface->w, imageSurface->h, blurExtend);
-			std::chrono::duration<double> dt = (std::chrono::high_resolution_clock::now() - start);
-			SDL_Log("bluring done: %f secs", dt.count());
+			SDL_UnlockTexture(source_texture);
+			success = true;
 		}
-	};
-
-	struct Rect : Context
+		SDL_FreeFormat(streaming_texture_format_details);
+	}
+	else if (source_access == SDL_TEXTUREACCESS_TARGET)
 	{
-		SDL_FRect rect;
-		SDL_Color color;
-		float corner_rad = 0.f;
-
-		Rect() = default;
-
-		Rect(Context *_context, const SDL_FRect &_rect, const SDL_Color &_color, const float &_corner_rad) /*:rect(_rect),color(_color)*/
+		// SDL_Log("transformToRoundedTextureInPlace: Processing TARGET texture.");
+		SDL_Surface *working_surface = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32, intermediate_pixel_format_enum);
+		if (!working_surface)
 		{
-			Build(_context, _rect, _color, _corner_rad);
+			SDL_Log("transformToRoundedTextureInPlace (Target): Failed to create working surface (format %s): %s",
+					SDL_GetPixelFormatName(intermediate_pixel_format_enum), SDL_GetError());
 		}
-
-		Rect &Build(Context *_context, const SDL_FRect &_rect, const SDL_Color &_color, const float &_corner_rad)
+		else
 		{
-			setContext(_context);
-			rect = _rect;
-			color = _color;
-			corner_rad = _corner_rad;
-			return *this;
-		}
+			SDL_Texture *old_rt = SDL_GetRenderTarget(renderer); // Store current render target
 
-		void Draw()
-		{
-			Uint8 r_, g_, b_, a_;
-			SDL_GetRenderDrawColor(renderer, &r_, &g_, &b_, &a_);
-			SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
-			fillRoundedRectF(renderer, rect, corner_rad, color);
-			SDL_SetRenderDrawColor(renderer, r_, g_, b_, a_);
-		}
-	};
+			// Temporarily set source_texture as render target to read its current pixels
+			// This is a bit of a workaround if source_texture wasn't already the target.
+			// A more direct way if source_texture is ALREADY the target would be to just read.
+			// For safety, we copy source_texture to a temporary readable target.
+			SDL_Texture *temp_readable_target = SDL_CreateTexture(renderer, source_format_enum, SDL_TEXTUREACCESS_TARGET, w, h);
+			if (!temp_readable_target)
+			{
+				SDL_Log("transformToRoundedTextureInPlace (Target): Failed to create temp readable target: %s", SDL_GetError());
+				SDL_FreeSurface(working_surface);
+				// SDL_FreeFormat(intermediate_format_details) done at the end
+			}
+			else
+			{
+				SDL_SetRenderTarget(renderer, temp_readable_target);
+				SDL_BlendMode old_source_blend_mode; // Store source's blend mode
+				SDL_GetTextureBlendMode(source_texture, &old_source_blend_mode);
+				SDL_SetTextureBlendMode(source_texture, SDL_BLENDMODE_NONE);	// Use NONE for direct copy
+				SDL_RenderCopy(renderer, source_texture, nullptr, nullptr);		// Copy source to temp_readable_target
+				SDL_SetTextureBlendMode(source_texture, old_source_blend_mode); // Restore source's blend mode
 
-	class RectOutline : public Context, IView
+				if (SDL_RenderReadPixels(renderer, nullptr, intermediate_pixel_format_enum, working_surface->pixels, working_surface->pitch) != 0)
+				{
+					SDL_Log("transformToRoundedTextureInPlace (Target): SDL_RenderReadPixels failed: %s", SDL_GetError());
+				}
+				else
+				{
+					if (SDL_LockSurface(working_surface) != 0)
+					{
+						SDL_Log("transformToRoundedTextureInPlace (Target): SDL_LockSurface failed: %s", SDL_GetError());
+					}
+					else
+					{
+						int iteration_radius = static_cast<int>(std::ceil(radius_px));
+						if (radius_px > 0.01f)
+						{ // Only process if radius is significant
+							for (int qy = 0; qy < iteration_radius; ++qy)
+							{
+								for (int qx = 0; qx < iteration_radius; ++qx)
+								{
+									float pixel_center_qx = static_cast<float>(qx) + 0.5f;
+									float pixel_center_qy = static_cast<float>(qy) + 0.5f;
+									float dist_to_arc_center = std::sqrt(std::pow(pixel_center_qx - radius_px, 2) + std::pow(pixel_center_qy - radius_px, 2));
+									float sdf_to_arc_edge = dist_to_arc_center - radius_px;
+									float aa_mask_factor = CalculatePixelCoverage(sdf_to_arc_edge);
+
+									int points_x[4] = {qx, w - 1 - qx, qx, w - 1 - qx};
+									int points_y[4] = {qy, qy, h - 1 - qy, h - 1 - qy};
+									for (int i = 0; i < 4; ++i)
+									{
+										int actual_x = points_x[i];
+										int actual_y = points_y[i];
+										if (actual_x >= 0 && actual_x < w && actual_y >= 0 && actual_y < h)
+										{
+											Uint32 original_pixel_value = GetPixel32FromSurface(working_surface, actual_x, actual_y);
+											Uint8 r_orig, g_orig, b_orig, a_orig;
+											SDL_GetRGBA(original_pixel_value, intermediate_format_details, &r_orig, &g_orig, &b_orig, &a_orig);
+											Uint8 new_alpha = static_cast<Uint8>(static_cast<float>(a_orig) * aa_mask_factor);
+											PutPixel32ToSurface(working_surface, actual_x, actual_y, SDL_MapRGBA(intermediate_format_details, r_orig, g_orig, b_orig, new_alpha));
+										}
+									}
+								}
+							}
+						}
+						SDL_UnlockSurface(working_surface);
+
+						SDL_Texture *temp_modified_texture = SDL_CreateTextureFromSurface(renderer, working_surface);
+						if (!temp_modified_texture)
+						{
+							SDL_Log("transformToRoundedTextureInPlace (Target): SDL_CreateTextureFromSurface failed: %s", SDL_GetError());
+						}
+						else
+						{
+							SDL_SetRenderTarget(renderer, source_texture);						// Set original texture as target
+							SDL_SetTextureBlendMode(temp_modified_texture, SDL_BLENDMODE_NONE); // Overwrite
+
+							// Clear the target texture with transparent black before drawing new content
+							SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
+							SDL_RenderClear(renderer);
+
+							SDL_RenderCopy(renderer, temp_modified_texture, nullptr, nullptr); // Copy modified to original
+							SDL_DestroyTexture(temp_modified_texture);
+							success = true;
+						}
+					}
+				}
+				SDL_DestroyTexture(temp_readable_target);
+			}
+			SDL_SetRenderTarget(renderer, old_rt); // Restore original render target
+			SDL_FreeSurface(working_surface);
+		}
+	}
+	else
+	{ // SDL_TEXTUREACCESS_STATIC
+		SDL_Log("transformToRoundedTextureInPlace: Source_texture is STATIC-only. Cannot modify in-place. Texture must be STREAMING or TARGET.");
+	}
+
+	if (success)
 	{
-	private:
-		SDL_FRect inner_rect{};
+		// IMPORTANT: Set the blend mode of the (now modified) source_texture
+		// so that its new alpha channel is used when it's rendered later.
+		SDL_SetTextureBlendMode(source_texture, SDL_BLENDMODE_BLEND);
+		//        SDL_Log("transformToRoundedTextureInPlace: Texture modification process completed for %s texture.", (source_access == SDL_TEXTUREACCESS_STREAMING) ? "STREAMING" : "TARGET");
+	}
+	else
+	{
+		SDL_Log("transformToRoundedTextureInPlace: Texture modification failed or was not applicable.");
+	}
+	SDL_FreeFormat(intermediate_format_details);
+}
 
-	public:
-		using IView::getView;
-		using IView::hide;
-		using IView::isHidden;
-		using IView::show;
-		SDL_FRect rect{};
-		SDL_Color color{}, outline_color{};
-		float corner_rad = 0.f, outline = 0.f;
+struct Margin
+{
+	Margin() = default;
+	Margin(float _left, float _top, float _right, float _bottom) : left(_left), top(_top), right(_right), bottom(_bottom) {}
+	// Left
+	float left = 0.f;
+	// Top
+	float top = 0.f;
+	// Right
+	float right = 0.f;
+	// Bottom
+	float bottom = 0.f;
+};
 
-		RectOutline() = default;
+class RectOutline : public Context, IView
+{
+private:
+	SDL_FRect inner_rect{};
 
-		RectOutline(Context *_context, const SDL_FRect &_rect, const float &_outline, const float &_corner_rad, const SDL_Color &_color, const SDL_Color &_outline_color)
+public:
+	using IView::getView;
+	using IView::hide;
+	using IView::isHidden;
+	using IView::show;
+	SDL_FRect rect{};
+	SDL_Color color{}, outline_color{};
+	float corner_rad = 0.f, outline = 0.f;
+
+	RectOutline() = default;
+
+	RectOutline(Context *_context, const SDL_FRect &_rect, const float &_outline, const float &_corner_rad, const SDL_Color &_color, const SDL_Color &_outline_color)
+	{
+		Build(_context, _rect, _outline, _corner_rad, _color, _outline_color);
+	}
+
+	RectOutline &Build(Context *_context, const SDL_FRect &_rect, const float &_outline, const float &_corner_rad, const SDL_Color &_color, const SDL_Color &_outline_color)
+	{
+		setContext(_context);
+		rect = _rect;
+		color = _color;
+		outline_color = _outline_color;
+		outline = _outline;
+		corner_rad = _corner_rad;
+
+		float outln_sz = 0.f;
+		if (_rect.h > _rect.w)
 		{
-			Build(_context, _rect, _outline, _corner_rad, _color, _outline_color);
+			outln_sz = ((_outline / 2.f) * _rect.w) / 100.f;
+		}
+		else if (_rect.h <= _rect.w)
+		{
+			outln_sz = ((_outline / 2.f) * _rect.h) / 100.f;
 		}
 
-		RectOutline &Build(Context *_context, const SDL_FRect &_rect, const float &_outline, const float &_corner_rad, const SDL_Color &_color, const SDL_Color &_outline_color)
+		inner_rect =
+			{
+				rect.x + outln_sz,
+				rect.y + outln_sz,
+				rect.w - (outln_sz * 2.f),
+				rect.h - (outln_sz * 2.f)};
+
+		return *this;
+	}
+
+	bool handleEvent() override
+	{
+		if (event->type == EVT_WPSC)
 		{
-			setContext(_context);
-			rect = _rect;
-			color = _color;
-			outline_color = _outline_color;
-			outline = _outline;
-			corner_rad = _corner_rad;
-
-			float outln_sz = 0.f;
-			if (_rect.h > _rect.w)
-			{
-				outln_sz = ((_outline / 2.f) * _rect.w) / 100.f;
-			}
-			else if (_rect.h <= _rect.w)
-			{
-				outln_sz = ((_outline / 2.f) * _rect.h) / 100.f;
-			}
-
+			rect =
+				{
+					DisplayInfo::Get().toUpdatedWidth(rect.x),
+					DisplayInfo::Get().toUpdatedHeight(rect.y),
+					DisplayInfo::Get().toUpdatedWidth(rect.w),
+					DisplayInfo::Get().toUpdatedHeight(rect.h)};
 			inner_rect =
 				{
-					rect.x + outln_sz,
-					rect.y + outln_sz,
-					rect.w - (outln_sz * 2.f),
-					rect.h - (outln_sz * 2.f)};
-
-			return *this;
+					DisplayInfo::Get().toUpdatedWidth(inner_rect.x),
+					DisplayInfo::Get().toUpdatedHeight(inner_rect.y),
+					DisplayInfo::Get().toUpdatedWidth(inner_rect.w),
+					DisplayInfo::Get().toUpdatedHeight(inner_rect.h)};
 		}
-
-		bool handleEvent() override
-		{
-			if (event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
-			{
-				rect =
-					{
-						DisplayInfo::Get().toUpdatedWidth(rect.x),
-						DisplayInfo::Get().toUpdatedHeight(rect.y),
-						DisplayInfo::Get().toUpdatedWidth(rect.w),
-						DisplayInfo::Get().toUpdatedHeight(rect.h)};
-				inner_rect =
-					{
-						DisplayInfo::Get().toUpdatedWidth(inner_rect.x),
-						DisplayInfo::Get().toUpdatedHeight(inner_rect.y),
-						DisplayInfo::Get().toUpdatedWidth(inner_rect.w),
-						DisplayInfo::Get().toUpdatedHeight(inner_rect.h)};
-			}
-			return false;
-		}
-
-		void Draw() override
-		{
-			fillRoundedRectF(renderer, rect, corner_rad, color);
-			fillRoundedRectOutline(renderer, rect, corner_rad, outline, outline_color);
-		}
-	};
-
-	/**Give prog fake work to do while waiting for focus regain.
-	 * Called by Volt::checkAppFocus() when your app enters the background.
-	 * Helps to recover all your textures when your app gains focus again.
-	 * */
-	void safePauseApp(const int &ms)
-	{
-		SDL_Log("Volt::Application has lost focus!");
-		SDL_Event paEvent;
-		bool paDone = 0;
-		while (!paDone)
-		{
-			while (SDL_PollEvent(&paEvent) != 0)
-			{
-				switch (paEvent.type)
-				{
-				case SDL_EVENT_DID_ENTER_FOREGROUND:
-					SDL_Log("Volt::app has gained focus!");
-					paDone = 1;
-					break;
-				default:
-					break;
-				}
-			}
-			if (ms > 0)
-				SDL_Delay(ms);
-		}
+		return false;
 	}
 
-	/// Call this if you want your app loop to keep running even when in background and dont want to lose your textures on APP_DID_ENTER_FOREGROUND
-	///@param ms ->refresh rate delay in micro seconds
-	int checkAppFocus(SDL_Event &caf, const int &ms = 15)
+	void draw() override
 	{
-		if (caf.type == SDL_EVENT_WILL_ENTER_BACKGROUND)
-		{
-			Volt::safePauseApp(ms);
-			return 1;
-		}
-		return 0;
+		fillRoundedRectF(renderer, rect, corner_rad, color);
+		fillRoundedRectOutline(renderer, rect, corner_rad, outline, outline_color);
+	}
+};
+
+class Interpolator
+{
+public:
+	Interpolator &start(float initial_velocity, float _adg = -9.8f)
+	{
+		vO = initial_velocity;
+		ADG = _adg;
+		MAX_LEN = 100.f * ((vO * vO) / (2.f * std::fabs(ADG)));
+		value = 0.f, prev_dy = 0.f;
+		update_physics = true;
+		tm_start = SDL_GetTicks();
+		return *this;
 	}
 
-	class Interpolator
+	Interpolator &startWithDistance(float max_length, float _adg = -9.8f)
 	{
-	public:
-		Interpolator &start(float initial_velocity)
-		{
-			vO = initial_velocity;
-			MAX_LEN = 100.f * ((vO * vO) / (2.f * std::fabs(ADG)));
-			value = 0.f, prev_dy = 0.f;
-			update_physics = true;
-			tm_start = SDL_GetTicks();
+		ADG = _adg;
+		MAX_LEN = max_length / 100.f;
+		vO = std::sqrt((2 * std::fabs(ADG)) * MAX_LEN);
+		vO *= 2.f;
+		MAX_LEN = max_length;
+		value = 0.f, prev_dy = 0.f;
+		update_physics = true;
+		tm_start = SDL_GetTicks();
+		return *this;
+	}
+
+	Interpolator &update()
+	{
+		if (!update_physics)
 			return *this;
-		}
+		float t = (SDL_GetTicks() - tm_start) / 1000.f;
+		// t *= 1.5f;
 
-		Interpolator &startWithDistance(float max_length)
-		{
-			MAX_LEN = max_length / 100.f;
-			vO = std::sqrt((2 * std::fabs(ADG)) * MAX_LEN);
-			vO *= 2.f;
-			MAX_LEN = max_length;
-			value = 0.f, prev_dy = 0.f;
-			update_physics = true;
-			tm_start = SDL_GetTicks();
-			return *this;
-		}
+		dy = ((vO * t) + ((0.5f * ADG) * (t * t))) * 100.f;
+		value = dy - prev_dy;
+		prev_dy = dy;
+		if (dy >= MAX_LEN - 1.f)
+			update_physics = false;
+		return *this;
+	}
 
-		Interpolator &update()
-		{
-			if (!update_physics)
-				return *this;
-			float t = (SDL_GetTicks() - tm_start) / 1000.f;
-			// t *= 1.5f;
+	Interpolator &stop() noexcept
+	{
+		reset();
+		return *this;
+	}
 
-			dy = ((vO * t) + ((0.5f * ADG) * (t * t))) * 100.f;
-			value = dy - prev_dy;
-			prev_dy = dy;
-			if (dy >= MAX_LEN - 1.f)
-				update_physics = false;
-			return *this;
-		}
+	float getFactor()
+	{
+		update();
+		return value;
+	}
 
-		Interpolator &setIsAnimating(bool animating) noexcept
-		{
-			update_physics = animating;
-			if (animating == false)
-				value = 0;
-			return *this;
-		}
+	float getStartDistance() const noexcept
+	{
+		return MAX_LEN;
+	}
 
-		float getValue() const noexcept
-		{
-			return value;
-		}
+	bool isRunning() const noexcept
+	{
+		return update_physics;
+	}
 
-		bool isAnimating() const noexcept
-		{
-			return update_physics;
-		}
+	void reset()
+	{
+		ADG = -9.8f;
+		update_physics = false;
+		value = 0;
+	}
 
-	protected:
-		uint32_t tm_start = 0;
-		bool update_physics = false;
-		// acceleration due to gravity
-		float ADG = -9.8f;
-		float MAX_LEN = 0.f;
-		// initial velocity
-		float vO = 0.f;
-		float dy = 0.f;
-		float prev_dy = 0.f;
-		float value = 0.f;
-		float dy_sum = 0.f;
-	};
+protected:
+	uint32_t tm_start = 0;
+	bool update_physics = false;
+	// acceleration due to gravity
+	float ADG = -9.8f;
+	float MAX_LEN = 0.f;
+	// initial velocity
+	float vO = 0.f;
+	float dy = 0.f;
+	float prev_dy = 0.f;
+	float value = 0.f;
+	float dy_sum = 0.f;
+};
 
-	/*
+/*
 	 * This interpolator generates values that initially have a small difference between them
 	 * and then ramps up the difference gradually until it reaches the endpoint.
 	 * For example, the generated values between 1 -> 5 with accelerated interpolation could be 1 -> 1.2 -> 1.5 -> 1.9 -> 2.4 -> 3.0 -> 3.6 -> 4.3 -> 5.
-	 */
-	class AccelerateInterpolator
-	{
-	};
 
-	/*
+class AccelerateInterpolator
+{
+};
+
+/*
 	 * This interpolator generates values that are “slowing down” as you move forward in the list of generated values.
 	 * So, the values generated initially have a greater difference between them and the difference
 	 * gradually reduces until the endpoint is reached. Therefore, the generated values
 	 * between 1 -> 5 could look like 1 -> 1.8 -> 2.5 -> 3.1 -> 3.6 -> 4.0 -> 4.3 -> 4.5 -> 4.6 -> 4.7 -> 4.8 -> 4.9 -> 5.
-	 */
-	class DecelerateInterpolator
+
+class DecelerateInterpolator
+{
+  public:
+	DecelerateInterpolator &start(float initial_velocity)
 	{
-	public:
-		DecelerateInterpolator &start(float initial_velocity)
-		{
-			vo = initial_velocity;
-			distane = 100.f * ((vo * vo) / (2 * std::fabs(adg)));
-			value = 0.f, prev_dy = 0.f;
-			update_physics = true;
-			tm_start = SDL_GetTicks();
-			return *this;
-		}
+		vo = initial_velocity;
+		distance = 100.f * ((vo * vo) / (2 * std::fabs(adg)));
+		value = 0.f, prev_dy = 0.f;
+		update_physics = true;
+		tm_start = SDL_GetTicks();
+		return *this;
+	}
 
-		DecelerateInterpolator &startWithDistance(float max_distance)
-		{
-			distance = max_distance / 100.f;
-			vo = std::sqrt((2.f * adg) * distance);
-			vo *= 2.f;
-			distance = max_length;
-			value = 0.f, prev_dy = 0.f;
-			update_physics = true;
-			tm_start = SDL_GetTicks();
-			return *this;
-		}
-
-		// call this to update the values
-		DecelerateInterpolator &update()
-		{
-			if (!update_physics)
-				return *this;
-			float t = (SDL_GetTicks() - tm_start) / 1000.f;
-			// t *= 1.5f;
-
-			dy = ((vo * t) + ((0.5f * adg) * (t * t))) * 100.f;
-			value = dy - prev_dy;
-			prev_dy = dy;
-			if (dy >= MAX_LEN - 1.f)
-				update_physics = false;
-			return *this;
-		}
-
-		DecelerateInterpolator &setIsInterpolatinating(bool interpolating) noexcept
-		{
-			update_physics = interpolating;
-			return *this;
-		}
-
-		float getValue() const noexcept
-		{
-			return value;
-		}
-
-		bool isInterpolating() const noexcept
-		{
-			return update_physics;
-		}
-
-	protected:
-		uint32_t tm_start = 0;
-		// acceleration due to gravity
-		float adg = -9.8f;
-		float distance = 0.f;
-		// initial velocity
-		float vo = 0.f;
-		float dy = 0.f;
-		float prev_dy = 0.f;
-		float value = 0.f;
-		bool update_physics = false;
-	};
-
-	class AccelerateDecelerateInterpolator
+	DecelerateInterpolator &startWithDistance(float max_distance)
 	{
-	};
+		distance = max_distance / 100.f;
+		vo = std::sqrt((2.f * adg) * distance);
+		vo *= 2.f;
+		distance = max_distance;
+		value = 0.f, prev_dy = 0.f;
+		update_physics = true;
+		tm_start = SDL_GetTicks();
+		return *this;
+	}
 
-	/*
+	// call this to update the values
+	DecelerateInterpolator &update()
+	{
+		if (!update_physics)
+			return *this;
+		float t = (SDL_GetTicks() - tm_start) / 1000.f;
+		// t *= 1.5f;
+
+		dy = ((vo * t) + ((0.5f * adg) * (t * t))) * 100.f;
+		value = dy - prev_dy;
+		prev_dy = dy;
+		if (dy >= distance - 1.f)
+			update_physics = false;
+		return *this;
+	}
+
+	DecelerateInterpolator &setIsInterpolatinating(bool interpolating) noexcept
+	{
+		update_physics = interpolating;
+		return *this;
+	}
+
+	float getValue() const noexcept
+	{
+		return value;
+	}
+
+	bool isInterpolating() const noexcept
+	{
+		return update_physics;
+	}
+
+  protected:
+	uint32_t tm_start = 0;
+	// acceleration due to gravity
+	float adg = -9.8f;
+	float distance = 0.f;
+	// initial velocity
+	float vo = 0.f;
+	float dy = 0.f;
+	float prev_dy = 0.f;
+	float value = 0.f;
+	bool update_physics = false;
+};
+
+class AccelerateDecelerateInterpolator
+{
+};
+
+/*
 	 * This interpolation starts by first moving backward, then “flings” forward,
 	 * and then proceeds gradually to the end. This gives it an effect similar to
 	 * cartoons where the characters pull back before shooting off running.
 	 * For example, generated values between 1 -> 3 could look like: 1 -> 0.5 -> 2 -> 2.5 -> 3.
-	 */
-	class AnticipateInterpolator
-	{
-	};
 
-	class BounceInterpolator
-	{
-	};
+class AnticipateInterpolator
+{
+};
 
-	/*
+class BounceInterpolator
+{
+};
+
+/*
 	 * This interpolator generates values uniformly from the start to end.
 	 * However, after hitting the end, it overshoots or goes beyond the last
 	 * value by a small amount and then comes back to the endpoint.
 	 * For example, the generated values between 1 -> 5 could look like: 1 -> 2 -> 3 -> 4 -> 5 -> 5.5 -> 5.
-	 */
-	class OvershootInterpolator
+
+class OvershootInterpolator
+{
+};
+
+class AnticipateOvershootInterpolator
+{
+};
+*/
+
+class TextAttributes
+{
+public:
+	TextAttributes() = default;
+
+	TextAttributes(const std::string &a_text, const SDL_Color a_text_col,
+				   const SDL_Color &a_background_col) : text(a_text), text_color(a_text_col),
+														bg_color(a_background_col) {}
+
+	std::string text;
+	SDL_Color bg_color;
+	SDL_Color text_color;
+
+	void setTextAttributes(const TextAttributes &text_attributes)
 	{
-	};
-
-	class AnticipateOvershootInterpolator
-	{
-	};
-	namespace Experimental
-	{
-
-		class Wave : public Context
-		{
-		public:
-			std::deque<SDL_FRect> points;
-			Wave &setContext(Context *context_)
-			{
-				Context::setContext(context_);
-				return *this;
-			}
-
-			Wave &Build(const SDL_FRect &rect, const SDL_Color &wave_color)
-			{
-				dest = rect;
-				waveColor = wave_color;
-				r = dest.h / 2.f;
-				for (int i = 0; i < dest.w; ++i)
-				{
-					points.push_back({dest.x + i, (dest.y + r + r * sinf(t))});
-					t += ti;
-				}
-				tmLsFrame = SDL_GetTicks();
-				return *this;
-			}
-
-			auto updateWidth(float newWidth) -> Wave &
-			{
-				if (newWidth == dest.w)
-					return *this;
-				if (newWidth < 1)
-					newWidth = 1;
-				if (newWidth > dest.w)
-				{
-					dest.w = newWidth;
-					for (int d = points.back().x + 1; d < dest.x + dest.w; ++d)
-					{
-						points.push_back({static_cast<float>(d), (dest.y + r + r * sinf(t))});
-						t += ti;
-					}
-				}
-				if (newWidth < dest.w)
-				{
-					decrementWidthBy(dest.w - newWidth);
-				}
-				return *this;
-			}
-
-			Wave &incrementWidthBy(float incVal)
-			{
-				dest.w += incVal;
-				for (int d = points.back().x + 1; d < dest.x + dest.w; ++d)
-				{
-					points.push_back({(float)d, (dest.y + r + r * sinf(t))});
-					t += ti;
-				}
-				return *this;
-			}
-
-			Wave &decrementWidthBy(float incVal)
-			{
-				if (dest.w - incVal < 1)
-					return *this;
-				dest.w -= incVal;
-				while (points.back().x >= dest.x + dest.w)
-				{
-					points.pop_back();
-					t -= ti;
-				}
-				return *this;
-			}
-
-			Wave &setAnimationDelay(const MilliSec<int> &anim_delay) noexcept
-			{
-				this->animDelay = anim_delay.get();
-				return *this;
-			}
-
-			Wave &setWavePointSize(const float &point_size) noexcept
-			{
-				this->wavePoint.w = this->wavePoint.h = point_size;
-				return *this;
-			}
-
-			Wave &Draw()
-			{
-				if (SDL_GetTicks() - tmLsFrame > animDelay)
-				{
-					points.emplace_back(SDL_FRect{points.back().x + 1.f, (dest.y + r + (r * sinf(t)))});
-					std::for_each(points.begin(), points.end(), [](SDL_FRect &p)
-								  { p.x--; });
-					if (points.front().x < dest.x)
-						points.pop_front();
-					t += ti;
-					tmLsFrame = SDL_GetTicks();
-				}
-				SDL_SetRenderDrawColor(renderer, waveColor.r, waveColor.g, waveColor.b, waveColor.a);
-				for (auto &point : points)
-				{
-					wavePoint.x = point.x, wavePoint.y = point.y;
-					SDL_RenderFillRect(renderer, &wavePoint);
-					// SDL_RenderPoint(renderer, points[c].x, points[c].y);
-				}
-				return *this;
-			}
-
-		private:
-			float r = 0.f;
-			double t = 0.0, ti = 0.15;
-			Uint32 tmLsFrame, animDelay = 1;
-			SDL_FRect dest, wavePoint = {0.f, 0.f, 2.f, 2.f};
-			SDL_Color waveColor = {0xff, 0xff, 0xff, 0xff};
-		};
+		this->text = text_attributes.text;
+		this->bg_color = text_attributes.bg_color;
+		this->text_color = text_attributes.text_color;
 	}
 
-	class TextAttributes
+	TextAttributes &setText(const char *_text)
 	{
-	public:
-		TextAttributes() = default;
+		this->text = _text;
+		return *this;
+	}
 
-		TextAttributes(const std::string &a_text, const SDL_Color a_text_col,
-					   const SDL_Color &a_background_col) : text(a_text), text_color(a_text_col),
-															bg_color(a_background_col) {}
-
-		std::string text;
-		SDL_Color bg_color;
-		SDL_Color text_color;
-
-		void setTextAttributes(const TextAttributes &text_attributes)
-		{
-			this->text = text_attributes.text;
-			this->bg_color = text_attributes.bg_color;
-			this->text_color = text_attributes.text_color;
-		}
-
-		TextAttributes &setText(const char *_text)
-		{
-			this->text = _text;
-			return *this;
-		}
-
-		TextAttributes &setTextColor(const SDL_Color &_textcolor)
-		{
-			this->text_color = _textcolor;
-			return *this;
-		}
-
-		TextAttributes &setTextBgColor(const SDL_Color &_text_bg_color)
-		{
-			this->bg_color = _text_bg_color;
-			return *this;
-		}
-	};
-
-	class U8TextAttributes
+	TextAttributes &setTextColor(const SDL_Color &_textcolor)
 	{
-	public:
-		U8TextAttributes() = default;
+		this->text_color = _textcolor;
+		return *this;
+	}
 
-		U8TextAttributes(const std::u8string &a_text, const SDL_Color a_text_col,
-						 const SDL_Color &a_background_col) : text(a_text), text_color(a_text_col),
-															  bg_color(a_background_col) {}
-
-		std::u8string text;
-		SDL_Color bg_color;
-		SDL_Color text_color;
-
-		void setTextAttributes(const U8TextAttributes &text_attributes)
-		{
-			this->text = text_attributes.text;
-			this->bg_color = text_attributes.bg_color;
-			this->text_color = text_attributes.text_color;
-		}
-
-		U8TextAttributes &setText(const char8_t *_text)
-		{
-			this->text = _text;
-			return *this;
-		}
-
-		U8TextAttributes &setTextColor(const SDL_Color &_textcolor)
-		{
-			this->text_color = _textcolor;
-			return *this;
-		}
-
-		U8TextAttributes &setTextBgColor(const SDL_Color &_text_bg_color)
-		{
-			this->bg_color = _text_bg_color;
-			return *this;
-		}
-	};
-
-	class FontAttributes
+	TextAttributes &setTextBgColor(const SDL_Color &_text_bg_color)
 	{
-	public:
-		std::string font_file;
-		uint8_t font_size = 0xff;
-		FontStyle font_style;
+		this->bg_color = _text_bg_color;
+		return *this;
+	}
+};
 
-		FontAttributes() = default;
+class FontAttributes
+{
+public:
+	std::string font_file;
+	uint8_t font_size = 0xff;
+	FontStyle font_style;
 
-		FontAttributes(const std::string &a_font_file, const FontStyle &a_font_style,
-					   const uint8_t &a_font_size) : font_file(a_font_file), font_size(a_font_size), font_style(a_font_style) {}
+	FontAttributes() = default;
 
-		void setFontAttributes(const FontAttributes &font_attributes)
-		{
-			this->font_file = font_attributes.font_file,
-			this->font_size = font_attributes.font_size,
-			this->font_style = font_attributes.font_style;
-		}
+	FontAttributes(const std::string &a_font_file, const FontStyle &a_font_style,
+				   const uint8_t &a_font_size) : font_file(a_font_file), font_size(a_font_size), font_style(a_font_style) {}
 
-		FontAttributes &setFontStyle(const FontStyle &a_fontstyle)
-		{
-			this->font_style = a_fontstyle;
-			return *this;
-		}
-
-		FontAttributes &setFontFile(const std::string &a_fontfile)
-		{
-			this->font_file = a_fontfile;
-			return *this;
-		}
-
-		FontAttributes &setFontSize(const uint8_t &a_fontsize)
-		{
-			this->font_size = a_fontsize;
-			return *this;
-		}
-	};
-
-	enum class Font
+	void setFontAttributes(const FontAttributes &font_attributes)
 	{
-		ConsolasBold,
-		OpenSansRegular,
-		OpenSansSemiBold,
-		OpenSansBold,
-		OpenSansExtraBold,
-		RobotoBold,
-		SegoeUiEmoji,
-		// YuGothBold,
-	};
+		this->font_file = font_attributes.font_file,
+		this->font_size = font_attributes.font_size,
+		this->font_style = font_attributes.font_style;
+	}
 
-	struct MemFont
+	FontAttributes &setFontStyle(const FontStyle &a_fontstyle)
 	{
-		const unsigned char *font_data;
-		unsigned int font_data_size;
-		int font_size;
-		std::string font_name;
-	};
+		this->font_style = a_fontstyle;
+		return *this;
+	}
 
-	MemFont ConsolasBold{
-		.font_data = mem_ft_consolas_bold_data,
-		.font_data_size = ff_consolas_bold_len,
-		.font_size = 255,
-		.font_name = "consolas-bold"};
-
-	MemFont OpenSansRegular{
-		.font_data = ff_OpenSans_Regular_ttf_data,
-		.font_data_size = ff_OpenSans_Regular_ttf_len,
-		.font_size = 255,
-		.font_name = "opensans-regular"};
-
-	MemFont OpenSansSemiBold{
-		.font_data = ff_OpenSans_SemiBold_ttf_data,
-		.font_data_size = ff_OpenSans_SemiBold_ttf_len,
-		.font_size = 255,
-		.font_name = "opensans-semi-bold"};
-
-	MemFont OpenSansBold{
-		.font_data = ff_OpenSans_Bold_ttf_data,
-		.font_data_size = ff_OpenSans_Bold_ttf_len,
-		.font_size = 255,
-		.font_name = "opensans-bold"};
-
-	MemFont OpenSansExtraBold{
-		.font_data = ff_OpenSans_ExtraBold_ttf_data,
-		.font_data_size = ff_OpenSans_ExtraBold_ttf_len,
-		.font_size = 255,
-		.font_name = "opensans-extra-bold"};
-
-	MemFont RobotoBold{
-		.font_data = ff_Roboto_Bold_ttf_data,
-		.font_data_size = ff_Roboto_Bold_ttf_len,
-		.font_size = 255,
-		.font_name = "roboto-bold"};
-
-	MemFont SegoeUiEmoji{
-		.font_data = ff_seguiemj_ttf_data,
-		.font_data_size = ff_seguiemj_ttf_len,
-		.font_size = 255,
-		.font_name = "segoe-ui-emoji"};
-
-	/*MemFont YuGothBold{
-		.font_data = ff_YuGothB_ttc_data,
-		.font_data_size = ff_YuGothB_ttc_len,
-		.font_size = 255,
-		.font_name = "yugoth-bold"
-	};*/
-
-	[[maybeunused]] std::unordered_map<Font, MemFont *> Fonts{
-		{Font::ConsolasBold, &ConsolasBold},
-		{Font::OpenSansRegular, &OpenSansRegular},
-		{Font::OpenSansSemiBold, &OpenSansSemiBold},
-		{Font::OpenSansBold, &OpenSansBold},
-		{Font::OpenSansExtraBold, &OpenSansExtraBold},
-		{Font::RobotoBold, &RobotoBold},
-		{Font::SegoeUiEmoji, &SegoeUiEmoji},
-		//{Font::YuGothBold,&YuGothBold},
-	};
-
-	class FontStore
+	FontAttributes &setFontFile(const std::string &a_fontfile)
 	{
-	public:
-		~FontStore()
-		{
-			for (auto &[path_, font] : fonts)
-				TTF_CloseFont(font);
-		}
+		this->font_file = a_fontfile;
+		return *this;
+	}
 
-		TTF_Font *operator[](const std::pair<std::string, int> &font)
+	FontAttributes &setFontSize(const uint8_t &a_fontsize)
+	{
+		this->font_size = a_fontsize;
+		return *this;
+	}
+};
+
+enum class Font
+{
+	ConsolasBold,
+	OpenSansRegular,
+	OpenSansSemiBold,
+	OpenSansBold,
+	OpenSansExtraBold,
+	RobotoBold,
+	SegoeUiEmoji,
+	// YuGothBold,
+};
+
+struct MemFont
+{
+	const unsigned char *font_data;
+	unsigned int font_data_size;
+	int font_size;
+	std::string font_name;
+};
+
+MemFont RobotoBold{
+	.font_data = ff_Roboto_Bold_ttf_data,
+	.font_data_size = ff_Roboto_Bold_ttf_len,
+	.font_size = 255,
+	.font_name = "roboto-bold"};
+
+[[maybeunused]] std::unordered_map<Font, MemFont *> Fonts{
+	//{Font::ConsolasBold, &ConsolasBold},
+	//{Font::OpenSansRegular, &OpenSansRegular},
+	//{{Font::OpenSansSemiBold, &OpenSansSemiBold},
+	//{Font::OpenSansBold, &OpenSansBold},
+	//{Font::OpenSansExtraBold, &OpenSansExtraBold},
+	{Font::RobotoBold, &RobotoBold},
+	//{Font::SegoeUiEmoji, &SegoeUiEmoji},
+	//{Font::YuGothBold,&YuGothBold},
+};
+
+class FontStore
+{
+public:
+	~FontStore()
+	{
+		for (auto &[path_, font] : fonts)
+			TTF_CloseFont(font);
+	}
+
+	TTF_Font *operator[](const std::pair<std::string, int> &font)
+	{
+		const std::string key = font.first + std::to_string(font.second);
+		if (fonts.count(key) == 0)
 		{
-			const std::string key = font.first + std::to_string(font.second);
-			if (fonts.count(key) == 0)
+			if (!(fonts[key] = TTF_OpenFont(font.first.c_str(), font.second)))
 			{
-				if (!(fonts[key] = TTF_OpenFont(font.first.c_str(), font.second)))
-				{
-					SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", TTF_GetError());
-					fonts.erase(key);
-					return nullptr;
-				}
-				else
-				{
-					SDL_Log("New FileFont Loaded: %s", key.c_str());
-					// TTF_SetFontSDF(fonts[key], SDL_TRUE);
-					// TTF_SetFontOutline(fonts[key], m_font_outline);
-					// TTF_SetFontKerning(fonts[key], 1);
-					// TTF_SetFontHinting(fonts[key], TTF_HINTING_LIGHT_SUBPIXEL);
-					// TTF_SetFontHinting(fonts[key], TTF_HINTING_MONO);
-				}
+				SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", TTF_GetError());
+				fonts.erase(key);
+				return nullptr;
 			}
-			return fonts[key];
-		}
-
-		TTF_Font *operator[](const MemFont &mem_font)
-		{
-			const std::string key = mem_font.font_name + std::to_string(mem_font.font_size);
-			if (fonts.count(key) == 0)
+			else
 			{
-				SDL_RWops *rw_ = SDL_RWFromConstMem(mem_font.font_data, mem_font.font_data_size);
-				if (!(fonts[key] = TTF_OpenFontRW(rw_, SDL_TRUE, mem_font.font_size)))
-				{
-					SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", TTF_GetError());
-					fonts.erase(key);
-					return nullptr;
-				}
-				else
-				{
-					SDL_Log("New MemFont Loaded: %s", key.c_str());
-					// TTF_SetFontSDF(fonts[key], SDL_TRUE);
-					// TTF_SetFontOutline(fonts[key], m_font_outline);
-					// TTF_SetFontKerning(fonts[key], 1);
-					// TTF_SetFontHinting(fonts[key], TTF_HINTING_MONO);
-				}
+				GLogger.Log(Logger::Level::Info, "New FileFont Loaded:", key);
+				// TTF_SetFontSDF(fonts[key], SDL_TRUE);
+				// TTF_SetFontOutline(fonts[key], m_font_outline);
+				// TTF_SetFontKerning(fonts[key], 0);
+				// TTF_SetFontHinting(fonts[key], TTF_HINTING_LIGHT_SUBPIXEL);
+				// TTF_SetFontHinting(fonts[key], TTF_HINTING_MONO);
 			}
-			return fonts[key];
 		}
+		return fonts[key];
+	}
 
-	private:
-		std::unordered_map<std::string, TTF_Font *> fonts;
-	};
-
-	class U8FontStore
+	TTF_Font *operator[](const MemFont &mem_font)
 	{
-	public:
-		~U8FontStore()
+		const std::string key = mem_font.font_name + std::to_string(mem_font.font_size);
+		if (fonts.count(key) == 0)
 		{
-			for (auto &[font_path, font] : fonts)
-				TTF_CloseFont(font);
-		}
-
-		TTF_Font *operator[](const std::pair<std::u8string, int> &font)
-		{
-			const std::u8string key = font.first;
-			if (fonts.count(key) == 0)
+			// GLogger.Log(Logger::Level::Info, "FT loading " + key);
+			SDL_RWops *rw_ = SDL_RWFromConstMem(mem_font.font_data, mem_font.font_data_size);
+			auto *ft = TTF_OpenFontRW(rw_, SDL_TRUE, mem_font.font_size);
+			if (!ft)
 			{
-				if (!(fonts[key] = TTF_OpenFont((char *)font.first.c_str(), font.second)))
-				{
-					SDL_Log("couldn't open font: %s %s", key.c_str(), TTF_GetError());
-					fonts.erase(key);
-					return nullptr;
-				}
-				else
-				{
-					// SDL_Log("NEW FONT: %s", key.c_str());
-					// TTF_SetFontOutline(fonts[key], m_font_outline);
-					// TTF_SetFontKerning(fonts[key], 0);
-					// TTF_SetFontHinting(fonts[key], TTF_HINTING_MONO);
-				}
+				GLogger.Log(Logger::Level::Info, "TTF_OpenFontRW:", std::string(TTF_GetError()));
+				return nullptr;
 			}
-			return fonts[key];
-		}
-
-	private:
-		std::unordered_map<std::u8string, TTF_Font *> fonts;
-	};
-
-	class FontSystem
-	{
-	public:
-		FontSystem(const FontSystem &) = delete;
-
-		FontSystem(const FontSystem &&) = delete;
-
-		static FontSystem &Get()
-		{
-			static FontSystem instance;
-			return instance;
-		}
-
-		FontSystem &setFontFile(const char *font_file) noexcept
-		{
-			this->m_font_attributes.font_file = font_file;
-			return *this;
-		}
-
-		FontSystem &setFontSize(const uint8_t &font_size) noexcept
-		{
-			this->m_font_attributes.font_size = font_size;
-			return *this;
-		}
-
-		FontSystem &setFontStyle(const FontStyle &font_style) noexcept
-		{
-			this->m_font_attributes.font_style = font_style;
-			return *this;
-		}
-
-		FontSystem &setCustomFontStyle(const int &custom_font_style) noexcept
-		{
-			this->m_custom_fontstyle = custom_font_style;
-			return *this;
-		}
-
-		FontSystem &setFontAttributes(const FontAttributes &font_attributes,
-									  const int &custom_fontstyle = 0) noexcept
-		{
-			this->m_font_attributes = font_attributes;
-			this->m_custom_fontstyle = custom_fontstyle;
-			return *this;
-		}
-
-		FontSystem &setFontAttributes(const MemFont &_mem_ft, const FontStyle &ft_style_, const int &custom_fontstyle = 0) noexcept
-		{
-			this->m_font_attributes.setFontAttributes(FontAttributes{_mem_ft.font_name, ft_style_, static_cast<uint8_t>(_mem_ft.font_size)});
-			this->m_custom_fontstyle = custom_fontstyle;
-			return *this;
-		}
-
-		TTF_Font *getFont(const std::string &font_file, const int &font_size)
-		{
-			return fontStore[{font_file, font_size}];
-		}
-
-		TTF_Font *getFont(const MemFont &_mem_ft)
-		{
-			return fontStore[_mem_ft];
-		}
-
-		std::optional<UniqueTexture> genTextTextureUnique(SDL_Renderer *renderer, const char *text, const SDL_Color text_color)
-		{
-			if (!genTextCommon())
-				return {};
-			SDL_Surface *textSurf = TTF_RenderUTF8_Blended(m_font, text, text_color);
-			if (!textSurf)
-				SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", SDL_GetError());
-			auto result = CreateUniqueTextureFromSurface(renderer, textSurf);
-			if (!result.get())
-				SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", SDL_GetError());
-			Async::GThreadPool.enqueue([](SDL_Surface *surface)
-									   {SDL_DestroySurface(surface); surface = nullptr; },
-									   textSurf);
-			return result;
-		}
-
-		std::optional<UniqueTexture> genTextTextureUniqueV2(SDL_Renderer *renderer, const char *text, const SDL_Color text_color, float _w, float _h, bool wordWrap = false)
-		{
-			if (!genTextCommon())
-				return {};
-			std::vector<std::pair<SDL_FRect, SDL_Texture *>> finalGlyphs{};
-			int maxW = 0, maxH = 0;
-			int length = strlen(text);
-			int textOffsetY = 0;
-			int textOffsetX = 0;
-			int lineHeight = TTF_FontLineSkip(m_font);
-
-			for (int i = 0; i < length;)
+			else
 			{
-				int wordWidth = 0;
-				int wordLength = 0;
-				int advance;
-				for (int j = i; j < length && text[j] != ' ' && text[j] != '\n'; ++j)
-				{
-					TTF_GlyphMetrics(m_font, text[j], NULL, NULL, NULL, NULL, &advance);
-					wordWidth += advance;
-					++wordLength;
-				}
+				fonts[key] = ft;
+				GLogger.Log(Logger::Level::Info, "New MemFont Loaded:", key);
+				// TTF_SetFontSDF(fonts[key], SDL_TRUE);
+				// TTF_SetFontOutline(fonts[key], m_font_outline);
+				// TTF_SetFontKerning(fonts[key], 1);
+				TTF_SetFontHinting(fonts[key], TTF_HINTING_MONO);
+			}
+		}
+		return fonts[key];
+	}
 
-				if (wordWrap && textOffsetX + wordWidth > _w)
+private:
+	std::unordered_map<std::string, TTF_Font *> fonts;
+};
+
+class FontSystem
+{
+public:
+	FontSystem(const FontSystem &) = delete;
+
+	FontSystem(const FontSystem &&) = delete;
+
+	static FontSystem &Get()
+	{
+		static FontSystem instance;
+		return instance;
+	}
+
+	FontSystem &setFontFile(const char *font_file) noexcept
+	{
+		this->m_font_attributes.font_file = font_file;
+		return *this;
+	}
+
+	FontSystem &setFontSize(const uint8_t &font_size) noexcept
+	{
+		this->m_font_attributes.font_size = font_size;
+		return *this;
+	}
+
+	FontSystem &setFontStyle(const FontStyle &font_style) noexcept
+	{
+		this->m_font_attributes.font_style = font_style;
+		return *this;
+	}
+
+	FontSystem &setCustomFontStyle(const int &custom_font_style) noexcept
+	{
+		this->m_custom_fontstyle = custom_font_style;
+		return *this;
+	}
+
+	FontSystem &setFontAttributes(const FontAttributes &font_attributes,
+								  const int &custom_fontstyle = 0) noexcept
+	{
+		this->m_font_attributes = font_attributes;
+		this->m_custom_fontstyle = custom_fontstyle;
+		return *this;
+	}
+
+	FontSystem &setFontAttributes(const MemFont &_mem_ft, const FontStyle &ft_style_, const int &custom_fontstyle = 0) noexcept
+	{
+		this->m_font_attributes.setFontAttributes(FontAttributes{_mem_ft.font_name, ft_style_, static_cast<uint8_t>(_mem_ft.font_size)});
+		this->m_custom_fontstyle = custom_fontstyle;
+		return *this;
+	}
+
+	TTF_Font *getFont(const std::string &font_file, const int &font_size)
+	{
+		return fontStore[{font_file, font_size}];
+	}
+
+	TTF_Font *getFont(const MemFont &_mem_ft)
+	{
+		return fontStore[_mem_ft];
+	}
+
+	std::optional<UniqueTexture> genTextTextureUnique(SDL_Renderer *renderer, const char *text, const SDL_Color text_color)
+	{
+		if (!genTextCommon())
+			return {};
+		SDL_Surface *textSurf = TTF_RenderUTF8_Blended(m_font, text, text_color);
+		if (!textSurf)
+			SDL_Log("%s", SDL_GetError());
+		auto result = CreateUniqueTextureFromSurface(renderer, textSurf);
+		if (!result.get())
+			SDL_Log("%s", SDL_GetError());
+		Async::GThreadPool.enqueue([](SDL_Surface *surface)
+								   {SDL_DestroySurface(surface); surface = nullptr; },
+								   textSurf);
+		return result;
+	}
+
+	SDL_Texture* genTextTextureRaw(SDL_Renderer* renderer, const char* text, const SDL_Color text_color)
+	{
+		if (!genTextCommon())
+			return {};
+		SDL_Surface* textSurf = TTF_RenderUTF8_Blended(m_font, text, text_color);
+		if (!textSurf)
+			SDL_Log("%s", SDL_GetError());
+		auto result = SDL_CreateTextureFromSurface(renderer, textSurf);
+		if (!result)
+			SDL_Log("%s", SDL_GetError());
+		Async::GThreadPool.enqueue([](SDL_Surface* surface)
+			{SDL_DestroySurface(surface); surface = nullptr; },
+			textSurf);
+		return result;
+	}
+
+	std::optional<UniqueTexture> genTextTextureUniqueV2(SDL_Renderer *renderer, const char *text, const SDL_Color text_color, float _w, float _h, bool wordWrap = false)
+	{
+		if (!genTextCommon())
+			return {};
+		std::vector<std::pair<SDL_FRect, SDL_Texture *>> finalGlyphs{};
+		int maxW = 0, maxH = 0;
+		int length = strlen(text);
+		int textOffsetY = 0;
+		int textOffsetX = 0;
+		int lineHeight = TTF_FontLineSkip(m_font);
+
+		for (int i = 0; i < length;)
+		{
+			int wordWidth = 0;
+			int wordLength = 0;
+			int advance;
+			for (int j = i; j < length && text[j] != ' ' && text[j] != '\n'; ++j)
+			{
+				TTF_GlyphMetrics(m_font, text[j], NULL, NULL, NULL, NULL, &advance);
+				wordWidth += advance;
+				++wordLength;
+			}
+
+			if (wordWrap && textOffsetX + wordWidth > _w)
+			{
+				textOffsetX = 0;
+				textOffsetY += lineHeight;
+			}
+
+			for (int j = 0; j < wordLength; ++j)
+			{
+				if (text[i + j] == '\n')
 				{
 					textOffsetX = 0;
 					textOffsetY += lineHeight;
+					break;
 				}
 
-				for (int j = 0; j < wordLength; ++j)
-				{
-					if (text[i + j] == '\n')
-					{
-						textOffsetX = 0;
-						textOffsetY += lineHeight;
-						break;
-					}
-
-					TTF_GlyphMetrics(m_font, text[i + j], NULL, NULL, NULL, NULL, &advance);
-					SDL_Surface *textSurf = TTF_RenderGlyph_Blended(m_font, text[i + j], text_color);
-					SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, textSurf);
-					std::pair<SDL_FRect, SDL_Texture *> gl_{{(float)textOffsetX, (float)textOffsetY, (float)textSurf->w, (float)textSurf->h}, texture};
-					finalGlyphs.emplace_back(gl_);
-					textOffsetX += advance;
-					if (textOffsetX + textSurf->w >= maxW)
-						maxW = textOffsetX + textSurf->w;
-					Async::GThreadPool.enqueue([](SDL_Surface *surface)
-											   {SDL_DestroySurface(surface); surface = nullptr; }, textSurf);
-				}
-
-				if (text[i + wordLength] == ' ')
-				{
-					TTF_GlyphMetrics(m_font, ' ', NULL, NULL, NULL, NULL, &advance);
-					textOffsetX += advance;
-					++wordLength;
-				}
-
-				i += wordLength;
+				TTF_GlyphMetrics(m_font, text[i + j], NULL, NULL, NULL, NULL, &advance);
+				SDL_Surface *textSurf = TTF_RenderGlyph_Blended(m_font, text[i + j], text_color);
+				SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, textSurf);
+				std::pair<SDL_FRect, SDL_Texture *> gl_{{(float)textOffsetX, (float)textOffsetY, (float)textSurf->w, (float)textSurf->h}, texture};
+				finalGlyphs.emplace_back(gl_);
+				textOffsetX += advance;
+				if (textOffsetX + textSurf->w >= maxW)
+					maxW = textOffsetX + textSurf->w;
+				Async::GThreadPool.enqueue([](SDL_Surface *surface)
+										   {SDL_DestroySurface(surface); surface = nullptr; }, textSurf);
 			}
 
-			CacheRenderTarget crt_(renderer);
-			auto result = CreateUniqueTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, maxW, (int)_h);
-			SDL_SetTextureBlendMode(result.get(), SDL_BLENDMODE_BLEND);
-			SDL_SetRenderTarget(renderer, result.get());
-			renderClear(renderer, 0, 0, 0, 0);
-			for (auto &[grect, gtexture] : finalGlyphs)
+			if (text[i + wordLength] == ' ')
 			{
-				SDL_RenderTexture(renderer, gtexture, NULL, (const SDL_FRect *)&grect);
-				// SDL_DestroyTexture(gtexture);
-				Async::GThreadPool.enqueue([](SDL_Texture *dtex)
-										   {SDL_DestroyTexture(dtex); dtex = nullptr; }, gtexture);
-			}
-			crt_.release(renderer);
-
-			return result;
-		}
-
-		std::optional<SharedTexture> genTextTextureShared(SDL_Renderer *renderer, const char *text, const SDL_Color text_color)
-		{
-			if (!genTextCommon())
-				return {};
-			SDL_Surface *textSurf = TTF_RenderUTF8_Blended(m_font, text, text_color);
-			if (!textSurf)
-				SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", SDL_GetError());
-			auto result = CreateSharedTextureFromSurface(renderer, textSurf);
-			if (!result.get())
-				SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", SDL_GetError());
-			Async::GThreadPool.enqueue([](SDL_Surface *surface)
-									   {SDL_DestroySurface(surface); surface = nullptr; },
-									   textSurf);
-			return result;
-		}
-
-		std::optional<UniqueTexture> u8GenTextTextureUnique(SDL_Renderer *renderer, const char8_t *text, const SDL_Color text_color)
-		{
-
-			if (!genTextCommon())
-				return {};
-
-			SDL_Surface *textSurf = TTF_RenderUTF8_Blended(m_font, (char *)text, text_color);
-			if (!textSurf)
-				SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", SDL_GetError());
-			UniqueTexture result = CreateUniqueTextureFromSurface(renderer, textSurf);
-			SDL_DestroySurface(textSurf);
-			textSurf = nullptr;
-			if (!result.get())
-			{
-				SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", SDL_GetError());
-				return {};
-			}
-			return result;
-		}
-
-	private:
-		FontSystem()
-		{
-			this->m_font_attributes = FontAttributes{"", FontStyle::Normal, 255};
-			m_font_outline = 0;
-			m_custom_fontstyle = TTF_STYLE_NORMAL;
-		}
-
-		bool genTextCommon()
-		{
-			if (m_font_attributes.font_file.empty())
-			{
-				SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FontSystem Error: Invlaid/empty fontfile!");
-				return false;
+				TTF_GlyphMetrics(m_font, ' ', NULL, NULL, NULL, NULL, &advance);
+				textOffsetX += advance;
+				++wordLength;
 			}
 
-			m_font = fontStore[{m_font_attributes.font_file, m_font_attributes.font_size}];
-			if (m_font == nullptr)
-			{
-				SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Error generating text texture: NULL FONT");
-				return false;
-			}
-
-			switch (m_font_attributes.font_style)
-			{
-				using enum FontStyle;
-			case Normal:
-				TTF_SetFontStyle(m_font, TTF_STYLE_NORMAL);
-				break;
-			case Bold:
-				TTF_SetFontStyle(m_font, TTF_STYLE_BOLD);
-				break;
-			case Italic:
-				TTF_SetFontStyle(m_font, TTF_STYLE_ITALIC);
-				break;
-			case Underline:
-				TTF_SetFontStyle(m_font, TTF_STYLE_UNDERLINE);
-				break;
-			case StrikeThrough:
-				TTF_SetFontStyle(m_font, TTF_STYLE_STRIKETHROUGH);
-				break;
-			case BoldUnderline:
-				TTF_SetFontStyle(m_font, TTF_STYLE_BOLD | TTF_STYLE_UNDERLINE);
-				break;
-			case BoldStrikeThrough:
-				TTF_SetFontStyle(m_font, TTF_STYLE_BOLD | TTF_STYLE_STRIKETHROUGH);
-				break;
-			case ItalicBold:
-				TTF_SetFontStyle(m_font, TTF_STYLE_ITALIC | TTF_STYLE_BOLD);
-				break;
-			case ItalicUnderline:
-				TTF_SetFontStyle(m_font, TTF_STYLE_ITALIC | TTF_STYLE_UNDERLINE);
-				break;
-			case ItalicStrikeThrough:
-				TTF_SetFontStyle(m_font, TTF_STYLE_ITALIC | TTF_STYLE_STRIKETHROUGH);
-				break;
-			case Custom:
-				TTF_SetFontStyle(m_font, m_custom_fontstyle);
-				break;
-			default:
-				TTF_SetFontStyle(m_font, TTF_STYLE_NORMAL);
-				break;
-			}
-
-			return true;
+			i += wordLength;
 		}
 
-		TTF_Font *m_font;
-		FontStore fontStore;
-		FontAttributes m_font_attributes;
-		int m_font_outline = 0;
-		int m_custom_fontstyle;
-	};
-
-	struct TextViewAttributes
-	{
-		Font mem_font = Font::ConsolasBold;
-		SDL_FRect rect = {0.f, 0.f, 0.f, 0.f};
-		TextAttributes textAttributes = {"", {0x00, 0x00, 0x00, 0xff}, {0xff, 0xff, 0xff, 0xff}};
-		std::string fontFile;
-		FontStyle fontStyle = FontStyle::Normal;
-		Gravity gravity = Gravity::Left;
-		int customFontstyle = TTF_STYLE_NORMAL;
-		bool shrinkToFit = false;
-	};
-	class TextView : public Context
-	{
-	public:
-		// using IView::rect;
-		SDL_FRect txt_dest{}, rect{};
-		std::size_t id = 0;
-
-		TextView() {}
-
-		TextView(Context *_context, const TextViewAttributes &tvAttr)
+		CacheRenderTarget crt_(renderer);
+		auto result = CreateUniqueTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, maxW, (int)_h);
+		SDL_SetTextureBlendMode(result.get(), SDL_BLENDMODE_BLEND);
+		SDL_SetRenderTarget(renderer, result.get());
+		RenderClear(renderer, 0, 0, 0, 0);
+		for (auto &[grect, gtexture] : finalGlyphs)
 		{
-			Context::setContext(_context);
-			Build(tvAttr);
+			RenderTexture(renderer, gtexture, NULL, (const SDL_FRect *)&grect);
+			// SDL_DestroyTexture(gtexture);
+			Async::GThreadPool.enqueue([](SDL_Texture *dtex)
+									   {SDL_DestroyTexture(dtex); dtex = nullptr; }, gtexture);
 		}
+		crt_.release(renderer);
 
-		TextView &setContext(Context *context_) noexcept
-		{
-			Context::setContext(context_);
-			return *this;
-		}
-
-		TextView &setId(const int &id_) noexcept
-		{
-			this->id = id_;
-			return *this;
-		}
-
-		inline std::size_t getId() const noexcept
-		{
-			return this->id;
-		}
-
-		TextView &setPosX(const float &pos_x) noexcept
-		{
-			this->rect.x = pos_x;
-			return *this;
-		}
-
-		TextView &setPosY(const float &pos_y) noexcept
-		{
-			this->rect.y = pos_y;
-			return *this;
-		}
-
-		TextView &setPos(const float &pos_x, const float &pos_y) noexcept
-		{
-			this->rect.x = pos_x;
-			this->rect.y = pos_y;
-			return *this;
-		}
-
-		inline std::string getText() const noexcept
-		{
-			return this->textAttributes.text;
-		}
-
-		TextView &updateTextColor(const SDL_Color &bgColor, const SDL_Color &textColor)
-		{
-			textAttributes.bg_color = bgColor;
-			textAttributes.text_color = textColor;
-			// Build(dest, textAttributes, fontAttributes.font_file, fontAttributes.font_style, textGravity);
-			CacheRenderTarget rTargetCache(renderer);
-			auto genTex = FontSystem::Get().setFontAttributes(fontAttributes).genTextTextureUnique(renderer, textAttributes.text.c_str(), textAttributes.text_color);
-			/*int tmp_w = 0, tmp_h = 0;
-			SDL_QueryTexture(FontSystem::Get().uniTex, nullptr, nullptr, &tmp_w, &tmp_h);*/
-			SDL_SetRenderTarget(renderer, this->stexture.get());
-			renderClear(renderer, textAttributes.bg_color.r,
-						textAttributes.bg_color.g, textAttributes.bg_color.b,
-						textAttributes.bg_color.a);
-			SDL_RenderTexture(renderer, genTex.value().get(), nullptr, nullptr);
-			rTargetCache.release(renderer);
-			return *this;
-		}
-
-		TextView &Build(const TextViewAttributes &tvAttr)
-		{
-			CacheRenderTarget rTargetCache(renderer);
-			this->rect = {0.f, 0.f, tvAttr.rect.w, tvAttr.rect.h};
-			if (stexture.get() != nullptr)
-			{
-				stexture.reset();
-				stexture = nullptr;
-			}
-			shrinkToFit = tvAttr.shrinkToFit;
-			// u8text = std::u8string(text_attributes.text);
-
-			int fsize = tvAttr.rect.h;
-			if (fsize > 255)
-				fsize = 255;
-			textGravity = tvAttr.gravity;
-			// int btmp_w = 0, btmp_h = 0;
-			// btmp_h = fsize;
-			// btmp_w = dest_.h * text_attributes.text.size();
-			////TTF_SizeText(FontSystem::Get().getFont(font_file, fsize), text_attributes.text.c_str(), &btmp_w, &btmp_h);
-			// SDL_Log("BQ_W: %d BQ_H: %d", btmp_w, btmp_h);
-			textAttributes = tvAttr.textAttributes;
-			fontAttributes = {tvAttr.fontFile, tvAttr.fontStyle, static_cast<Uint8>(fsize)};
-			TTF_Font *tmpFont = nullptr;
-
-			if (fontAttributes.font_file.empty())
-			{
-				Fonts[tvAttr.mem_font]->font_size = fontAttributes.font_size;
-				fontAttributes.font_file = Fonts[tvAttr.mem_font]->font_name;
-				tmpFont = FontSystem::Get().getFont(*Fonts[tvAttr.mem_font]);
-			}
-
-			auto genTex = FontSystem::Get().setFontAttributes(fontAttributes).genTextTextureUnique(renderer, textAttributes.text.c_str(), textAttributes.text_color);
-			if (genTex.has_value())
-			{
-				int tmp_w = 0, tmp_h = 0;
-				SDL_QueryTexture(genTex.value().get(), nullptr, nullptr, &tmp_w, &tmp_h);
-				// SDL_Log("AQ_W: %d AQ_H: %d", tmp_w, tmp_h);
-				if (tmp_w < rect.w)
-				{
-					// if(shrinkToFit)dest.w = tmp_w;
-					rect.w = tmp_w;
-					if (tvAttr.gravity == Gravity::Center && !shrinkToFit)
-					{
-						rect.x = (tvAttr.rect.w - tmp_w) / 2.f;
-					}
-				}
-				if (tmp_h < rect.h)
-					rect.y = (tvAttr.rect.h - tmp_h) / 2.f, rect.h = tmp_h;
-
-				SDL_FRect src_txt = {0.f, 0.f, rect.w, tmp_h};
-				stexture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
-											   SDL_TEXTUREACCESS_TARGET, shrinkToFit ? rect.w : tvAttr.rect.w,
-											   shrinkToFit ? rect.h : tvAttr.rect.h);
-				SDL_SetTextureBlendMode(this->stexture.get(), SDL_BLENDMODE_BLEND);
-				SDL_SetRenderTarget(renderer, this->stexture.get());
-				renderClear(renderer, textAttributes.bg_color.r,
-							textAttributes.bg_color.g, textAttributes.bg_color.b,
-							textAttributes.bg_color.a);
-				SDL_RenderTexture(renderer, genTex.value().get(), &src_txt, &rect);
-				if (!shrinkToFit)
-					rect.x = tvAttr.rect.x, rect.w = tvAttr.rect.w;
-				else
-					rect.x += tvAttr.rect.x;
-				rect.y += tvAttr.rect.y;
-			}
-			// dest = dest_;
-			rTargetCache.release(renderer);
-			return *this;
-		}
-
-		const TextView &Draw() const
-		{
-			if (stexture.get() == nullptr)
-			{
-				// SDL_Log("EMPTY_TEXTVIEW");
-				return *this;
-			}
-			/*SDL_SetRenderDrawColor(renderer, 0xc8, 0, 0, 0xff);
-			SDL_RenderFillRect(renderer, &dest);*/
-			SDL_RenderTexture(renderer, stexture.get(), nullptr, &rect);
-			return *this;
-		}
-
-	protected:
-		SharedTexture stexture;
-		bool shrinkToFit = false;
-		// std::u8string u8text;
-		TextAttributes textAttributes;
-		FontAttributes fontAttributes;
-		Gravity textGravity;
-	};
-
-	class TextSlider : public Context
-	{
-	public:
-		SDL_FRect dest;
-
-	public:
-		TextSlider() = default;
-
-		TextSlider(Context *_context, const SDL_FRect &dest_, const TextAttributes &text_attriutes,
-				   const FontAttributes &font_attributes)
-		{
-			Context::setContext(_context);
-			contextIsSet = true;
-			Build(dest_, text_attriutes, font_attributes);
-		}
-
-		TextSlider &setContext(Context *context_)
-		{
-			Context::setContext(context_);
-			contextIsSet = true;
-			return *this;
-		}
-
-		TextSlider &setSlideDelay(const MilliSec<int> &ms_delay)
-		{
-			this->tmSlideDelay = ms_delay.get();
-			return *this;
-		}
-
-		TextSlider &configureSidesShadow(const SDL_Color &shadow_color, const int &percLength)
-		{
-			this->sidesShadowColor = shadow_color;
-			this->sideShadowLenght = percLength;
-			showSidesShadow = true;
-			return *this;
-		}
-
-		TextSlider &Build(const SDL_FRect &dest_, const TextAttributes &text_attributes, const FontAttributes &font_attributes)
-		{
-			animSwitchAdaptiveVsyncHD.setAdaptiveVsync(adaptiveVsync);
-			slideAdaptiveVsyncHD.setAdaptiveVsync(adaptiveVsync);
-			if (!contextIsSet)
-			{
-				SDL_Log("Couldn't create TextSlider: Context is null/wasn't set");
-				return *this;
-			}
-
-			if (sliderTexture.get() != nullptr)
-				sliderTexture.reset();
-
-			dest = dest_;
-
-			textAttributes = text_attributes;
-			fontAttributes = font_attributes;
-			fontAttributes.font_size = dest.h;
-
-			CacheRenderTarget rTargetCache(renderer);
-
-			sliderTexture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, dest_.w,
-												dest_.h);
-			SDL_SetTextureBlendMode(this->sliderTexture.get(), SDL_BLENDMODE_BLEND);
-			// rTargetCache = SDL_GetRenderTarget(renderer);
-			SDL_SetRenderTarget(renderer, sliderTexture.get());
-			renderClear(renderer, textAttributes.bg_color.r, textAttributes.bg_color.g, textAttributes.bg_color.b,
-						textAttributes.bg_color.a);
-
-			// oldTexture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, Width(dest_.w), Height(dest_.h));
-			// SDL_SetTextureBlendMode(this->oldTexture.get(), SDL_BLENDMODE_BLEND);
-			////rTargetCache = SDL_GetRenderTarget(renderer);
-			// SDL_SetRenderTarget(renderer, oldTexture.get());
-			// renderClear(renderer, textAttributes.bg_color.r, textAttributes.bg_color.g, textAttributes.bg_color.b, textAttributes.bg_color.a);
-			//
-			updateTextures();
-			rTargetCache.release(renderer);
-			tm_start = SDL_GetTicks();
-			tm_last = SDL_GetTicks();
-			vi = pv->to_cust(5.f, dest.h);
-			return *this;
-		}
-
-		TextSlider &updateText(const char *newText)
-		{
-			animDestA = cache_newDest;
-			textAttributes.setText(newText);
-			slide = true;
-			if (oldTexture.get() != nullptr)
-				oldTexture.reset();
-			/*SDL_SetRenderTarget(renderer, newTexture);
-			renderClear(0, 0, 0, 0);
-			SDL_RenderTexture(renderer, newTexture, nullptr, &animDestA);
-			*/
-			oldTexture = std::move(newTexture);
-			CacheRenderTarget rTargetCache(renderer);
-			SDL_SetRenderTarget(renderer, sliderTexture.get());
-			renderClear(renderer, textAttributes.bg_color.r, textAttributes.bg_color.g, textAttributes.bg_color.b,
-						textAttributes.bg_color.a);
-			updateTextures();
-			animDestB = {newDest.x, newDest.y + newDest.h, newDest.w, newDest.h};
-			animateSwitch = true;
-			rTargetCache.release(renderer);
-			if (animateSwitch)
-				animSwitchAdaptiveVsyncHD.startRedrawSession();
-			return *this;
-		}
-
-		const TextSlider &Draw()
-		{
-			if (animateSwitch)
-			{
-				if (animDestA.y <= -animDestA.h)
-					animateSwitch = false, animSwitchAdaptiveVsyncHD.stopRedrawSession(), animDestB.y = newDest.y, tm_start = SDL_GetTicks(), tm_last = SDL_GetTicks();
-				CacheRenderTarget rTargetCache(renderer);
-				SDL_SetRenderTarget(renderer, sliderTexture.get());
-				renderClear(renderer, textAttributes.bg_color.r, textAttributes.bg_color.g, textAttributes.bg_color.b,
-							textAttributes.bg_color.a);
-				SDL_RenderTexture(renderer, oldTexture.get(), &source_a, &animDestA);
-				SDL_RenderTexture(renderer, newTexture.get(), &source_a, &animDestB);
-				rTargetCache.release(renderer);
-				animDestA.y -= vi;
-				if (animDestB.y > newDest.y)
-					animDestB.y -= vi;
-			}
-			else
-			{
-				if (slide)
-				{
-					// updateSlide();
-					tm_now = SDL_GetTicks();
-					if (tm_now - tm_start > tmSlideDelay)
-					{
-						updateSlide();
-					}
-					else
-					{
-						tm_last = SDL_GetTicks();
-					}
-				}
-			}
-			SDL_RenderTexture(renderer, sliderTexture.get(), nullptr, &dest);
-			if (showSidesShadow && slide && (tm_now - tm_start) > tmSlideDelay)
-			{
-				SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-				const int len = pv->to_cust(sideShadowLenght, dest.w);
-				/// TODO: cap perc_ to 255 using std::max
-				const int alpha_ratio = (int)(255 / len);
-				uint8_t alpha = 255;
-				for (int i = 0; i < len; ++i)
-				{
-					alpha -= alpha_ratio;
-					SDL_SetRenderDrawColor(renderer, sidesShadowColor.r, sidesShadowColor.g, sidesShadowColor.b, alpha);
-					SDL_RenderLine(renderer, (float)dest.x + i, dest.y, (float)dest.x + i, dest.y + dest.h);
-					SDL_RenderLine(renderer, dest.x + dest.w - i, dest.y, dest.x + dest.w - i, dest.y + dest.h);
-				}
-			}
-
-			return *this;
-		}
-
-	private:
-		void updateTextures()
-		{
-			// rTargetCache = SDL_GetRenderTarget(renderer);
-			if (!textAttributes.text.empty())
-			{
-				auto textTex = FontSystem::Get().setFontAttributes(fontAttributes).genTextTextureUnique(renderer, textAttributes.text.c_str(), textAttributes.text_color);
-				int tmp_w = 0, tmp_h = 0;
-				SDL_QueryTexture(textTex.value().get(), nullptr, nullptr, &tmp_w, &tmp_h);
-				newTw = (float)tmp_w, newTh = (float)tmp_h;
-				if (newTexture.get() != nullptr)
-					newTexture.reset();
-				newTexture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, newTw, newTh);
-				SDL_SetTextureBlendMode(this->newTexture.get(), SDL_BLENDMODE_BLEND);
-				SDL_SetRenderTarget(renderer, newTexture.get());
-				renderClear(renderer, 0, 0, 0, 0);
-				SDL_RenderTexture(renderer, textTex.value().get(), nullptr, nullptr);
-
-				SDL_SetRenderTarget(renderer, sliderTexture.get());
-				SDL_SetTextureBlendMode(this->sliderTexture.get(), SDL_BLENDMODE_BLEND);
-				renderClear(renderer, textAttributes.bg_color.r, textAttributes.bg_color.g, textAttributes.bg_color.b,
-							textAttributes.bg_color.a);
-
-				newDest = {0.f, 0.f, dest.w, dest.h};
-				source_a = {0.f, 0.f, dest.w, newTh};
-				source_b = {0.f, 0.f, dest.w, newTh};
-				newDestb = {dest.w, 0.f, dest.w, dest.h};
-				if (newTw < newDest.w)
-					newDest.x = newDest.x + ((dest.w - newTw) / 2.f), newDest.w = newTw, slide = false;
-				if (newTh < newDest.h)
-				{
-					newDest.y = (dest.h - newTh) / 2.f;
-					newDest.h = newTh;
-					newDestb.y = (dest.h - newTh) / 2.f;
-					newDestb.h = newTh;
-				}
-				cache_source_a = source_a;
-				cache_newDest = newDest;
-				cache_source_b = source_b;
-				cache_newDestb = newDestb;
-				SDL_RenderTexture(renderer, newTexture.get(), &source_a, &newDest);
-			}
-			else
-				slide = false;
-			tm_start = SDL_GetTicks();
-			tm_last = SDL_GetTicks();
-			if (slide)
-				slideAdaptiveVsyncHD.startRedrawSession();
-			else
-				slideAdaptiveVsyncHD.stopRedrawSession();
-		}
-
-		void updateSlide()
-		{
-			CacheRenderTarget rTargetCache(renderer);
-			SDL_SetRenderTarget(renderer, sliderTexture.get());
-			renderClear(renderer, textAttributes.bg_color.r, textAttributes.bg_color.g, textAttributes.bg_color.b,
-						textAttributes.bg_color.a);
-			// tm_now = SDL_GetTicks();
-			float dt = (float)(SDL_GetTicks() - tm_last);
-			// std::cout << "ts: " << dt << std::endl;
-			dt = dt * 0.1f;
-			vel = (int)(std::floorf(dt));
-			tm_last = SDL_GetTicks();
-			// vel = 1;
-			source_a.x += vel;
-			if (source_a.x + source_a.w > newTw)
-				newDest.w -= vel;
-			if (source_a.x + source_a.w > newTw + (dest.w / 2))
-			{
-				newDestb.x -= vel;
-				// SDL_Log("this");
-				// source_b.x++;
-				// std::cout << ".";
-				// SDL_SetRenderDrawColor(renderer, 0xff, 0, 0, 0xff);
-				// SDL_RenderFillRect(renderer, &newDestb);
-				SDL_RenderTexture(renderer, newTexture.get(), &source_b, &newDestb);
-			}
-			if (newDestb.x <= 0)
-			{
-				source_a = cache_source_a, newDest = cache_newDest, tm_start = SDL_GetTicks(), tm_last = SDL_GetTicks();
-				source_b = cache_source_b, newDestb = cache_newDestb;
-			}
-			SDL_RenderTexture(renderer, newTexture.get(), &source_a, &newDest);
-			rTargetCache.release(renderer);
-		}
-
-	private:
-		bool contextIsSet = false, slide = true, showSidesShadow = false, animateSwitch = false;
-		SharedTexture oldTexture, newTexture, sliderTexture;
-		TextAttributes textAttributes;
-		FontAttributes fontAttributes;
-
-		SDL_FRect animDestA, animDestB, newDest, newDestb, cache_newDestb, cache_newDest, source_a, source_b, cache_source_a, cache_source_b;
-		Uint32 tm_start = 0, tm_last = 0, tm_now = 0, tmSlideDelay = 2000;
-		float newTw = 0, newTh = 0, sideShadowLenght = 0, vi = 2, hi = 2;
-		SDL_Color sidesShadowColor;
-		int vel = 1;
-		AdaptiveVsyncHandler animSwitchAdaptiveVsyncHD, slideAdaptiveVsyncHD;
-	};
-
-	class RunningText : public Context, IView
-	{
-	public:
-		using IView::bounds;
-		using IView::getView;
-
-	public:
-		struct Attr
-		{
-			SDL_FRect rect{0.f, 0.f, 0.f, 0.f};
-			SDL_Color text_color{255, 255, 255, 255};
-			SDL_Color bg_color{0, 0, 0, 0};
-			Font mem_font = Font::ConsolasBold;
-			FontStyle font_style = FontStyle::Normal;
-			std::string font_file;
-			uint32_t pause_duration = 3000;
-			uint32_t speed = 5000;
-			// transition speed in 0.f%-100.f%
-			float transition_speed = 2.f;
-		};
-
-	public:
-		RunningText() = default;
-		RunningText(Context *_context, const RunningText::Attr &_attr)
-		{
-			Build(_context, _attr);
-		}
-
-		RunningText &Build(Context *_context, const RunningText::Attr &_attr)
-		{
-			setContext(_context);
-			adaptiveVsyncHD.setAdaptiveVsync(adaptiveVsync);
-			attr = _attr;
-			bounds = _attr.rect;
-			attr.transition_speed = DisplayInfo::Get().to_cust(_attr.transition_speed, bounds.h);
-			step_tm = (float)attr.speed / bounds.w;
-			texture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, bounds.w, bounds.h);
-			SDL_SetTextureBlendMode(texture.get(), SDL_BLENDMODE_BLEND);
-			return *this;
-		}
-
-		bool handleEvent() override
-		{
-			bool result = false;
-			return result;
-		}
-
-		void updatePosBy(float _dx, float _dy) override
-		{
-			bounds.x += _dx;
-			bounds.y += _dy;
-		}
-
-		void updateText(const std::string &_text)
-		{
-			if (_text.empty())
-				return;
-			is_running = false;
-			is_centered = false;
-
-			CacheRenderTarget crt_(renderer);
-			SDL_SetRenderTarget(renderer, texture.get());
-			renderClear(renderer, attr.bg_color.r, attr.bg_color.g, attr.bg_color.b, attr.bg_color.a);
-
-			FontAttributes fontAttrb = {attr.font_file, attr.font_style, static_cast<uint8_t>(bounds.h)};
-			TTF_Font *tmpFont = nullptr;
-			if (fontAttrb.font_file.empty())
-			{
-				Fonts[attr.mem_font]->font_size = fontAttrb.font_size;
-				fontAttrb.font_file = Fonts[attr.mem_font]->font_name;
-				tmpFont = FontSystem::Get().getFont(*Fonts[attr.mem_font]);
-			}
-
-			const auto fa_ = static_cast<float>(TTF_FontAscent(tmpFont));
-			const auto fd_ = static_cast<float>(TTF_FontDescent(tmpFont));
-
-			FontSystem::Get().setFontAttributes(std::move(fontAttrb));
-			text_texture = FontSystem::Get().genTextTextureShared(renderer, _text.c_str(), attr.text_color).value();
-			int tw = 0, th = 0;
-			SDL_QueryTexture(text_texture.get(), nullptr, nullptr, &tw, &th);
-			SDL_FRect dst{0.f, 0.f, bounds.w, bounds.h};
-			dst.w = static_cast<float>(tw);
-			if (static_cast<float>(th) > dst.h)
-				dst.y += fd_, dst.h = static_cast<float>(th);
-			if (dst.w < bounds.w)
-				is_centered = true, dst.x += ((bounds.w - dst.w) / 2.f);
-			SDL_RenderTexture(renderer, text_texture.get(), nullptr, &dst);
-			txt_rect = dst;
-			txt_rect2 = dst;
-			txt_rect2.x = dst.w + DisplayInfo::Get().to_cust(50.f, bounds.w);
-			cache_txt_rect2_x = txt_rect2.x;
-			crt_.release(renderer);
-			tm_last_pause = SDL_GetTicks();
-			tm_last_update = SDL_GetTicks();
-			adaptiveVsyncHD.startRedrawSession();
-		}
-
-		void Draw() override
-		{
-			if (not is_centered)
-			{
-				const auto now = SDL_GetTicks();
-				if (now - tm_last_pause > attr.pause_duration and not is_running)
-				{
-					is_running = true;
-					tm_last_update = SDL_GetTicks();
-				}
-				if (is_running)
-					update();
-			}
-			SDL_RenderTexture(renderer, texture.get(), nullptr, &bounds);
-		}
-
-	private:
-		void update()
-		{
-			CacheRenderTarget crt_(renderer);
-			SDL_SetRenderTarget(renderer, texture.get());
-			renderClear(renderer, attr.bg_color.r, attr.bg_color.g, attr.bg_color.b, attr.bg_color.a);
-			const auto df = static_cast<float>(SDL_GetTicks() - tm_last_update);
-			if (df >= step_tm)
-			{
-				float num_steps = df / (float)step_tm;
-				txt_rect.x -= num_steps;
-				txt_rect2.x -= num_steps;
-				tm_last_update = SDL_GetTicks();
-			}
-			if (txt_rect2.x < 0.f)
-			{
-				txt_rect.x = 0.f;
-				txt_rect2.x = cache_txt_rect2_x;
-				is_running = false;
-				tm_last_pause = SDL_GetTicks();
-				tm_last_update = SDL_GetTicks();
-			}
-			SDL_RenderTexture(renderer, text_texture.get(), nullptr, &txt_rect);
-			SDL_RenderTexture(renderer, text_texture.get(), nullptr, &txt_rect2);
-			crt_.release(renderer);
-		}
-
-	private:
-		Attr attr;
-		SharedTexture texture;
-		SharedTexture text_texture;
-		SDL_FRect txt_rect{0.f, 0.f, 0.f, 0.f};
-		SDL_FRect txt_rect2{0.f, 0.f, 0.f, 0.f};
-		bool is_running = false;
-		bool is_centered = false;
-		uint32_t tm_last_pause = 0;
-		float cache_txt_rect2_x = 0.f;
-		uint32_t step_tm = 0;
-		uint32_t tm_last_update = 0;
-		AdaptiveVsyncHandler adaptiveVsyncHD;
-	};
-
-	class TextNavBarBuilder;
-
-	class TextNavBar : Context
-	{
-	public:
-		TextNavBar() = default;
-		friend class TextNavBarBuilder;
-		SDL_FRect rect;
-		static TextNavBarBuilder Builder(Context *context);
-
-		TextNavBar &handleEvent(const SDL_Event &event)
-		{
-			if (event.type == SDL_EVENT_FINGER_DOWN)
-			{
-			}
-			else if (event.type == SDL_EVENT_FINGER_MOTION)
-			{
-			}
-			else if (event.type == SDL_EVENT_FINGER_UP)
-			{
-				const SDL_FPoint cf = {(event.tfinger.x * DisplayInfo::Get().RenderW) - rect.x,
-									   (event.tfinger.y * DisplayInfo::Get().RenderH) - rect.y};
-				std::size_t tmpSelectedTextViewIndex;
-				const bool found = std::any_of(textViews.begin(), textViews.end(), [&](const TextView &textView)
-											   {
-					if (SDL_PointInRectFloat(&cf, &textView.rect)) {
-						tmpSelectedTextViewIndex = textView.getId();
-						return true;
-					}
-					else return false; });
-
-				if (found && tmpSelectedTextViewIndex != selectedTextViewIndex)
-				{
-					UPDATE_SELECTED_TEXTVIEW = true;
-					textViews[selectedTextViewIndex].updateTextColor({0, 0, 0, 0}, unselectedTextColor);
-					textViews[tmpSelectedTextViewIndex].updateTextColor({0, 0, 0, 0}, selectedTextColor);
-					if (is_scrollable)
-					{
-						float distance_to_move = get_distance_to_move(tmpSelectedTextViewIndex);
-						if (distance_to_move < 0.f)
-							ACTN_MINUS = true;
-						else
-							ACTN_MINUS = false;
-						animInterpolator.startWithDistance(std::fabs(distance_to_move));
-					}
-					selectedTextViewIndex = tmpSelectedTextViewIndex;
-				}
-			}
-			return *this;
-		}
-
-		void udpdateSelectedText(const uint32_t &_index)
-		{
-			if (_index > textViews.size())
-			{
-				SDL_Log("updateSelectedText called with out of range index. index: %d, textViews size: %u", _index, textViews.size());
-				return;
-			}
-			if (_index != selectedTextViewIndex)
-			{
-				if (onSelectedTextViewUpdateCallback != nullptr)
-					onSelectedTextViewUpdateCallback(textViews[selectedTextViewIndex]);
-				textViews[selectedTextViewIndex].updateTextColor({0, 0, 0, 0}, unselectedTextColor);
-				textViews[_index].updateTextColor({0, 0, 0, 0}, selectedTextColor);
-				selectedTextViewIndex = _index;
-				const float sel_x = (rect.w / 2.f) - pv->to_cust(20.f, rect.w);
-				const float distanceMoved = sel_x - textViews[_index].rect.x;
-
-				SDL_Log("DM: %f", distanceMoved);
-				std::for_each(textViews.begin(), textViews.end(), [&](TextView &textView)
-							  { textView.rect.x += distanceMoved; });
-			}
-			if (onSelectedTextViewUpdateCallback != nullptr)
-				onSelectedTextViewUpdateCallback(textViews[selectedTextViewIndex]);
-			UPDATE_SELECTED_TEXTVIEW = true;
-		}
-
-		TextNavBar &Draw()
-		{
-			if (UPDATE_SELECTED_TEXTVIEW)
-			{
-				if (animInterpolator.isAnimating())
-				{
-					animInterpolator.update();
-					dy = static_cast<int>(animInterpolator.getValue());
-					dy = ACTN_MINUS ? (0 - dy) : dy;
-				}
-				else
-				{
-					UPDATE_SELECTED_TEXTVIEW = false;
-					ACTN_MINUS = false;
-					if (onSelectedTextViewUpdateCallback != nullptr)
-						onSelectedTextViewUpdateCallback(textViews[selectedTextViewIndex]);
-				}
-				CacheRenderTarget rTargetCache(renderer);
-				SDL_SetRenderTarget(renderer, texture.get());
-				SDL_SetTextureBlendMode(texture.get(), SDL_BLENDMODE_BLEND);
-				renderClear(renderer, bgColor.r, bgColor.g, bgColor.b, bgColor.a);
-				for (auto &textview : textViews)
-				{
-					if (UPDATE_SELECTED_TEXTVIEW)
-						textview.rect.x += dy;
-					textview.Draw();
-				}
-				dy = 0.f;
-				rTargetCache.release(renderer);
-			}
-			SDL_RenderTexture(renderer, texture.get(), nullptr, &rect);
-			return *this;
-		}
-
-	private:
-		TextNavBar &registerOnSelectedTextViewUpdateCallback(std::function<void(const TextView &)> _onSelectedTextViewUpdateCallback)
-		{
-			onSelectedTextViewUpdateCallback = _onSelectedTextViewUpdateCallback;
-			return *this;
-		}
-
-		TextNavBar &Build(const std::vector<std::string> &_texts, const std::string &_fontFile,
-						  const FontStyle &_fontStyle, const std::size_t &_defaultSelectedTextIndex = 0)
-		{
-			// if (_dest.w < 1 || _dest.h < 1)return *this;
-			// Context::setContext(_context);
-			/*rect = _dest;
-			bgColor = _bgColor;
-			selectedTextColor = _selected_text_color;
-			unselectedTextColor = _unselected_text_color;*/
-
-			spacing = pv->to_cust(5.f, rect.w);
-			float i = 0.f, prev_tv_width = 0.f;
-			for (const auto &text : _texts)
-			{
-				textViews.emplace_back();
-				textViews.back().setContext(getContext()).setId(i).Build({.rect = {(i * spacing) + prev_tv_width, 0, rect.w /*to_cust(40.f, _dest.w)*/, rect.h}, .textAttributes = {text, i == _defaultSelectedTextIndex ? selectedTextColor : unselectedTextColor, {0, 0, 0, 0}}, .fontFile = _fontFile, .fontStyle = _fontStyle, .shrinkToFit = true});
-				prev_tv_width += textViews.back().rect.w;
-				++i;
-			}
-
-			// center the textviews
-			/// TODO: a better approach would be to add up the two dx's so that theycan balance and use a single for each instead
-			if (textViews.back().rect.x + textViews.back().rect.w > rect.w)
-			{
-				float dd = get_distance_to_move(_defaultSelectedTextIndex);
-				std::for_each(textViews.begin(), textViews.end(), [&dd](TextView &textView)
-							  { textView.rect.x += dd; });
-				is_scrollable = true;
-			}
-			else
-			{
-				float dx = rect.w - (textViews.back().rect.x + textViews.back().rect.w);
-				dx /= 2.f;
-				std::for_each(textViews.begin(), textViews.end(), [&dx](TextView &textView)
-							  { textView.rect.x += dx; });
-			}
-			selectedTextViewIndex = std::clamp(_defaultSelectedTextIndex, std::size_t(0), _texts.size());
-
-			CacheRenderTarget rTargetCache(renderer);
-			texture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, rect.w, rect.h);
-			SDL_SetRenderTarget(renderer, texture.get());
-			SDL_SetTextureBlendMode(texture.get(), SDL_BLENDMODE_BLEND);
-			renderClear(renderer, bgColor.r, bgColor.g, bgColor.b, bgColor.a);
-			// for (const auto& text : textViews) { text.Draw(); }
-			rTargetCache.release(renderer);
-			UPDATE_SELECTED_TEXTVIEW = true;
-			return *this;
-		}
-
-		float get_distance_to_move(const int &tmpSelectedTextViewIndex)
-		{
-			float distance_to_move = 0.f;
-			if (tmpSelectedTextViewIndex > selectedTextViewIndex)
-			{
-				if (tmpSelectedTextViewIndex + 1 < textViews.size())
-				{
-					if (textViews[tmpSelectedTextViewIndex + 1].rect.x + textViews[tmpSelectedTextViewIndex + 1].rect.w > rect.w - spacing)
-					{
-						distance_to_move = (textViews[tmpSelectedTextViewIndex + 1].rect.x + textViews[tmpSelectedTextViewIndex + 1].rect.w) - (rect.w - spacing);
-						distance_to_move = 0.f - distance_to_move;
-					}
-				}
-				else
-				{
-					if (textViews[tmpSelectedTextViewIndex].rect.x + textViews[tmpSelectedTextViewIndex].rect.w > rect.w - spacing)
-					{
-						distance_to_move = (textViews[tmpSelectedTextViewIndex].rect.x + textViews[tmpSelectedTextViewIndex].rect.w) - (rect.w - spacing);
-						distance_to_move = 0.f - distance_to_move;
-					}
-				}
-			}
-			else if (tmpSelectedTextViewIndex < selectedTextViewIndex)
-			{
-				if (tmpSelectedTextViewIndex - 1 >= 0)
-				{
-					if (textViews[tmpSelectedTextViewIndex - 1].rect.x < spacing)
-					{
-						distance_to_move = std::fabs(textViews[tmpSelectedTextViewIndex - 1].rect.x) + spacing;
-					}
-				}
-				else
-				{
-					if (textViews[tmpSelectedTextViewIndex].rect.x < 0.f)
-					{
-						distance_to_move = std::fabs(textViews[tmpSelectedTextViewIndex].rect.x) + spacing;
-					}
-				}
-			}
-			return distance_to_move;
-		}
-
-	private:
-		bool UPDATE_SELECTED_TEXTVIEW = false, ACTN_MINUS = false;
-		float dy = 0.f, spacing = 0.f;
-		Interpolator animInterpolator;
-		// int tmpSelectedTextViewIndex = -1;
-		SDL_Color bgColor = {0, 0, 0, 0};
-		SDL_Color selectedTextBgColor, selectedTextColor = {0xff, 0xff, 0xff, 0xff};
-		SDL_Color unselectedTextBgColor, unselectedTextColor = {0xff, 0xff, 0xff, 127};
-		size_t selectedTextViewIndex = 0;
-		std::vector<TextView> textViews;
-		std::shared_ptr<SDL_Texture> texture;
-		std::function<void(const TextView &)> onSelectedTextViewUpdateCallback = nullptr;
-		bool is_scrollable = false;
-	};
-
-	class TextNavBarBuilder
-	{
-	public:
-		TextNavBarBuilder(Context *context)
-		{
-			textNavBar.setContext(context);
-		}
-
-		TextNavBarBuilder &setRect(SDL_FRect _rect)
-		{
-			textNavBar.rect = _rect;
-			return *this;
-		}
-
-		TextNavBarBuilder &setDefaultTextIndex(const int &_dsv)
-		{
-			dsv = _dsv;
-			return *this;
-		}
-
-		TextNavBarBuilder &addTexts(const std::vector<std::string> &_texts)
-		{
-			texts = _texts;
-			return *this;
-		}
-
-		TextNavBarBuilder &setBgColor(SDL_Color _bgColor)
-		{
-			textNavBar.bgColor = _bgColor;
-			return *this;
-		}
-
-		TextNavBarBuilder &setFontFile(const std::string &_fontFile)
-		{
-			fontFile = _fontFile;
-			return *this;
-		}
-
-		TextNavBarBuilder &setFontStyle(const FontStyle &_fontStyle)
-		{
-			fontStyle = _fontStyle;
-			return *this;
-		}
-
-		TextNavBarBuilder &setSelectedTextColor(SDL_Color _selectedTextColor)
-		{
-			textNavBar.selectedTextColor = _selectedTextColor;
-			return *this;
-		}
-
-		TextNavBarBuilder &setUnselectedTextColor(SDL_Color _unselectedTextColor)
-		{
-			textNavBar.unselectedTextColor = _unselectedTextColor;
-			return *this;
-		}
-
-		TextNavBarBuilder &registerOnSelectedTextViewUpdate(std::function<void(const TextView &)> _onSelectedTextViewUpdateCallback)
-		{
-			textNavBar.onSelectedTextViewUpdateCallback = _onSelectedTextViewUpdateCallback;
-			return *this;
-		}
-
-		operator TextNavBar &&()
-		{
-			textNavBar.Build(texts, fontFile, fontStyle, dsv);
-			return std::move(textNavBar);
-		}
-
-	private:
-		TextNavBar textNavBar;
-		std::vector<std::string> texts;
-		FontStyle fontStyle = FontStyle::Normal;
-		std::string fontFile;
-		int dsv = 0;
-	};
-
-	TextNavBarBuilder TextNavBar::Builder(Context *context)
-	{
-		return TextNavBarBuilder(context);
+		return result;
 	}
 
-	class UIWidget
+	std::optional<SharedTexture> genTextTextureShared(SDL_Renderer *renderer, const char *text, const SDL_Color text_color)
 	{
-	public:
-		SharedTexture texture;
-		int id, transition;
-		std::string s_id;
-		SDL_Color bg_color, border_color;
-		bool isButton, held;
-		SDL_FRect dest;
-		EdgeType edgeType;
+		if (!genTextCommon())
+			return {};
+		SDL_Surface *textSurf = TTF_RenderUTF8_Blended(m_font, text, text_color);
+		if (!textSurf)
+			SDL_Log("%s", SDL_GetError());
+		auto result = CreateSharedTextureFromSurface(renderer, textSurf);
+		if (!result.get())
+			SDL_Log("%s", SDL_GetError());
+		Async::GThreadPool.enqueue([](SDL_Surface *surface)
+								   {SDL_DestroySurface(surface); surface = nullptr; },
+								   textSurf);
+		return result;
+	}
 
-		UIWidget()
-		{
-			id = transition = 0;
-			bg_color = border_color = {0, 0, 0, 0};
-			isButton = held = false;
-			dest = {0.f, 0.f, 0.f, 0.f};
-			edgeType = EdgeType::RECT;
-		}
-
-		void Draw(SDL_Renderer *renderer) const
-		{
-			SDL_RenderTexture(renderer, this->texture.get(), nullptr, &dest);
-		}
-
-		/// TODO: add a std::function parameter that will be called if true
-		template <typename T>
-		bool onClick(T x, T y, unsigned short axis = 0)
-		{
-			if (axis == 0)
-			{
-				if (x > dest.x && x < (dest.w + dest.w))
-					if (y > dest.y && y < (dest.h + dest.y))
-						return true;
-			}
-			else if (axis == 1 /*x-axis only*/)
-			{
-				if (x > dest.x && x < (dest.w + dest.w))
-					return true;
-			}
-			else if (axis == 2 /*y-axis only*/)
-			{
-				if (y > dest.y && y < (dest.h + dest.y))
-					return true;
-			}
-			return false;
-		}
-	};
-
-	class ImageStore
+	std::optional<UniqueTexture> u8GenTextTextureUnique(SDL_Renderer *renderer, const char8_t *text, const SDL_Color text_color)
 	{
-	private:
-		// some data
-	public:
-		ImageStore() {}
+		if (!genTextCommon())
+			return {};
 
-		ImageStore(char *data)
+		SDL_Surface *textSurf = TTF_RenderUTF8_Blended(m_font, (char *)text, text_color);
+		if (!textSurf)
+			SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", SDL_GetError());
+		UniqueTexture result = CreateUniqueTextureFromSurface(renderer, textSurf);
+		SDL_DestroySurface(textSurf);
+		textSurf = nullptr;
+		if (!result.get())
 		{
-			// public constructor
+			SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", SDL_GetError());
+			return {};
 		}
+		return result;
+	}
 
-		void getImageById();
-	};
-
-	class TextureStore : public Context
+private:
+	FontSystem()
 	{
-	public:
-		TextureStore() {}
+		this->m_font_attributes = FontAttributes{"", FontStyle::Normal, 255};
+		m_font_outline = 0;
+		m_custom_fontstyle = TTF_STYLE_NORMAL;
+	}
 
-		TextureStore(const TextureStore &) = delete;
-
-		TextureStore(const TextureStore &&) = delete;
-
-		static TextureStore &Get()
-		{
-			static TextureStore instance;
-			return instance;
-		}
-
-		~TextureStore()
-		{
-			reset();
-		}
-
-		void reset()
-		{
-			for (auto &_texture : textures_)
-			{
-				SDL_DestroyTexture(_texture.second);
-				_texture.second = nullptr;
-			}
-			textures_.clear();
-		}
-
-		SDL_Texture *addToStore(const std::string &_key, SDL_Texture *_texture)
-		{
-			if (textures_.count(_key) == 0)
-			{
-				textures_[_key] = _texture;
-			}
-			return textures_[_key];
-		}
-
-		void erase(const std::string &_key)
-		{
-			if (textures_.count(_key) == 0)
-				textures_.erase(_key);
-		}
-
-		SDL_Texture *operator[](const std::string &_path)
-		{
-			if (textures_.count(_path) == 0)
-			{
-				if (!(textures_[_path] = IMG_LoadTexture(renderer, _path.c_str())))
-				{
-					SDL_Log("%s", IMG_GetError());
-					textures_.erase(_path);
-					return nullptr;
-				}
-				// else {
-				//     //SDL_Log("NEW FONT: %s", key.c_str());
-				// }
-			}
-			return textures_[_path];
-		}
-
-	private:
-		std::unordered_map<std::string, SDL_Texture *> textures_;
-	};
-
-	class RadialRect : public UIWidget, public Context
+	bool genTextCommon()
 	{
-	public:
-		int border_sz = 0;
-		int rad_ = 0;
-		SDL_Color inner_color = {0};
-		bool has_fading_border = false;
-
-		RadialRect() = default;
-
-		RadialRect(Context *context_, SDL_FRect a_dest,
-				   const int &rad, const SDL_Color &color,
-				   const SDL_Color &border_col = {}, const int &border_size = 0)
+		if (m_font_attributes.font_file.empty())
 		{
-			Context::setContext(context_);
-			Build(a_dest, rad, color, border_col, border_size);
-		}
-
-		RadialRect &setContext(Context *context_)
-		{
-			Context::setContext(context_);
-			return *this;
-		}
-
-		void Build(SDL_FRect a_dest,
-				   const float &rad, const SDL_Color &color,
-				   const SDL_Color &border_col = {}, const int &border_size = 0)
-		{
-			this->dest = a_dest;
-			this->border_sz = border_size;
-			this->rad_ = rad;
-			this->inner_color = color, this->border_color = border_col;
-			if (dest.w < 1 || dest.h < 1)
-			{
-				SDL_Log("Null RadialRect due to invlaid size params");
-				return;
-			}
-			DestroyTextureSafe(this->texture.get());
-			this->texture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
-												SDL_TEXTUREACCESS_TARGET,
-												this->dest.w + (border_size * 2),
-												this->dest.h + (border_size * 2));
-			SDL_SetTextureBlendMode(this->texture.get(), SDL_BLENDMODE_BLEND);
-			CacheRenderColor(renderer);
-			updateBorderColor(border_col);
-			updateInnerColor(color);
-			RestoreCachedRenderColor(renderer);
-			/*rTargetCache = SDL_GetRenderTarget(renderer);
-			SDL_SetRenderTarget(renderer, this->texture.get());
-			renderClear(renderer, 0, 0, 0, 0);
-			fillRoundedRect(renderer, {0, 0, this->dest.w + (border_size * 2),
-									   this->dest.h + (border_size * 2)},
-							rad, border_col);
-			fillRoundedRect(renderer,
-							{border_size, border_size, this->dest.w - 1, this->dest.h - 1},
-							rad, color);
-			SDL_SetRenderTarget(renderer, rTargetCache);*/
-			/*this->dest.w += (border_size);
-			this->dest.h += (border_size);*/
-		}
-
-		void resize(const float &_w, const float &_h)
-		{
-			this->dest.w = _w, this->dest.h = _h;
-			this->Build(dest, rad_, inner_color, border_color, border_sz);
-		}
-
-		void updateInnerColor(const SDL_Color &color)
-		{
-			inner_color = color;
-			CacheRenderTarget rTargetCache(renderer);
-			SDL_SetRenderTarget(renderer, this->texture.get());
-			renderClear(renderer, 0, 0, 0, 0);
-			fillRoundedRectF(renderer,
-							 {(float)border_sz, (float)border_sz, this->dest.w, this->dest.h}, rad_,
-							 inner_color);
-			rTargetCache.release(renderer);
-		}
-
-		void updateBorderColor(const SDL_Color &_bordercolor)
-		{
-			border_color = _bordercolor;
-			CacheRenderTarget rTargetCache(renderer);
-			SDL_SetRenderTarget(renderer, this->texture.get());
-			renderClear(renderer, 0, 0, 0, 0);
-			if (border_sz > 0)
-			{
-				if (has_fading_border)
-				{
-					const uint8_t cache_border_alpha = border_color.a;
-					const uint8_t alpha_step = floor(255 / border_sz);
-					SDL_FRect border_rect = {(float)border_sz - 1.f, (float)border_sz - 1.f, dest.w + 2.f,
-											 this->dest.h + 2.f};
-					for (int i = 0; i < border_sz; ++i)
-					{
-						drawRoundedRectF(renderer, border_rect, rad_, border_color);
-						border_rect.x -= 1.f;
-						border_rect.y -= 1.f;
-						border_rect.w += 2.f;
-						border_rect.h += 2.f;
-						border_color.a -= alpha_step;
-					}
-					border_color.a = cache_border_alpha;
-				}
-				else
-				{
-					fillRoundedRectF(renderer,
-									 {0, 0, this->dest.w + (border_sz * 2.f),
-									  this->dest.h + (border_sz * 2.f)},
-									 rad_, border_color);
-				}
-			}
-			/*fillRoundedRect(renderer,
-							{0, 0, this->dest.w + (border_sz * 2), this->dest.h + (border_sz * 2)},
-							rad_, border_color);*/
-			fillRoundedRectF(renderer,
-							 {(float)border_sz, (float)border_sz, this->dest.w, this->dest.h}, rad_,
-							 inner_color);
-			rTargetCache.release(renderer);
-		}
-
-		void Draw() const
-		{
-			if (inner_color.a < 1 && border_color.a < 1)
-				return;
-			UIWidget::Draw(renderer);
-		}
-	};
-
-	class Circle : public UIWidget, public Context
-	{
-	public:
-		Circle() {}
-
-		Circle(Context *context_, const int &x_centre, const int &y_centre, const int &r,
-			   const SDL_Color &col, const bool &filled = true,
-			   const unsigned short &quadrant = 0)
-		{
-			Context::setContext(context_);
-			this->Build(x_centre, y_centre, r, col, filled, quadrant);
-		}
-
-		Circle &setContext(Context *context_)
-		{
-			Context::setContext(context_);
-			return *this;
-		}
-
-		void Build(const float &x_centre, const float &y_centre, const float &r,
-				   const SDL_Color &col, const bool &filled = true,
-				   const unsigned short &quadrant = 0)
-		{
-			if (quadrant == 0)
-				dest = {r, r, r + r, r + r};
-			else if (quadrant == 1)
-				dest = {x_centre - r, y_centre - r, r, r};
-			else if (quadrant == 2)
-				dest = {x_centre, y_centre - r, r, r};
-			else if (quadrant == 3)
-				dest = {x_centre - r, y_centre, r, r};
-			else if (quadrant == 4)
-				dest = {x_centre, y_centre, r, r};
-
-			if (this->texture.get() != nullptr)
-			{
-				SDL_DestroyTexture(this->texture.get());
-				this->texture.reset();
-			}
-
-			this->texture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
-												SDL_TEXTUREACCESS_TARGET, this->dest.h + 1,
-												this->dest.h + 1);
-			SDL_SetTextureBlendMode(this->texture.get(), SDL_BLENDMODE_BLEND);
-			CacheRenderTarget rTargetCache(renderer);
-			SDL_SetRenderTarget(renderer, this->texture.get());
-			renderClear(renderer, 0, 0, 0, 0);
-
-			if (filled)
-				FillCircle(renderer, dest.x + 1, dest.y + 1, r - 1, col),
-					DrawCircle(renderer, dest.x, dest.y, r, border_color);
-
-			else
-				DrawCircle(renderer, dest.x, dest.y, r, col);
-			dest.x = x_centre;
-			dest.y = y_centre;
-
-			rTargetCache.release(renderer);
-		}
-
-		void set_pos(int x, int y)
-		{
-			dest.x = x - dest.w / 2;
-			dest.y = y - dest.w / 2;
-		}
-	};
-
-	class Button
-	{
-	public:
-		SDL_FRect dest = {0, 0, 0, 0};
-		bool ISDOWN = false;
-
-		Button()
-		{
-			/// TODO
-		}
-
-		void handleEvent(const SDL_Event &event)
-		{
-			switch (event.type)
-			{
-			case SDL_EVENT_FINGER_DOWN:
-				if (testClick(event.tfinger.x, event.tfinger.y))
-					ISDOWN = true;
-				break;
-			case SDL_EVENT_FINGER_UP:
-				ISDOWN = false;
-				break;
-			}
-		}
-
-		bool testClick(float x, float y, short axis = 0)
-		{
-			if (axis == 0)
-			{
-				if (x > dest.x && x < (dest.w + dest.w))
-					if (y > dest.y && y < (dest.h + dest.y))
-						return true;
-			}
-			else if (axis == 1 /*x-axis only*/)
-			{
-				if (x > dest.x && x < (dest.w + dest.w))
-					return true;
-			}
-			else if (axis == 2 /*y-axis only*/)
-			{
-				if (y > dest.y && y < (dest.h + dest.y))
-					return true;
-			}
-			return false;
-		}
-	};
-
-	struct Style
-	{
-		SDL_FRect rect;
-		TextAttributes text;
-		TextWrapStyle text_wrap;
-		FontStyle font;
-		std::string font_file;
-		EdgeType edge;
-		Gravity gravity;
-		Margin margin;
-		uint32_t maxlines = 1;
-		bool shrink_to_fit = false;
-		bool highlightOnHover = false;
-	};
-
-	struct ImageButtonAttributes
-	{
-		SDL_FRect rect = {0.f, 0.f, 0.f, 0.f};
-		// inner image box dimensions in percentage {%x,%y,%w,%h} relative to rect
-		SDL_FRect percentage_img_rect = {0.f, 0.f, 100.f, 100.f};
-		std::string image_path;
-		// image loading style
-		IMAGE_LD_STYLE image_load_style = IMAGE_LD_STYLE::NORMAL;
-		SDL_Texture *custom_texture = nullptr;
-		std::function<SDL_Surface *()> getImageSurface = nullptr;
-		uint32_t async_load_timeout = 0;
-		float corner_radius = 0.f;
-		SDL_Color bg_color = {0x00, 0x00, 0x00, 0x00};
-		float shrink_size = 0.f;
-	};
-
-	class ImageButton : public Context, IView
-	{
-	public:
-		// using IView::bounds;
-		using IView::getView;
-
-	public:
-		ImageButton &setContext(Context *_context)
-		{
-			Context::setContext(_context);
-			adaptiveVsyncHD.setAdaptiveVsync(adaptiveVsync);
-			return *this;
-		}
-
-		ImageButton &setShrinkSize(const float &_shrink_size_in_percentage)
-		{
-			shrink_perc_ = std::clamp(_shrink_size_in_percentage, 0.f, 100.f);
-			return *this;
-		}
-
-		/**
-		 * Add a callback which will be invoked during a on mouse click event
-		 * The callbacks are invoked in the order they were added/registered
-		 */
-		ImageButton &registerOnClickedCallBack(std::function<void()> _onClickedCallBack)
-		{
-			onClickedCallBack_ = _onClickedCallBack;
-			return *this;
-		}
-
-		void setEnabled(bool is_enabled)
-		{
-			this->enabled = is_enabled;
-		}
-
-		ImageButton &Build(const ImageButtonAttributes &_imageButtonAttributes)
-		{
-			if (_imageButtonAttributes.image_load_style == IMAGE_LD_STYLE::NORMAL)
-			{
-				this->Build(_imageButtonAttributes.image_path, _imageButtonAttributes.rect, _imageButtonAttributes.percentage_img_rect, _imageButtonAttributes.corner_radius, _imageButtonAttributes.bg_color);
-			}
-			else if (_imageButtonAttributes.image_load_style == IMAGE_LD_STYLE::CUSTOM_TEXTURE)
-			{
-				this->BuildWithTexture(_imageButtonAttributes.custom_texture, _imageButtonAttributes.rect, _imageButtonAttributes.percentage_img_rect, _imageButtonAttributes.corner_radius, _imageButtonAttributes.bg_color);
-			}
-			else if (_imageButtonAttributes.image_load_style == IMAGE_LD_STYLE::ASYNC_PATH)
-			{
-				this->BuildAsync(_imageButtonAttributes.image_path, _imageButtonAttributes.rect, _imageButtonAttributes.percentage_img_rect, _imageButtonAttributes.corner_radius, _imageButtonAttributes.bg_color);
-			}
-			else if (_imageButtonAttributes.image_load_style == IMAGE_LD_STYLE::ASYNC_CUSTOM_SURFACE_LOADER)
-			{
-				this->BuildAsync(_imageButtonAttributes.getImageSurface, _imageButtonAttributes.rect, _imageButtonAttributes.percentage_img_rect, _imageButtonAttributes.corner_radius, _imageButtonAttributes.bg_color);
-			}
-			else if (_imageButtonAttributes.image_load_style == IMAGE_LD_STYLE::ASYNC_DEFAULT_TEXTURE_PATH)
-			{
-			}
-			else if (_imageButtonAttributes.image_load_style == IMAGE_LD_STYLE::ASYNC_DEFAULT_TEXTURE_CUSTOM_LOADER)
-			{
-				this->BuildAsyncWithDefaultTexture(_imageButtonAttributes.getImageSurface, _imageButtonAttributes.custom_texture, _imageButtonAttributes.rect, _imageButtonAttributes.percentage_img_rect, _imageButtonAttributes.corner_radius, _imageButtonAttributes.bg_color);
-			}
-			this->setShrinkSize(_imageButtonAttributes.shrink_size);
-			this->configureShrinkSize();
-			return *this;
-		}
-
-		ImageButton &Build(const std::string &_img_path, const SDL_FRect &_rect, const SDL_FRect &_percentage_img_rect = {0.f, 0.f, 100.f, 100.f},
-						   const float &_corner_radius = 0.f, const SDL_Color &_bg_color = {0x00, 0x00, 0x00, 0x00})
-		{
-			SDL_Texture *tmp_texture_ = IMG_LoadTexture(renderer, _img_path.c_str());
-			if (not tmp_texture_)
-			{
-				SDL_Log("couldn't load img: %s : %s", _img_path.c_str(), SDL_GetError());
-			}
-			build_comon(tmp_texture_, _rect, _percentage_img_rect, _corner_radius, _bg_color);
-			DestroyTextureSafe(tmp_texture_);
-			return *this;
-		}
-
-		ImageButton &BuildWithTexture(SDL_Texture *_custom_texture, const SDL_FRect &_rect, const SDL_FRect &_percentage_img_rect = {0.f, 0.f, 100.f, 100.f},
-									  const float &_corner_radius = 0.f, const SDL_Color &_bg_color = {0x00, 0x00, 0x00, 0x00})
-		{
-			build_comon(_custom_texture, _rect, _percentage_img_rect, _corner_radius, _bg_color);
-			return *this;
-		}
-
-		ImageButton &BuildAsync(const std::string &_img_path, const SDL_FRect &_rect, const SDL_FRect &_percentage_img_rect = {0.f, 0.f, 100.f, 100.f},
-								const float &_corner_radius = 0.f, const SDL_Color &_bg_color = {0x00, 0x00, 0x00, 0x00})
-		{
-			build_with_async_ = true;
-			build_comon(nullptr, _rect, _percentage_img_rect, _corner_radius, _bg_color);
-			async_load_future_ = executor_.enqueue(&ImageButton::async_img_Load, this, _img_path);
-			adaptiveVsyncHD.startRedrawSession();
-			return *this;
-		}
-
-		ImageButton &BuildAsync(std::function<SDL_Surface *()> _customSurfaceLoader, const SDL_FRect &_rect,
-								const SDL_FRect &_percentage_img_rect = {0.f, 0.f, 100.f, 100.f}, const float &_corner_radius = 0.f,
-								const SDL_Color &_bg_color = {0x00, 0x00, 0x00, 0x00})
-		{
-			build_with_async_ = true;
-			build_comon(nullptr, _rect, _percentage_img_rect, _corner_radius, _bg_color);
-			async_load_future_ = executor_.enqueue(_customSurfaceLoader);
-			adaptiveVsyncHD.startRedrawSession();
-			return *this;
-		}
-
-		ImageButton &BuildAsyncWithDefaultTexture(const std::string &_img_path, SDL_Texture *_custom_texture, const SDL_FRect &_rect,
-												  const SDL_FRect &_percentage_img_rect = {0.f, 0.f, 100.f, 100.f}, const float &_corner_radius = 0.f,
-												  const SDL_Color &_bg_color = {0x00, 0x00, 0x00, 0x00})
-		{
-			build_with_async_ = true;
-			build_comon(_custom_texture, _rect, _percentage_img_rect, _corner_radius, _bg_color);
-			async_load_future_ = std::async(std::launch::async, &ImageButton::async_img_Load, this, _img_path);
-			adaptiveVsyncHD.startRedrawSession();
-			return *this;
-		}
-
-		ImageButton &
-		BuildAsyncWithDefaultTexture(std::function<SDL_Surface *()> _customSurfaceLoader, SDL_Texture *_custom_texture, const SDL_FRect &_rect,
-									 const SDL_FRect &_percentage_img_rect = {0.f, 0.f, 100.f, 100.f}, const float &_corner_radius = 0.f,
-									 const SDL_Color &_bg_color = {0x00, 0x00, 0x00, 0x00}) noexcept
-		{
-			build_with_async_ = true;
-			build_comon(_custom_texture, _rect, _percentage_img_rect, _corner_radius, _bg_color);
-			async_load_future_ = std::async(std::launch::async, _customSurfaceLoader);
-			adaptiveVsyncHD.startRedrawSession();
-			return *this;
-		}
-
-		void Draw() override
-		{
-			[[unlikely]] if (build_with_async_)
-				checkAndProcessAsyncProgress();
-			SDL_RenderTexture(renderer, texture_.get(), nullptr, &bounds);
-		}
-
-		SDL_FRect &getRect() noexcept
-		{
-			return getBoundsBox();
-		}
-
-		bool isAsyncLoadComplete() const noexcept
-		{
-			return is_async_load_done();
-		}
-
-		bool handleEvent() override
-		{
-			if (!enabled)
-				return false;
-			bool result = false;
-			if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN)
-			{
-				if (isPointInBound(event->button.x, event->button.y))
-				{
-					touch_down_ = true;
-					shrinkButton();
-					result = true;
-				}
-			}
-			else if (event->type == SDL_EVENT_FINGER_DOWN)
-			{
-				if (isPointInBound(event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.y * DisplayInfo::Get().RenderH))
-				{
-					touch_down_ = true;
-					result = true;
-					shrinkButton();
-				}
-			}
-			else if (event->type == SDL_EVENT_MOUSE_MOTION)
-			{
-				motion_occured_ = true;
-			}
-			else if (event->type == SDL_EVENT_MOUSE_BUTTON_UP)
-			{
-				unshrinkButton();
-				if (isPointInBound(event->button.x, event->button.y) && touch_down_ /* && !motion_occured_*/)
-				{
-					if (onClickedCallBack_ != nullptr)
-						onClickedCallBack_();
-					result = true;
-				}
-				touch_down_ = false;
-				motion_occured_ = false;
-			}
-			else if (event->type == SDL_EVENT_FINGER_UP)
-			{
-				unshrinkButton();
-				if (isPointInBound(event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.y * DisplayInfo::Get().RenderH) && touch_down_ /* && !motion_occured_*/)
-				{
-					if (onClickedCallBack_ != nullptr)
-						onClickedCallBack_();
-					result = true;
-				}
-				touch_down_ = false;
-				motion_occured_ = false;
-			}
-			else if (event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
-			{
-				auto cw = bounds.w;
-				auto ch = bounds.h;
-				bounds =
-					{
-						DisplayInfo::Get().toUpdatedWidth(bounds.x),
-						DisplayInfo::Get().toUpdatedHeight(bounds.y),
-						DisplayInfo::Get().toUpdatedWidth(bounds.w),
-						DisplayInfo::Get().toUpdatedHeight(bounds.h),
-					};
-				adjust_rect_to_fit(cw, ch);
-			}
-
-			return result;
-		}
-
-		void updatePosBy(float _dx, float _dy)
-		{
-			IView::updatePosBy(_dx, _dy);
-			// return *this;
-		}
-
-		SDL_Texture *getTexture() const
-		{
-			return texture_.get();
-		}
-
-	private:
-		void build_comon(SDL_Texture *_texture, const SDL_FRect &_rect, const SDL_FRect &_percentage_img_rect, const float &_corner_radius,
-						 const SDL_Color &_bg_color)
-		{
-			bounds = _rect;
-			img_rect_.x = to_cust(_percentage_img_rect.x, _rect.w);
-			img_rect_.y = to_cust(_percentage_img_rect.y, _rect.h);
-			img_rect_.w = to_cust(_percentage_img_rect.w, _rect.w);
-			img_rect_.h = to_cust(_percentage_img_rect.h, _rect.h);
-
-			if (!build_with_async_)
-			{
-				int rw, rh;
-				SDL_QueryTexture(_texture, nullptr, nullptr, &rw, &rh);
-			}
-
-			corner_radius_ = _corner_radius;
-			bg_color_ = _bg_color;
-
-			CacheRenderTarget cache_r_target(renderer);
-			texture_.reset();
-			texture_ = CreateSharedTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, (int)(bounds.w),
-										   (int)(bounds.h));
-			SDL_SetTextureBlendMode(texture_.get(), SDL_BLENDMODE_BLEND);
-			SDL_SetRenderTarget(renderer, texture_.get());
-			renderClear(renderer, 0, 0, 0, 0);
-			fillRoundedRectF(renderer, {0.f, 0.f, bounds.w, bounds.h}, corner_radius_, bg_color_);
-			SDL_RenderTexture(renderer, _texture, nullptr, &img_rect_);
-			cache_r_target.release(renderer);
-			configureShrinkSize();
-		}
-
-		bool is_async_load_done() const noexcept
-		{
-			// potential double check for instances created with async
-			// one in the draw call && the other on check_and_process_async
-			if (!build_with_async_)
-				return true;
-			if (async_load_future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
-				return true;
+			GLogger.Log(Logger::Level::Info, "FontSystem Error: Invlaid/empty fontfile!");
 			return false;
 		}
 
-		void checkAndProcessAsyncProgress() noexcept
+		m_font = fontStore[{m_font_attributes.font_file, m_font_attributes.font_size}];
+		if (m_font == nullptr)
 		{
-			if (is_async_load_done())
+			GLogger.Log(Logger::Level::Info, "Error generating text texture: NULL FONT");
+			return false;
+		}
+
+		switch (m_font_attributes.font_style)
+		{
+			// using enum FontStyle;
+		case FontStyle::Normal:
+			TTF_SetFontStyle(m_font, TTF_STYLE_NORMAL);
+			break;
+		case FontStyle::Bold:
+			TTF_SetFontStyle(m_font, TTF_STYLE_BOLD);
+			break;
+		case FontStyle::Italic:
+			TTF_SetFontStyle(m_font, TTF_STYLE_ITALIC);
+			break;
+		case FontStyle::Underline:
+			TTF_SetFontStyle(m_font, TTF_STYLE_UNDERLINE);
+			break;
+		case FontStyle::StrikeThrough:
+			TTF_SetFontStyle(m_font, TTF_STYLE_STRIKETHROUGH);
+			break;
+		case FontStyle::BoldUnderline:
+			TTF_SetFontStyle(m_font, TTF_STYLE_BOLD | TTF_STYLE_UNDERLINE);
+			break;
+		case FontStyle::BoldStrikeThrough:
+			TTF_SetFontStyle(m_font, TTF_STYLE_BOLD | TTF_STYLE_STRIKETHROUGH);
+			break;
+		case FontStyle::ItalicBold:
+			TTF_SetFontStyle(m_font, TTF_STYLE_ITALIC | TTF_STYLE_BOLD);
+			break;
+		case FontStyle::ItalicUnderline:
+			TTF_SetFontStyle(m_font, TTF_STYLE_ITALIC | TTF_STYLE_UNDERLINE);
+			break;
+		case FontStyle::ItalicStrikeThrough:
+			TTF_SetFontStyle(m_font, TTF_STYLE_ITALIC | TTF_STYLE_STRIKETHROUGH);
+			break;
+		case FontStyle::Custom:
+			TTF_SetFontStyle(m_font, m_custom_fontstyle);
+			break;
+		default:
+			TTF_SetFontStyle(m_font, TTF_STYLE_NORMAL);
+			break;
+		}
+
+		return true;
+	}
+
+	TTF_Font *m_font;
+	FontStore fontStore;
+	FontAttributes m_font_attributes;
+	int m_font_outline = 0;
+	int m_custom_fontstyle;
+};
+
+struct ImageButtonAttributes
+{
+	SDL_FRect rect = {0.f, 0.f, 0.f, 0.f};
+	// inner image box dimensions in percentage {%x,%y,%w,%h} relative to rect
+	SDL_FRect percentage_img_rect = {0.f, 0.f, 100.f, 100.f};
+	std::string image_path;
+	// image loading style
+	IMAGE_LD_STYLE image_load_style = IMAGE_LD_STYLE::NORMAL;
+	SDL_Texture *custom_texture = nullptr;
+	std::function<SDL_Surface *()> getImageSurface = nullptr;
+	uint32_t async_load_timeout = 0;
+	float corner_radius = 0.f;
+	SDL_Color bg_color = {0x00, 0x00, 0x00, 0x00};
+	float shrink_size = 0.f;
+};
+
+class ImageButton : public Context, public IView
+{
+public:
+	ImageButton &setContext(Context *_context, IView *parent = nullptr)
+	{
+		Context::setContext(_context, parent);
+		adaptiveVsyncHD.setAdaptiveVsync(adaptiveVsync);
+		return *this;
+	}
+
+	ImageButton &setShrinkSize(const float &_shrink_size_in_percentage)
+	{
+		shrink_perc_ = std::clamp(_shrink_size_in_percentage, 0.f, 100.f);
+		return *this;
+	}
+
+	/**
+	 * Add a callback which will be invoked during a on mouse click event
+	 * The callbacks are invoked in the order they were added/registered
+	 */
+	ImageButton &onClick(std::function<void()> _onClickedCallBack)
+	{
+		onClickedCallBack_ = _onClickedCallBack;
+		return *this;
+	}
+
+	void setEnabled(bool is_enabled)
+	{
+		this->enabled = is_enabled;
+	}
+
+	ImageButton &Build(const ImageButtonAttributes &_imageButtonAttributes)
+	{
+		if (_imageButtonAttributes.image_load_style == IMAGE_LD_STYLE::NORMAL)
+		{
+			this->Build(_imageButtonAttributes.image_path, _imageButtonAttributes.rect, _imageButtonAttributes.percentage_img_rect, _imageButtonAttributes.corner_radius, _imageButtonAttributes.bg_color);
+		}
+		else if (_imageButtonAttributes.image_load_style == IMAGE_LD_STYLE::CUSTOM_TEXTURE)
+		{
+			this->BuildWithTexture(_imageButtonAttributes.custom_texture, _imageButtonAttributes.rect, _imageButtonAttributes.percentage_img_rect, _imageButtonAttributes.corner_radius, _imageButtonAttributes.bg_color);
+		}
+		else if (_imageButtonAttributes.image_load_style == IMAGE_LD_STYLE::ASYNC_PATH)
+		{
+			this->BuildAsync(_imageButtonAttributes.image_path, _imageButtonAttributes.rect, _imageButtonAttributes.percentage_img_rect, _imageButtonAttributes.corner_radius, _imageButtonAttributes.bg_color);
+		}
+		else if (_imageButtonAttributes.image_load_style == IMAGE_LD_STYLE::ASYNC_CUSTOM_SURFACE_LOADER)
+		{
+			this->BuildAsync(_imageButtonAttributes.getImageSurface, _imageButtonAttributes.rect, _imageButtonAttributes.percentage_img_rect, _imageButtonAttributes.corner_radius, _imageButtonAttributes.bg_color);
+		}
+		else if (_imageButtonAttributes.image_load_style == IMAGE_LD_STYLE::ASYNC_DEFAULT_TEXTURE_PATH)
+		{
+		}
+		else if (_imageButtonAttributes.image_load_style == IMAGE_LD_STYLE::ASYNC_DEFAULT_TEXTURE_CUSTOM_LOADER)
+		{
+			this->BuildAsyncWithDefaultTexture(_imageButtonAttributes.getImageSurface, _imageButtonAttributes.custom_texture, _imageButtonAttributes.rect, _imageButtonAttributes.percentage_img_rect, _imageButtonAttributes.corner_radius, _imageButtonAttributes.bg_color);
+		}
+		this->setShrinkSize(_imageButtonAttributes.shrink_size);
+		this->configureShrinkSize();
+		return *this;
+	}
+
+	ImageButton &Build(const std::string &_img_path, const SDL_FRect &_rect, const SDL_FRect &_percentage_img_rect = {0.f, 0.f, 100.f, 100.f},
+					   const float &_corner_radius = 0.f, const SDL_Color &_bg_color = {0x00, 0x00, 0x00, 0x00})
+	{
+		SDL_Texture *tmp_texture_ = IMG_LoadTexture(renderer, _img_path.c_str());
+		if (not tmp_texture_)
+		{
+			SDL_Log("couldn't load img: %s : %s", _img_path.c_str(), SDL_GetError());
+		}
+		build_comon(tmp_texture_, _rect, _percentage_img_rect, _corner_radius, _bg_color);
+		DestroyTextureSafe(tmp_texture_);
+		return *this;
+	}
+
+	ImageButton &BuildWithTexture(SDL_Texture *_custom_texture, const SDL_FRect &_rect, const SDL_FRect &_percentage_img_rect = {0.f, 0.f, 100.f, 100.f},
+								  const float &_corner_radius = 0.f, const SDL_Color &_bg_color = {0x00, 0x00, 0x00, 0x00})
+	{
+		build_comon(_custom_texture, _rect, _percentage_img_rect, _corner_radius, _bg_color);
+		return *this;
+	}
+
+	ImageButton &BuildAsync(const std::string &_img_path, const SDL_FRect &_rect, const SDL_FRect &_percentage_img_rect = {0.f, 0.f, 100.f, 100.f},
+							const float &_corner_radius = 0.f, const SDL_Color &_bg_color = {0x00, 0x00, 0x00, 0x00})
+	{
+		build_with_async_ = true;
+		build_comon(nullptr, _rect, _percentage_img_rect, _corner_radius, _bg_color);
+		async_load_future_ = executor_.enqueue(&ImageButton::async_img_Load, this, _img_path);
+		adaptiveVsyncHD.startRedrawSession();
+		return *this;
+	}
+
+	ImageButton &BuildAsync(std::function<SDL_Surface *()> _customSurfaceLoader, const SDL_FRect &_rect,
+							const SDL_FRect &_percentage_img_rect = {0.f, 0.f, 100.f, 100.f}, const float &_corner_radius = 0.f,
+							const SDL_Color &_bg_color = {0x00, 0x00, 0x00, 0x00})
+	{
+		build_with_async_ = true;
+		build_comon(nullptr, _rect, _percentage_img_rect, _corner_radius, _bg_color);
+		async_load_future_ = executor_.enqueue(_customSurfaceLoader);
+		adaptiveVsyncHD.startRedrawSession();
+		return *this;
+	}
+
+	ImageButton &BuildAsyncWithDefaultTexture(const std::string &_img_path, SDL_Texture *_custom_texture, const SDL_FRect &_rect,
+											  const SDL_FRect &_percentage_img_rect = {0.f, 0.f, 100.f, 100.f}, const float &_corner_radius = 0.f,
+											  const SDL_Color &_bg_color = {0x00, 0x00, 0x00, 0x00})
+	{
+		build_with_async_ = true;
+		build_comon(_custom_texture, _rect, _percentage_img_rect, _corner_radius, _bg_color);
+		async_load_future_ = std::async(std::launch::async, &ImageButton::async_img_Load, this, _img_path);
+		adaptiveVsyncHD.startRedrawSession();
+		return *this;
+	}
+
+	ImageButton &
+	BuildAsyncWithDefaultTexture(std::function<SDL_Surface *()> _customSurfaceLoader, SDL_Texture *_custom_texture, const SDL_FRect &_rect,
+								 const SDL_FRect &_percentage_img_rect = {0.f, 0.f, 100.f, 100.f}, const float &_corner_radius = 0.f,
+								 const SDL_Color &_bg_color = {0x00, 0x00, 0x00, 0x00}) noexcept
+	{
+		build_with_async_ = true;
+		build_comon(_custom_texture, _rect, _percentage_img_rect, _corner_radius, _bg_color);
+		async_load_future_ = std::async(std::launch::async, _customSurfaceLoader);
+		adaptiveVsyncHD.startRedrawSession();
+		return *this;
+	}
+
+	void draw() override
+	{
+		[[unlikely]] if (build_with_async_)
+			checkAndProcessAsyncProgress();
+		RenderTexture(renderer, texture_.get(), nullptr, &bounds);
+	}
+
+	SDL_FRect &getRect() noexcept
+	{
+		return getBoundsBox();
+	}
+
+	bool isAsyncLoadComplete() const noexcept
+	{
+		return is_async_load_done();
+	}
+
+	bool handleEvent() override
+	{
+		if (!enabled)
+			return false;
+		bool result = false;
+		if (event->type == EVT_MOUSE_BTN_DOWN)
+		{
+			if (isPointInBound(event->button.x, event->button.y))
 			{
-				adaptiveVsyncHD.stopRedrawSession();
-				SDL_Surface *async_res_ = async_load_future_.get();
-				if (!async_res_)
+				touch_down_ = true;
+				shrinkButton();
+				result = true;
+			}
+		}
+		else if (event->type == EVT_FINGER_DOWN)
+		{
+			if (isPointInBound(event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.y * DisplayInfo::Get().RenderH))
+			{
+				haptics->play_effect();
+				touch_down_ = true;
+				result = true;
+				shrinkButton();
+			}
+		}
+		else if (event->type == EVT_MOUSE_MOTION)
+		{
+			motion_occured_ = true;
+		}
+		else if (event->type == EVT_MOUSE_BTN_UP)
+		{
+			unshrinkButton();
+			if (isPointInBound(event->button.x, event->button.y) && touch_down_ /* && !motion_occured_*/)
+			{
+				if (onClickedCallBack_ != nullptr)
+					onClickedCallBack_();
+				result = true;
+			}
+			touch_down_ = false;
+			motion_occured_ = false;
+		}
+		else if (event->type == EVT_FINGER_UP)
+		{
+			unshrinkButton();
+			if (isPointInBound(event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.y * DisplayInfo::Get().RenderH) && touch_down_ /* && !motion_occured_*/)
+			{
+				if (onClickedCallBack_ != nullptr)
+					onClickedCallBack_();
+				result = true;
+			}
+			touch_down_ = false;
+			motion_occured_ = false;
+		}
+		else if (event->type == EVT_WPSC)
+		{
+			auto cw = bounds.w;
+			auto ch = bounds.h;
+			bounds =
 				{
-					SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Async Image returned null");
-					build_with_async_ = false;
-					return;
-				}
-				SDL_Texture *async_res_tex_ = SDL_CreateTextureFromSurface(renderer, async_res_);
-				const int rw = async_res_->w, rh = async_res_->h;
-				adjust_image_rect_to_fit(rw, rh);
-				async_free1_ = executor_.enqueue(SDL_DestroySurface, async_res_);
-				CacheRenderTarget crt_(renderer);
-				SDL_SetRenderTarget(renderer, texture_.get());
-				renderClear(renderer, bg_color_.r, bg_color_.g, bg_color_.b, bg_color_.a);
-				SDL_RenderTexture(renderer, async_res_tex_, nullptr, &img_rect_);
-				crt_.release(renderer);
-				SDL_DestroyTexture(async_res_tex_);
+					DisplayInfo::Get().toUpdatedWidth(bounds.x),
+					DisplayInfo::Get().toUpdatedHeight(bounds.y),
+					DisplayInfo::Get().toUpdatedWidth(bounds.w),
+					DisplayInfo::Get().toUpdatedHeight(bounds.h),
+				};
+			adjust_rect_to_fit(cw, ch);
+		}
+
+		return result;
+	}
+
+	void updatePosBy(float _dx, float _dy)
+	{
+		IView::updatePosBy(_dx, _dy);
+		// return *this;
+	}
+
+	SDL_Texture *getTexture() const
+	{
+		return texture_.get();
+	}
+
+private:
+	void build_comon(SDL_Texture *_texture, const SDL_FRect &_rect, const SDL_FRect &_percentage_img_rect, const float &_corner_radius,
+					 const SDL_Color &_bg_color)
+	{
+		bounds = _rect;
+		img_rect_.x = to_cust(_percentage_img_rect.x, _rect.w);
+		img_rect_.y = to_cust(_percentage_img_rect.y, _rect.h);
+		img_rect_.w = to_cust(_percentage_img_rect.w, _rect.w);
+		img_rect_.h = to_cust(_percentage_img_rect.h, _rect.h);
+
+		if (!build_with_async_)
+		{
+			int rw, rh;
+			SDL_QueryTexture(_texture, nullptr, nullptr, &rw, &rh);
+		}
+
+		corner_radius_ = _corner_radius;
+		bg_color_ = _bg_color;
+
+		CacheRenderTarget cache_r_target(renderer);
+		texture_.reset();
+		texture_ = CreateSharedTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, (int)(bounds.w),
+									   (int)(bounds.h));
+		SDL_SetTextureBlendMode(texture_.get(), SDL_BLENDMODE_BLEND);
+		SDL_SetRenderTarget(renderer, texture_.get());
+		RenderClear(renderer, 0, 0, 0, 0);
+		fillRoundedRectF(renderer, {0.f, 0.f, bounds.w, bounds.h}, corner_radius_, bg_color_);
+		RenderTexture(renderer, _texture, nullptr, &img_rect_);
+		cache_r_target.release(renderer);
+		transformToRoundedTexture(renderer, texture_.get(), corner_radius_);
+		configureShrinkSize();
+	}
+
+	bool is_async_load_done() const noexcept
+	{
+		// potential double check for instances created with async
+		// one in the draw call && the other on check_and_process_async
+		if (!build_with_async_)
+			return true;
+		if (async_load_future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+			return true;
+		return false;
+	}
+
+	void checkAndProcessAsyncProgress() noexcept
+	{
+		if (is_async_load_done())
+		{
+			adaptiveVsyncHD.stopRedrawSession();
+			SDL_Surface *async_res_ = async_load_future_.get();
+			if (!async_res_)
+			{
+				SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Async Image returned null");
 				build_with_async_ = false;
+				return;
 			}
+			SDL_Texture *async_res_tex_ = SDL_CreateTextureFromSurface(renderer, async_res_);
+			const int rw = async_res_->w, rh = async_res_->h;
+			adjust_image_rect_to_fit(rw, rh);
+			async_free1_ = executor_.enqueue(SDL_DestroySurface, async_res_);
+			CacheRenderTarget crt_(renderer);
+			SDL_SetRenderTarget(renderer, texture_.get());
+			RenderClear(renderer, bg_color_.r, bg_color_.g, bg_color_.b, bg_color_.a);
+			RenderTexture(renderer, async_res_tex_, nullptr, &img_rect_);
+			crt_.release(renderer);
+			transformToRoundedTexture(renderer, texture_.get(), corner_radius_);
+			SDL_DestroyTexture(async_res_tex_);
+			build_with_async_ = false;
 		}
+	}
 
-		const bool isPointInBound(float x, float y) const noexcept
+	const bool isPointInBound(float x, float y) const noexcept
+	{
+		if (x > pv->getRealX() + bounds.x && x < (pv->getRealX() + bounds.x + bounds.w) && y > pv->getRealY() + bounds.y && y < pv->getRealY() + bounds.y + bounds.h)
+			return true;
+
+		return false;
+	}
+
+	void adjust_image_rect_to_fit(int width, int height)
+	{
+		int final_width, final_height;
+		int max_width = img_rect_.w, max_height = img_rect_.h;
+		float aspect_ratio = (float)width / (float)height;
+		if (width <= max_width && height <= max_height)
 		{
-			if (x > pv->bounds.x + bounds.x && x < (pv->bounds.x + bounds.x + bounds.w) && y > pv->bounds.y + bounds.y && y < pv->bounds.y + bounds.y + bounds.h)
-				return true;
-
-			return false;
+			final_width = width;
+			final_height = height;
 		}
-
-		void adjust_image_rect_to_fit(int width, int height)
+		else if (width > max_width && height > max_height)
 		{
-			int final_width, final_height;
-			int max_width = img_rect_.w, max_height = img_rect_.h;
-			float aspect_ratio = (float)width / (float)height;
-			if (width <= max_width && height <= max_height)
-			{
-				final_width = width;
-				final_height = height;
-			}
-			else if (width > max_width && height > max_height)
-			{
-				if (aspect_ratio >= 1)
-				{
-					final_width = max_width;
-					final_height = (int)(max_width / aspect_ratio);
-				}
-				else
-				{
-					final_height = max_height;
-					final_width = (int)(max_height * aspect_ratio);
-				}
-			}
-			else if (width > max_width)
+			if (aspect_ratio >= 1)
 			{
 				final_width = max_width;
 				final_height = (int)(max_width / aspect_ratio);
@@ -4488,37 +4690,37 @@ namespace Volt
 				final_height = max_height;
 				final_width = (int)(max_height * aspect_ratio);
 			}
-
-			img_rect_.x += ((img_rect_.w - final_width) / 2.f);
-			img_rect_.w = final_width;
-			img_rect_.y += ((img_rect_.h - final_height) / 2.f);
-			img_rect_.h = final_height;
+		}
+		else if (width > max_width)
+		{
+			final_width = max_width;
+			final_height = (int)(max_width / aspect_ratio);
+		}
+		else
+		{
+			final_height = max_height;
+			final_width = (int)(max_height * aspect_ratio);
 		}
 
-		void adjust_rect_to_fit(int width, int height)
+		img_rect_.x += ((img_rect_.w - final_width) / 2.f);
+		img_rect_.w = final_width;
+		img_rect_.y += ((img_rect_.h - final_height) / 2.f);
+		img_rect_.h = final_height;
+	}
+
+	void adjust_rect_to_fit(int width, int height)
+	{
+		int final_width, final_height;
+		int max_width = bounds.w, max_height = bounds.h;
+		float aspect_ratio = (float)width / (float)height;
+		if (width <= max_width && height <= max_height)
 		{
-			int final_width, final_height;
-			int max_width = bounds.w, max_height = bounds.h;
-			float aspect_ratio = (float)width / (float)height;
-			if (width <= max_width && height <= max_height)
-			{
-				final_width = width;
-				final_height = height;
-			}
-			else if (width > max_width && height > max_height)
-			{
-				if (aspect_ratio >= 1)
-				{
-					final_width = max_width;
-					final_height = (int)(max_width / aspect_ratio);
-				}
-				else
-				{
-					final_height = max_height;
-					final_width = (int)(max_height * aspect_ratio);
-				}
-			}
-			else if (width > max_width)
+			final_width = width;
+			final_height = height;
+		}
+		else if (width > max_width && height > max_height)
+		{
+			if (aspect_ratio >= 1)
 			{
 				final_width = max_width;
 				final_height = (int)(max_width / aspect_ratio);
@@ -4528,468 +4730,1458 @@ namespace Volt
 				final_height = max_height;
 				final_width = (int)(max_height * aspect_ratio);
 			}
-
-			bounds.x += ((bounds.w - final_width) / 2.f);
-			bounds.w = final_width;
-			bounds.y += ((bounds.h - final_height) / 2.f);
-			bounds.h = final_height;
 		}
-
-		void shrinkButton() noexcept
+		else if (width > max_width)
 		{
-			if (shrinked_)
-				return;
-			bounds.x += shrink_size_;
-			bounds.y += shrink_size_;
-			bounds.w -= shrink_size_ * 2.f;
-			bounds.h -= shrink_size_ * 2.f;
-			shrinked_ = true;
+			final_width = max_width;
+			final_height = (int)(max_width / aspect_ratio);
 		}
-
-		void unshrinkButton() noexcept
+		else
 		{
-			if (!shrinked_)
-				return;
-			bounds.x -= shrink_size_;
-			bounds.y -= shrink_size_;
-			bounds.w += shrink_size_ * 2.f;
-			bounds.h += shrink_size_ * 2.f;
-			shrinked_ = false;
+			final_height = max_height;
+			final_width = (int)(max_height * aspect_ratio);
 		}
 
-		void configureShrinkSize() noexcept
-		{
-			if (bounds.w > bounds.h)
-			{
-				shrink_size_ = to_cust(shrink_perc_, bounds.h);
-			}
-			else if (bounds.w <= bounds.h)
-			{
-				shrink_size_ = to_cust(shrink_perc_, bounds.w);
-			}
-		}
+		bounds.x += ((bounds.w - final_width) / 2.f);
+		bounds.w = final_width;
+		bounds.y += ((bounds.h - final_height) / 2.f);
+		bounds.h = final_height;
+	}
 
-		SDL_Surface *async_img_Load(const std::string &_path) noexcept
-		{
-			SDL_Surface *surface;
-			if (!(surface = IMG_Load(_path.c_str())))
-				SDL_Log("%s", IMG_GetError());
-			return surface;
-		}
-
-	private:
-		uint32_t async_start;
-		SharedTexture texture_;
-		SDL_FRect img_rect_;
-		float corner_radius_ = 0.f;
-		float shrink_size_ = 0.f, shrink_perc_ = 10.f;
-		SDL_Color bg_color_;
-		bool touch_down_ = false, motion_occured_ = false, shrinked_ = false, build_with_async_ = false;
-		bool enabled = true;
-		std::function<void()> onClickedCallBack_ = nullptr;
-		std::shared_future<SDL_Surface *> async_load_future_;
-		std::shared_future<void> async_free1_;
-		std::shared_future<void> async_free2_;
-		static Async::ThreadPool executor_;
-		AdaptiveVsyncHandler adaptiveVsyncHD;
-	};
-
-	Async::ThreadPool ImageButton::executor_(1);
-
-	class Cursor : public Context
+	void shrinkButton() noexcept
 	{
-	public:
-		uint32_t m_start;
-		int vpos, hpos, pos;
+		if (shrinked_)
+			return;
+		bounds.x += shrink_size_;
+		bounds.y += shrink_size_;
+		bounds.w -= shrink_size_ * 2.f;
+		bounds.h -= shrink_size_ * 2.f;
+		shrinked_ = true;
+	}
 
-		Cursor()
-		{
-			m_blink_tm = 1;
-			m_color = {0x0, 0x0, 0x0, 0xff};
-			vpos = hpos = pos = 0;
-		}
-
-		Cursor(const SDL_FRect &rect, const SDL_Color &color, const uint32_t &blink_time,
-			   const int &step_size) : m_rect(rect), m_color(color), m_blink_tm(blink_time), vpos(0), hpos(0) {}
-
-		Cursor &setContext(Context *context_)
-		{
-			Context::setContext(context_);
-			return *this;
-		}
-
-		Cursor &configure(const SDL_FRect &rect, const SDL_Color &color, const MilliSec<uint32_t> &blink_time)
-		{
-			this->m_rect = rect;
-			this->m_color = color;
-			this->m_blink_tm = blink_time.get();
-			return *this;
-		}
-
-		Cursor &setRect(const SDL_FRect &rect)
-		{
-			this->m_rect = rect;
-			return *this;
-		}
-
-		SDL_FRect getRect()
-		{
-			return this->m_rect;
-		}
-
-		Cursor &setPosX(const float &posX)
-		{
-			this->m_rect.x = posX;
-			return *this;
-		}
-
-		Cursor &setColor(const SDL_Color &color)
-		{
-			this->m_color = color;
-			return *this;
-		}
-
-		Cursor &setBlinkTm(const uint32_t &blink_time)
-		{
-			this->m_blink_tm = blink_time;
-			return *this;
-		}
-
-		void Draw()
-		{
-			uint32_t diff_ = SDL_GetTicks() - m_start;
-			if (diff_ <= m_blink_tm)
-				CacheRenderColor(renderer),
-					SDL_SetRenderDrawColor(renderer, m_color.r, m_color.g,
-										   m_color.b,
-										   m_color.a),
-					SDL_RenderFillRect(renderer, &m_rect),
-					RestoreCachedRenderColor(renderer);
-			else if (diff_ >= m_blink_tm * 2)
-				m_start = SDL_GetTicks();
-		}
-
-	private:
-		SDL_FRect m_rect;
-		uint32_t m_blink_tm;
-		SDL_Color m_color;
-	};
-
-	struct U8TextBoxConfigData
+	void unshrinkButton() noexcept
 	{
-		SDL_FRect rect;
-		U8TextAttributes text_attributes = {u8"", {0x00, 0x00, 0x00, 0xff}, {0xff, 0xff, 0xff, 0xff}};
-		SDL_FRect margin = {0.f, 0.f, 100.f, 100.f};
+		if (!shrinked_)
+			return;
+		bounds.x -= shrink_size_;
+		bounds.y -= shrink_size_;
+		bounds.w += shrink_size_ * 2.f;
+		bounds.h += shrink_size_ * 2.f;
+		shrinked_ = false;
+	}
+
+	void configureShrinkSize() noexcept
+	{
+		if (bounds.w > bounds.h)
+		{
+			shrink_size_ = to_cust(shrink_perc_, bounds.h);
+		}
+		else if (bounds.w <= bounds.h)
+		{
+			shrink_size_ = to_cust(shrink_perc_, bounds.w);
+		}
+	}
+
+	SDL_Surface *async_img_Load(const std::string &_path) noexcept
+	{
+		SDL_Surface *surface;
+		if (!(surface = IMG_Load(_path.c_str())))
+			SDL_Log("%s", IMG_GetError());
+		return surface;
+	}
+
+private:
+	uint32_t async_start;
+	SharedTexture texture_;
+	SDL_FRect img_rect_;
+	float corner_radius_ = 0.f;
+	float shrink_size_ = 0.f, shrink_perc_ = 10.f;
+	SDL_Color bg_color_;
+	bool touch_down_ = false, motion_occured_ = false, shrinked_ = false, build_with_async_ = false;
+	bool enabled = true;
+	std::function<void()> onClickedCallBack_ = nullptr;
+	std::shared_future<SDL_Surface *> async_load_future_;
+	std::shared_future<void> async_free1_;
+	std::shared_future<void> async_free2_;
+	static Async::ThreadPool executor_;
+	AdaptiveVsyncHandler adaptiveVsyncHD;
+};
+
+Async::ThreadPool ImageButton::executor_(1);
+
+class RunningText : public Context, public IView
+{
+public:
+	struct Attr
+	{
+		SDL_FRect rect{0.f, 0.f, 0.f, 0.f};
+		SDL_Color text_color{255, 255, 255, 255};
+		SDL_Color bg_color{0, 0, 0, 0};
+		Font mem_font = Font::RobotoBold;
+		FontStyle font_style = FontStyle::Normal;
 		std::string font_file;
-		FontStyle font_style;
-		EdgeType edge_type;
-		uint32_t maxlines = 1;
-		TextWrapStyle text_wrap_style = TextWrapStyle::MAX_CHARS_PER_LN;
-		Gravity gravity = Gravity::Left;
-		float coner_radius = 0.f;
-		int custom_fontstyle = 0x00;
-		bool shrink_to_fit = false;
+		uint32_t pause_duration = 8000; // 8 seconds
+		uint32_t speed = 5000;
+		// transition speed in 0.f%-100.f%
+		float transition_speed = 2.f;
 	};
 
+public:
+	RunningText() = default;
+	RunningText(Context *_context, const RunningText::Attr &_attr)
+	{
+		Build(_context, _attr);
+	}
+
+	RunningText &Build(Context *_context, const RunningText::Attr &_attr)
+	{
+		setContext(_context);
+		adaptiveVsyncHD.setAdaptiveVsync(adaptiveVsync);
+		attr = _attr;
+		bounds = _attr.rect;
+		attr.transition_speed = DisplayInfo::Get().to_cust(_attr.transition_speed, bounds.h);
+		step_tm = (float)attr.speed / bounds.w;
+		texture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, bounds.w, bounds.h);
+		SDL_SetTextureBlendMode(texture.get(), SDL_BLENDMODE_BLEND);
+		CacheRenderTarget crt_(renderer);
+		SDL_SetRenderTarget(renderer, texture.get());
+		RenderClear(renderer, attr.bg_color.r, attr.bg_color.g, attr.bg_color.b, attr.bg_color.a);
+		crt_.release(renderer);
+		return *this;
+	}
+
+	bool handleEvent() override
+	{
+		bool result = false;
+		return result;
+	}
+
+	bool isAnimating() { return is_running; }
+
+	void updatePosBy(float _dx, float _dy) override
+	{
+		bounds.x += _dx;
+		bounds.y += _dy;
+	}
+
+	std::string getText() { return text_; }
+
+	void updateText(const std::string &_text)
+	{
+		text_ = _text;
+		if (_text.empty())
+			return;
+		is_running = false;
+		is_centered = false;
+		adaptiveVsyncHD.stopRedrawSession();
+
+		CacheRenderTarget crt_(renderer);
+		SDL_SetRenderTarget(renderer, texture.get());
+		RenderClear(renderer, attr.bg_color.r, attr.bg_color.g, attr.bg_color.b, attr.bg_color.a);
+
+		FontAttributes fontAttrb = {attr.font_file, attr.font_style, static_cast<uint8_t>(bounds.h)};
+		TTF_Font *tmpFont = nullptr;
+		if (fontAttrb.font_file.empty())
+		{
+			Fonts[attr.mem_font]->font_size = fontAttrb.font_size;
+			fontAttrb.font_file = Fonts[attr.mem_font]->font_name;
+			tmpFont = FontSystem::Get().getFont(*Fonts[attr.mem_font]);
+		}
+
+		const auto fa_ = static_cast<float>(TTF_FontAscent(tmpFont));
+		const auto fd_ = static_cast<float>(TTF_FontDescent(tmpFont));
+
+		FontSystem::Get().setFontAttributes(std::move(fontAttrb));
+		text_texture = FontSystem::Get().genTextTextureShared(renderer, _text.c_str(), attr.text_color).value();
+		int tw = 0, th = 0;
+		SDL_QueryTexture(text_texture.get(), nullptr, nullptr, &tw, &th);
+		SDL_FRect dst{0.f, 0.f, bounds.w, bounds.h};
+		dst.w = static_cast<float>(tw);
+		if (static_cast<float>(th) > dst.h)
+			dst.y += fd_, dst.h = static_cast<float>(th);
+		if (dst.w <= bounds.w)
+			is_centered = true, dst.x += ((bounds.w - dst.w) / 2.f);
+		RenderTexture(renderer, text_texture.get(), nullptr, &dst);
+		txt_rect = dst;
+		txt_rect2 = dst;
+		txt_rect2.x = dst.w + DisplayInfo::Get().to_cust(40.f, bounds.w);
+		cache_txt_rect2_x = txt_rect2.x;
+		crt_.release(renderer);
+		tm_last_pause = SDL_GetTicks();
+		tm_last_update = tm_last_pause; //+attr.pause_duration+1;
+		Async::GThreadPool.enqueue([this]()
+								   {SDL_Delay(attr.pause_duration); WakeGui(); });
+		// adaptiveVsyncHD.startRedrawSession();
+	}
+
+	void draw() override
+	{
+		if (not is_centered)
+		{
+			const auto now = SDL_GetTicks();
+			if (now - tm_last_pause > attr.pause_duration and not is_running)
+			{
+				is_running = true;
+				tm_last_update = SDL_GetTicks();
+				adaptiveVsyncHD.startRedrawSession();
+			}
+			if (is_running)
+				update();
+		}
+		else
+			adaptiveVsyncHD.stopRedrawSession();
+		RenderTexture(renderer, texture.get(), nullptr, &bounds);
+	}
+
+private:
+	void update()
+	{
+		CacheRenderTarget crt_(renderer);
+		SDL_SetRenderTarget(renderer, texture.get());
+		RenderClear(renderer, attr.bg_color.r, attr.bg_color.g, attr.bg_color.b, attr.bg_color.a);
+		const auto df = static_cast<float>(SDL_GetTicks() - tm_last_update);
+		if (df >= step_tm)
+		{
+			float num_steps = df / (float)step_tm;
+			txt_rect.x -= num_steps;
+			txt_rect2.x -= num_steps;
+			tm_last_update = SDL_GetTicks();
+		}
+		if (txt_rect2.x < 0.f)
+		{
+			txt_rect.x = 0.f;
+			txt_rect2.x = cache_txt_rect2_x;
+			is_running = false;
+			tm_last_pause = SDL_GetTicks();
+			tm_last_update = SDL_GetTicks();
+			Async::GThreadPool.enqueue([this]()
+									   {SDL_Delay(attr.pause_duration); WakeGui(); });
+			adaptiveVsyncHD.stopRedrawSession();
+		}
+		RenderTexture(renderer, text_texture.get(), nullptr, &txt_rect);
+		RenderTexture(renderer, text_texture.get(), nullptr, &txt_rect2);
+		crt_.release(renderer);
+	}
+
+private:
+	std::string text_ = "";
+	Attr attr;
+	SharedTexture texture;
+	SharedTexture text_texture;
+	SDL_FRect txt_rect{0.f, 0.f, 0.f, 0.f};
+	SDL_FRect txt_rect2{0.f, 0.f, 0.f, 0.f};
+	bool is_running = false;
+	bool is_centered = false;
+	uint32_t tm_last_pause = 0;
+	float cache_txt_rect2_x = 0.f;
+	uint32_t step_tm = 0;
+	uint32_t tm_last_update = 0;
+	AdaptiveVsyncHandler adaptiveVsyncHD;
+};
+
+class Cursor : public Context
+{
+public:
+	uint32_t m_start;
+	int vpos, hpos, pos;
+
+	Cursor()
+	{
+		m_blink_tm = 1;
+		m_color = {0x0, 0x0, 0x0, 0xff};
+		vpos = hpos = pos = 0;
+	}
+
+	Cursor(const SDL_FRect &rect, const SDL_Color &color, const uint32_t &blink_time,
+		   const int &step_size) : m_rect(rect), m_color(color), m_blink_tm(blink_time), vpos(0), hpos(0) {}
+
+	Cursor &setContext(Context *context_)
+	{
+		Context::setContext(context_);
+		return *this;
+	}
+
+	Cursor &configure(const SDL_FRect &rect, const SDL_Color &color, const MilliSec<uint32_t> &blink_time)
+	{
+		this->m_rect = rect;
+		this->m_color = color;
+		this->m_blink_tm = blink_time.get();
+		return *this;
+	}
+
+	Cursor &setRect(const SDL_FRect &rect)
+	{
+		this->m_rect = rect;
+		return *this;
+	}
+
+	SDL_FRect getRect()
+	{
+		return this->m_rect;
+	}
+
+	Cursor &setPosX(const float &posX)
+	{
+		this->m_rect.x = posX;
+		return *this;
+	}
+
+	Cursor &setColor(const SDL_Color &color)
+	{
+		this->m_color = color;
+		return *this;
+	}
+
+	Cursor &setBlinkTm(const uint32_t &blink_time)
+	{
+		this->m_blink_tm = blink_time;
+		return *this;
+	}
+
+	void Draw()
+	{
+		uint32_t diff_ = SDL_GetTicks() - m_start;
+		if (diff_ <= m_blink_tm) {
+			CacheRenderColor(renderer);
+			SDL_SetRenderDrawColor(renderer, m_color.r, m_color.g, m_color.b, m_color.a);
+			//RenderFillRect(renderer, &m_rect);
+			SDL_RenderFillRectF(renderer, &m_rect);
+			RestoreCachedRenderColor(renderer);
+		}
+		
+		if (diff_ >= m_blink_tm * 2)
+			m_start = SDL_GetTicks();
+	}
+
+private:
+	SDL_FRect m_rect;
+	uint32_t m_blink_tm;
+	SDL_Color m_color;
+};
+
+namespace m1
+{
 	struct TextBoxAttributes
 	{
-		Font mem_font = Font::ConsolasBold;
-		SDL_FRect rect = {0.f, 0.f, 0.f, 0.f};
-		TextAttributes textAttributes = {"", {0x00, 0x00, 0x00, 0xff}, {0xff, 0xff, 0xff, 0xff}};
-		SDL_FRect margin = {0.f, 0.f, 100.f, 100.f};
-		std::string fontFile;
+		Font mem_font = Font::RobotoBold;
+		SDL_FRect rect = {0.f, 0.f, 100.f, 20.f};															 // Default size
+		TextAttributes textAttributes = {"Hello World", {0x00, 0x00, 0x00, 0xff}, {0xff, 0xff, 0xff, 0x00}}; // Transparent BG for text texture by default
+		SDL_FRect margin = {5.f, 5.f, 95.f, 95.f};															 // Default: 5% margin on all sides (x,y are start, w,h are end percentages)
+		std::string fontFile;																				 // Path to .ttf file if not using mem_font
+		int fontSizePt = 16;																				 // ADDED: Explicit font size in points
 		FontStyle fontStyle = FontStyle::Normal;
 		EdgeType edgeType = EdgeType::RECT;
-		uint32_t maxlines = 1;
-		TextWrapStyle textWrapStyle = TextWrapStyle::MAX_CHARS_PER_LN;
+		uint32_t maxlines = 0; // 0 for unlimited lines within bounds, >0 for specific line limit for wrapping
+		TextWrapStyle textWrapStyle = TextWrapStyle::MAX_WORDS_PER_LN;
 		Gravity gravity = Gravity::Left;
-		float conerRadius = 0.f;
-		int customFontstyle = 0x00;
-		float lineSpacing = 0.f;
-		float outline = 0.f;
+		float cornerRadius = 0.f; // Renamed from conerRadius
+		// int customFontstyle = 0x00; // Replaced by mapping FontStyle to SDL_TTF styles
+		float lineSpacing = 2.0f;	  // Additional spacing between lines in pixels
+		float outlineThickness = 0.f; // Renamed from outline
 		bool isButton = false;
 		bool shrinkToFit = false;
 		bool highlightOnHover = false;
-		SDL_Color outlineColor = {0x00, 0x00, 0x00, 0x00};
-		SDL_Color onHoverOutlineColor = {0x00, 0x00, 0x00, 0x00};
-		SDL_Color onHoverBgColor = {0x00, 0x00, 0x00, 0x00};
-		SDL_Color onHoverTxtColor = {0x00, 0x00, 0x00, 0x00};
+		SDL_Color outlineColor = {0x00, 0x00, 0x00, 0xff};
+		SDL_Color onHoverOutlineColor = {0x33, 0x33, 0x33, 0xff};
+		SDL_Color onHoverBgColor = {0xee, 0xee, 0xee, 0xff};
+		SDL_Color onHoverTextColor = {0x00, 0x00, 0x00, 0xff}; // For changing text color on hover
+		SDL_Color backgroundColor = {0xff, 0xff, 0xff, 0xff};  // Overall background color for the TextBox bounds
 	};
 
-	class TextBoxBuilder;
-
-	class TextBox : public Context, IView
+	class TextBox : public Context, public IView
 	{
 	public:
-		using IView::getView;
-		using IView::isHidden;
-		using IView::type;
+		// Make sure IView's virtual functions are accessible if not public in IView
+		// using IView::getView; // Already public in mock
+		// using IView::isHidden; // Already public in mock
+		// using IView::type; // Already public in mock
 
 	public:
-		friend class TextBoxBuilder;
+		TextBox() { IView::type = "TextBox"; } // Set type
+
 		TextBox &setContext(Context *_context)
 		{
 			Context::setContext(_context);
-			Context::setView(this);
+			Context::setView(this); // Assuming Context has setView
 			return *this;
 		}
 
-		static TextBoxBuilder Builder(Context *context);
-
-		TextBox &Build(Context *_context, const TextBoxAttributes &textboxAttr_)
+		TextBox &Build(Context *_context, const TextBoxAttributes &attrs)
 		{
-			Context::setContext(_context);
-			config_dat_ = textboxAttr_;
-			coner_radius_ = textboxAttr_.conerRadius;
-			line_skip_ = textboxAttr_.lineSpacing;
-			isButton = textboxAttr_.isButton;
-			bounds = textboxAttr_.rect;
-			outlineRect.Build(this, textboxAttr_.rect, textboxAttr_.outline, textboxAttr_.conerRadius, textboxAttr_.textAttributes.bg_color, textboxAttr_.outlineColor);
+			setContext(_context);
+			config_dat_ = attrs;
+			current_text_attributes_ = config_dat_.textAttributes; // Store current text attributes for hover changes
+			current_bg_color_ = config_dat_.backgroundColor;
+			current_outline_color_ = config_dat_.outlineColor;
 
-			text_rect_ = {to_cust(textboxAttr_.margin.x, bounds.w),
-						  to_cust(textboxAttr_.margin.y, bounds.h),
-						  to_cust(textboxAttr_.margin.w - textboxAttr_.margin.x, bounds.w),
-						  to_cust(textboxAttr_.margin.h, bounds.h)};
-			text_attributes_ = textboxAttr_.textAttributes;
-			font_attributes_.font_file = textboxAttr_.fontFile;
-			font_attributes_.font_style = textboxAttr_.fontStyle;
-			// font_attributes_.font_size = static_cast<uint8_t>(to_cust(95.f, text_rect_.h));
-			font_attributes_.font_size = static_cast<uint8_t>(text_rect_.h);
-			custom_fontstyle_ = textboxAttr_.customFontstyle;
-			max_lines_ = textboxAttr_.maxlines;
-			edge_type_ = textboxAttr_.edgeType;
-			text_wrap_style_ = textboxAttr_.textWrapStyle;
-			gravity_ = textboxAttr_.gravity;
-			shrink_to_fit = textboxAttr_.shrinkToFit;
+			// 1. Overall bounds
+			IView::bounds = config_dat_.rect; // Use IView's bounds member
+
+			// 2. Font Loading and Metrics
+			font_attributes_.font_file = config_dat_.fontFile;
+			font_attributes_.font_size = config_dat_.fontSizePt;
+			font_attributes_.font_style = config_dat_.fontStyle;
+			// font_attributes_.sdl_ttf_style = mapFontStyleToSDL(config_dat_.fontStyle);
+
+			is_valid_ = true;
+
+			TTF_Font *font = getFont();
+			if (!font)
+			{
+				std::cout << "TextBox::Build Error: Font not available." << std::endl;
+				is_valid_ = false;
+				return *this;
+			}
+			actual_line_height_ = TTF_FontLineSkip(font);
+			if (actual_line_height_ <= 0)
+				actual_line_height_ = font_attributes_.font_size; // Fallback
+
+			// 3. Calculate Text Rendering Area (relative to 0,0 for the texture)
+			// This is the area *within* the TextBox bounds where text can be drawn, after margins.
+			float text_area_x_offset = to_cust(config_dat_.margin.x, IView::bounds.w);
+			float text_area_y_offset = to_cust(config_dat_.margin.y, IView::bounds.h);
+			float text_area_w_percent_span = config_dat_.margin.w - config_dat_.margin.x;
+			float text_area_h_percent_span = config_dat_.margin.h - config_dat_.margin.y;
+
+			text_render_area_local_.x = 0; // Texture is rendered from its own 0,0
+			text_render_area_local_.y = 0;
+			text_render_area_local_.w = to_cust(text_area_w_percent_span, IView::bounds.w);
+			text_render_area_local_.h = to_cust(text_area_h_percent_span, IView::bounds.h);
+
+			// Store absolute offsets for drawing the texture later
+			text_render_area_abs_offset_x_ = text_area_x_offset;
+			text_render_area_abs_offset_y_ = text_area_y_offset;
+
+			if (text_render_area_local_.w <= 0 || text_render_area_local_.h <= 0)
+			{
+				GLogger.Log(Logger::Level::Info, "TextBox::Build Warning: Text render area has zero or negative dimensions.");
+				is_valid_ = false;
+				// wrapped_text_.clear(); // No space to render
+				// texture_.reset();
+				// return *this; // Or allow it, will just render nothing
+			}
+
+			// 4. Text Wrapping
 			wrapped_text_.clear();
-
-			max_displayable_chars_per_ln_ = static_cast<uint32_t>(text_rect_.w / (text_rect_.h / 2.f));
-			if (text_attributes_.text.size() < max_displayable_chars_per_ln_)
-				wrapped_text_.emplace_back(text_attributes_.text);
-			else
+			if (!current_text_attributes_.text.empty() && text_render_area_local_.w > 0)
 			{
-				if (text_wrap_style_ == TextWrapStyle::MAX_WORDS_PER_LN)
-					TextProcessor::Get().wrap_max_word_count(text_attributes_.text, &wrapped_text_, " ,-_./\:;|})!",
-															 max_displayable_chars_per_ln_, max_lines_);
-				else
-					TextProcessor::Get().wrap_max_char(text_attributes_.text, &wrapped_text_, max_displayable_chars_per_ln_, max_lines_);
-			}
-			/*if(max_displayable_chars_per_ln_<text_attributes_.text.size()){
-				wrapped_text_.back() = wrapped_text_.back().replace(wrapped_text_.back().begin()+ (wrapped_text_.back().size()-3), wrapped_text_.back().end(),"...");
-			}*/
-			max_displayable_lines_ = std::clamp(static_cast<uint32_t>(std::floorf(bounds.h / text_rect_.h)), (uint32_t)1, (uint32_t)1000000);
-			capture_src_ = {0.f, 0.f, text_rect_.w, text_rect_.h * std::clamp((float)wrapped_text_.size(), 1.f, (float)max_displayable_lines_)};
-			dest_src_ = text_rect_;
-			dest_src_.h = capture_src_.h;
-			dest_src_.x += bounds.x;
-			dest_src_.y += bounds.y;
-
-			this->texture_.reset();
-			// CacheRenderTarget crt_(renderer);
-			this->texture_ = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
-												 SDL_TEXTUREACCESS_TARGET, static_cast<int>(text_rect_.w),
-												 static_cast<int>(text_rect_.h * wrapped_text_.size()));
-			// SDL_SetTextureBlendMode(this->texture_.get(), SDL_BLENDMODE_BLEND);
-			// SDL_SetRenderTarget(renderer, this->texture_.get());
-			// renderClear(renderer, 0, 0, 0, 0);
-			// FontSystem::Get().setFontAttributes({ font_attributes_.font_file.c_str(), font_attributes_.font_style, font_attributes_.font_size, 0.f }, custom_fontstyle_);
-
-			genText();
-			return *this;
-		}
-
-	public:
-		void Draw() override
-		{
-			/*SDL_SetRenderDrawColor(renderer, text_attributes_.bg_color.r, text_attributes_.bg_color.g, text_attributes_.bg_color.b, text_attributes_.bg_color.a);
-			SDL_RenderFillRect(renderer, &dest_);*/
-			outlineRect.Draw();
-			// fillRoundedRectF(renderer, dest_, coner_radius_, text_attributes_.bg_color);
-			SDL_RenderTexture(renderer, texture_.get(), &capture_src_, &dest_src_);
-			// return *this;
-		}
-
-		TextBox &addOnclickedCallback(std::function<void(TextBox *)> _on_clicked_callback) noexcept
-		{
-			onClickedCallback_ = _on_clicked_callback;
-			return *this;
-		}
-
-		constexpr inline TextBox &setConerRadius(const float &cr_) noexcept
-		{
-			this->coner_radius_ = cr_;
-			return *this;
-		}
-
-		TextBox &setId(const uint32_t &_id) noexcept
-		{
-			this->id_ = _id;
-			return *this;
-		}
-
-		SDL_FRect &getBounds()
-		{
-			return bounds;
-		}
-
-		inline const SDL_FRect &getBoundsConst() const noexcept
-		{
-			return this->bounds;
-		}
-
-		TextBox &setPos(const float x, const float y)
-		{
-
-			return *this;
-		}
-
-		inline void updatePosBy(float x, float y) override
-		{
-			update_pos_internal(x, y, false);
-			// return *this;
-		}
-
-		TextBox &updatePosByAnimated(const float x, const float y)
-		{
-			update_pos_internal(x, y, true);
-			return *this;
-		}
-
-		std::string getText() const
-		{
-			return this->text_attributes_.text;
-		}
-
-		bool isEnabled() const
-		{
-			return is_enabled_;
-		}
-
-		void setEnabled(const bool &_enabled)
-		{
-			is_enabled_ = _enabled;
-		}
-
-		uint32_t getId() const
-		{
-			return this->id_;
-		}
-
-		TextBox &updateTextColor(const SDL_Color &bgColor, const SDL_Color &outlineColor, const SDL_Color &textColor)
-		{
-			text_attributes_.bg_color = bgColor;
-			text_attributes_.text_color = textColor;
-			outlineRect.color = bgColor;
-			outlineRect.outline_color = outlineColor;
-
-			CacheRenderTarget crt_(renderer);
-			SDL_SetRenderTarget(renderer, this->texture_.get());
-			SDL_SetTextureBlendMode(this->texture_.get(), SDL_BLENDMODE_BLEND);
-			renderClear(renderer, 0, 0, 0, 0);
-			const SDL_FRect cache_text_rect = text_rect_;
-			int tmp_sw = 0, tmp_sh = 0;
-			text_rect_.y = 0.f;
-			text_rect_.x = 0.f;
-
-			TTF_Font *tmpFont = nullptr;
-			if (font_attributes_.font_file.empty())
-			{
-				Fonts[config_dat_.mem_font]->font_size = font_attributes_.font_size;
-				font_attributes_.font_file = Fonts[config_dat_.mem_font]->font_name;
-				tmpFont = FontSystem::Get().getFont(*Fonts[config_dat_.mem_font]);
-			}
-			else
-			{
-				tmpFont = FontSystem::Get().getFont(font_attributes_.font_file, font_attributes_.font_size);
-			}
-			const float fa_ = static_cast<float>(TTF_FontDescent(tmpFont));
-			FontSystem::Get().setFontAttributes({font_attributes_.font_file.c_str(), font_attributes_.font_style, font_attributes_.font_size}, custom_fontstyle_);
-			for (auto const &line_ : wrapped_text_)
-			{
-				auto textTex = FontSystem::Get().genTextTextureUnique(renderer, line_.c_str(), this->text_attributes_.text_color);
-				if (textTex.has_value())
+				// Estimate max chars per line for wrapping (can be improved)
+				// A better way is for TextProcessor to take pixel width if possible.
+				// For now, using a rough estimate based on font size.
+				// 'M' is often a wide character.
+				int m_width_px = 0;
+				if (TTF_GlyphMetrics(font, 'M', nullptr, nullptr, nullptr, nullptr, &m_width_px) != 0)
 				{
-					SDL_QueryTexture(textTex.value().get(), nullptr, nullptr, &tmp_sw, &tmp_sh);
-					// SDL_Log("TW: %d, TH: %d", tmp_sw, tmp_sh);
-					text_rect_.w = static_cast<float>(tmp_sw);
-					// text_rect_.h = (float)(tmp_sh);
-					text_rect_.w = std::clamp(text_rect_.w, 0.f, cache_text_rect.w);
+					m_width_px = font_attributes_.font_size / 2; // Fallback if metrics fail
+				}
+				if (m_width_px == 0)
+					m_width_px = 1; // Avoid division by zero
 
-					if (max_lines_ == 1)
-					{
-						if (gravity_ == Gravity::Center)
-						{
-							text_rect_.x = ((cache_text_rect.w - text_rect_.w) / 2.f);
-						}
-						if (shrink_to_fit)
-						{
-							float final_rad = 1.f;
-							if (bounds.h > bounds.w)
-							{
-								final_rad = ((coner_radius_ / 2.f) * bounds.w) / 100.f;
-							}
-							else if (bounds.h <= bounds.w)
-							{
-								final_rad = ((coner_radius_ / 2.f) * bounds.h) / 100.f;
-							}
-							// dest_.x = dest_.x + (text_rect_.x - final_rad);
-							// dest_.w = text_rect_.w + (final_rad * 2.f);
-						}
-					}
-					SDL_RenderTexture(renderer, textTex.value().get(), nullptr, &text_rect_);
-					text_rect_.y += line_skip_ + text_rect_.h;
+				uint32_t chars_for_wrapping = static_cast<uint32_t>(text_render_area_local_.w / m_width_px);
+				if (chars_for_wrapping == 0 && text_render_area_local_.w > 0)
+					chars_for_wrapping = 1;
+
+				if (config_dat_.textWrapStyle == TextWrapStyle::MAX_WORDS_PER_LN)
+				{
+					TextProcessor::Get().wrap_by_word_unicode(current_text_attributes_.text, &wrapped_text_, " ,-_./\\:;|})!",
+															  chars_for_wrapping, config_dat_.maxlines);
 				}
 				else
-					break;
+				{
+					TextProcessor::Get().wrap_max_char_unicode(current_text_attributes_.text, &wrapped_text_,
+															   chars_for_wrapping, config_dat_.maxlines);
+				}
 			}
-			text_rect_ = cache_text_rect;
-			crt_.release(renderer);
+			if (wrapped_text_.empty() && !current_text_attributes_.text.empty())
+			{
+				// If wrapping resulted in no lines but there was text (e.g. area too small)
+				// add the original text as one line to attempt rendering, or handle as error.
+				// For now, let it be empty, regenerateTextTexture will handle it.
+				GLogger.Log(Logger::Level::Info, "wrapped_text is empty");
+			}
+
+			// 5. Calculate Required Text Dimensions (for shrink_to_fit and texture sizing)
+			float required_text_pixel_width = 0;
+			for (const auto &line : wrapped_text_)
+			{
+				// GLogger.Log(Logger::Level::Info,"wrapped_text:"+line);
+				int lw, lh;
+				if (TTF_SizeUTF8(font, line.c_str(), &lw, &lh) == 0)
+				{
+					if (static_cast<float>(lw) > required_text_pixel_width)
+					{
+						required_text_pixel_width = static_cast<float>(lw);
+					}
+				}
+			}
+			if (wrapped_text_.empty() && !current_text_attributes_.text.empty())
+			{ // If text exists but couldn't be wrapped (e.g. too small area)
+				// GLogger.Log(Logger::Level::Info,"single line text");
+				int tw, th;
+				if (TTF_SizeUTF8(font, current_text_attributes_.text.c_str(), &tw, &th) == 0)
+				{
+					required_text_pixel_width = static_cast<float>(tw);
+				}
+			}
+
+			float required_text_pixel_height = 0;
+			if (!wrapped_text_.empty())
+			{
+				required_text_pixel_height = wrapped_text_.size() * actual_line_height_ +
+											 (wrapped_text_.size() > 1 ? (wrapped_text_.size() - 1) * config_dat_.lineSpacing : 0);
+			}
+			else if (!current_text_attributes_.text.empty())
+			{ // Text exists but not wrapped
+				required_text_pixel_height = actual_line_height_;
+			}
+
+			// 6. Apply `shrinkToFit`
+			SDL_FRect original_bounds = IView::bounds; // Keep original for relative margin calcs if needed
+			if (config_dat_.shrinkToFit)
+			{
+				float content_w = required_text_pixel_width;
+				float content_h = required_text_pixel_height;
+
+				// Calculate total horizontal and vertical margin percentages
+				float total_h_margin_percent = config_dat_.margin.x + (100.0f - config_dat_.margin.w);
+				float total_v_margin_percent = config_dat_.margin.y + (100.0f - config_dat_.margin.h);
+
+				if (100.0f - total_h_margin_percent > 0)
+				{ // Avoid division by zero if margins are 100%
+					IView::bounds.w = content_w / ((100.0f - total_h_margin_percent) / 100.0f);
+				}
+				else
+				{
+					IView::bounds.w = content_w; // Fallback: content width is total width
+				}
+				if (100.0f - total_v_margin_percent > 0)
+				{
+					IView::bounds.h = content_h / ((100.0f - total_v_margin_percent) / 100.0f);
+				}
+				else
+				{
+					IView::bounds.h = content_h; // Fallback
+				}
+
+				// Recalculate text_render_area_local_ based on new bounds
+				text_render_area_local_.w = to_cust(text_area_w_percent_span, IView::bounds.w);
+				text_render_area_local_.h = to_cust(text_area_h_percent_span, IView::bounds.h);
+				// And absolute offsets
+				text_render_area_abs_offset_x_ = to_cust(config_dat_.margin.x, IView::bounds.w);
+				text_render_area_abs_offset_y_ = to_cust(config_dat_.margin.y, IView::bounds.h);
+			}
+
+			// 7. Determine max_displayable_lines_ based on final text_render_area_local_.h
+			if (actual_line_height_ + config_dat_.lineSpacing > 0)
+			{
+				max_displayable_lines_ = static_cast<uint32_t>(
+					std::floorf(text_render_area_local_.h / (actual_line_height_ + config_dat_.lineSpacing)));
+				// Adjust for the last line not needing lineSpacing after it
+				if (max_displayable_lines_ > 0 && text_render_area_local_.h - (max_displayable_lines_ * (actual_line_height_ + config_dat_.lineSpacing) - config_dat_.lineSpacing) < 0)
+				{
+					if (max_displayable_lines_ > 0)
+						max_displayable_lines_--;
+				}
+			}
+			else
+			{
+				max_displayable_lines_ = wrapped_text_.size(); // Or 0 if actual_line_height_ is 0
+			}
+			if (max_displayable_lines_ == 0 && !wrapped_text_.empty() && text_render_area_local_.h > 0)
+				max_displayable_lines_ = 1; // Can display at least one line if space
+
+			// 8. Regenerate Text Texture
+			regenerateTextTexture();
+
+			// 9. Setup `capture_src_` and `dest_rect_on_screen_` for drawing
+			// `dest_rect_on_screen_` is where the text texture (or part of it) is drawn on the screen.
+			dest_rect_on_screen_.x = IView::bounds.x + text_render_area_abs_offset_x_;
+			dest_rect_on_screen_.y = IView::bounds.y + text_render_area_abs_offset_y_;
+
+			if (texture_.get())
+			{
+				int tex_w, tex_h;
+				SDL_QueryTexture(texture_.get(), nullptr, nullptr, &tex_w, &tex_h);
+
+				capture_src_.x = 0;
+				capture_src_.y = current_scroll_y_offset_px_; // For scrolling
+				capture_src_.w = static_cast<float>(tex_w);
+				// Height of capture is limited by available text render area height on screen
+				capture_src_.h = std::min(static_cast<float>(tex_h) - current_scroll_y_offset_px_, text_render_area_local_.h);
+				if (capture_src_.h < 0)
+				{
+					capture_src_.h = 0;
+					// capture_src_.h = static_cast<float>(tex_h);
+				}
+
+				dest_rect_on_screen_.w = capture_src_.w; // Draw captured part at its native width
+				dest_rect_on_screen_.h = capture_src_.h; // And native height
+			}
+			else
+			{
+				GLogger.Log(Logger::Level::Warning, "Null Text Texture!");
+				capture_src_ = {0, 0, 0, 0};
+				dest_rect_on_screen_.w = 0;
+				dest_rect_on_screen_.h = 0;
+			}
+
+			// Build outline rect based on final IView::bounds
+			outlineRect.Build(this, IView::bounds, config_dat_.outlineThickness, config_dat_.cornerRadius,
+							  current_bg_color_, current_outline_color_);
+
+			is_valid_ = true;
 			return *this;
 		}
 
-		void resolveTextureReset()
+		void draw() override
 		{
-			// this->Build(this, config_dat_);
-			updateTextColor(config_dat_.textAttributes.bg_color, config_dat_.outlineColor, config_dat_.textAttributes.text_color);
+			if (/*m_isHidden || */ !is_valid_ || !renderer)
+				return;
+
+			outlineRect.color = current_bg_color_; // Update colors potentially changed by hover
+			outlineRect.outline_color = current_outline_color_;
+			outlineRect.draw();
+
+			if (texture_ && capture_src_.w > 0 && capture_src_.h > 0)
+			{
+				// std::cout << "TextBox::Build Error: Font not available." << std::endl;
+				RenderTexture(renderer, texture_.get(), &capture_src_, &dest_rect_on_screen_);
+			}
+			/*
+			GLogger.Log(Logger::Level::Info, "cap_src:" +
+												 packToString(capture_src_.x, capture_src_.y, capture_src_.w, capture_src_.h));
+			GLogger.Log(Logger::Level::Info, "cap_dst:" +
+												 packToString(dest_rect_on_screen_.x,
+												 dest_rect_on_screen_.y, dest_rect_on_screen_.w, dest_rect_on_screen_.h));*/
 		}
 
-		bool handleEvent()
+		bool handleEvent() override
 		{
-			// SDL_Log("tb handle event");
-			bool result = false;
+			if (/*m_isHidden ||*/ !is_valid_ || !event || !renderer)
+				return false;
+
+			bool event_handled = false;
+			SDL_FPoint mouse_pos;
+
 			switch (event->type)
 			{
-			case SDL_EVENT_RENDER_TARGETS_RESET:
-				resolveTextureReset();
-				result = true;
+			case EVT_RENDER_TARGETS_RESET: // Your custom event
+				// This might mean the renderer context was lost and textures need recreation.
+				// Full rebuild might be too much if only textures were lost.
+				// A lighter "resolveTextureReset" that only calls regenerateTextTexture might be better.
+				// For now, assume it means a significant state change requiring rebuild.
+				Build(this, config_dat_); // Re-pass current context
+				event_handled = true;
 				break;
-			case SDL_EVENT_MOUSE_BUTTON_DOWN:
-				if (onClick(event->button.x, event->button.y))
-					mouse_in_bound_ = true, result = true;
-				else
-					mouse_in_bound_ = false;
+
+			case EVT_MOUSE_MOTION:
+				mouse_pos = {static_cast<float>(event->motion.x), static_cast<float>(event->motion.y)};
+				handleMouseMove(mouse_pos);
+				// Mouse motion itself doesn't usually "handle" an event in a way that stops propagation,
+				// unless it triggers a state change that consumes subsequent events.
 				break;
-			case SDL_EVENT_MOUSE_MOTION:
-				if (onClick(event->motion.x, event->motion.y))
+
+			case EVT_MOUSE_BTN_DOWN:
+				mouse_pos = {static_cast<float>(event->button.x), static_cast<float>(event->button.y)};
+				if (isPointInside(mouse_pos))
 				{
-					mouse_in_bound_ = true;
-					if (config_dat_.highlightOnHover)
-					{
-						outlineRect.outline_color = config_dat_.onHoverOutlineColor;
-						outlineRect.color = config_dat_.onHoverBgColor;
-					}
+					haptics->play_effect();
+					mouse_in_bounds_on_click_ = true;
+					// Handle click start visual changes if any (e.g., pressed state)
+					event_handled = true; // Potentially consume event if it's a button
 				}
 				else
 				{
-					mouse_in_bound_ = false;
-					if (config_dat_.highlightOnHover)
+					mouse_in_bounds_on_click_ = false;
+				}
+				break;
+
+			case EVT_FINGER_UP:	   // Assuming EVT_FINGER_UP provides absolute pixel coords
+			case EVT_MOUSE_BTN_UP: // Assuming EVT_MOUSE_BTN_UP
+				if (event->type == EVT_FINGER_UP)
+				{
+					mouse_pos = {event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.y * DisplayInfo::Get().RenderH};
+				}
+				else
+				{
+					mouse_pos = {static_cast<float>(event->button.x), static_cast<float>(event->button.y)};
+				}
+
+				if (mouse_in_bounds_on_click_ && isPointInside(mouse_pos))
+				{
+					if (onClickedCallback_)
 					{
-						outlineRect.outline_color = config_dat_.outlineColor;
-						outlineRect.color = text_attributes_.bg_color;
+						onClickedCallback_(this);
+						event_handled = true;
+					}
+					else if (config_dat_.isButton)
+					{ // Default button behavior
+						event_handled = true;
 					}
 				}
-				break; /*
-			 case SDL_EVENT_MOUSE_BUTTON_UP:
+				mouse_in_bounds_on_click_ = false;
+				// Reset hover state if mouse is no longer over after click
+				handleMouseMove(mouse_pos); // Update hover state based on current mouse pos
+				break;
+
+			case EVT_WPSC: // Your custom window events
+			case EVT_WMAX:
+				// Assuming these require recalculating layout based on new display info
+				// This is a simplified version. A real resize might pass new dimensions.
+				config_dat_.rect.x = DisplayInfo::Get().toUpdatedWidth(config_dat_.rect.x);
+				config_dat_.rect.y = DisplayInfo::Get().toUpdatedHeight(config_dat_.rect.y);
+				config_dat_.rect.w = DisplayInfo::Get().toUpdatedWidth(config_dat_.rect.w);
+				config_dat_.rect.h = DisplayInfo::Get().toUpdatedHeight(config_dat_.rect.h);
+				Build(this, config_dat_); // Re-pass current context
+				event_handled = true;
+				break;
+			}
+			return event_handled;
+		}
+
+		// --- New/Updated Public Methods ---
+		TextBox &setText(const std::string &new_text)
+		{
+			if (current_text_attributes_.text == new_text)
+				return *this;
+			current_text_attributes_.text = new_text;
+			// Need to re-evaluate everything: wrap, shrink_to_fit, render
+			Build(this, config_dat_); // Re-pass current context and attributes (config_dat_ now has new text via current_text_attributes_)
+			return *this;
+		}
+
+		TextBox &setFontSize(int new_point_size)
+		{
+			if (config_dat_.fontSizePt == new_point_size || new_point_size <= 0)
+				return *this;
+			config_dat_.fontSizePt = new_point_size;
+			font_attributes_.font_size = new_point_size; // Update internal cache too
+			Build(this, config_dat_);
+			return *this;
+		}
+
+		TextBox &setTextColor(const SDL_Color &new_color)
+		{
+			// Simple equality check for SDL_Color
+			if (current_text_attributes_.text_color.r == new_color.r &&
+				current_text_attributes_.text_color.g == new_color.g &&
+				current_text_attributes_.text_color.b == new_color.b &&
+				current_text_attributes_.text_color.a == new_color.a)
+				return *this;
+
+			current_text_attributes_.text_color = new_color;
+			config_dat_.textAttributes.text_color = new_color; // Persist in config if Build uses it directly
+
+			// Only need to regenerate texture, not full build if layout doesn't change
+			if (is_valid_)
+				regenerateTextTexture();
+			return *this;
+		}
+
+		TextBox &setBackgroundColor(const SDL_Color &new_color)
+		{
+			if (config_dat_.backgroundColor.r == new_color.r && /* ... */ config_dat_.backgroundColor.a == new_color.a)
+				return *this;
+			config_dat_.backgroundColor = new_color;
+			current_bg_color_ = new_color;		   // For immediate redraw
+			outlineRect.color = current_bg_color_; // Update outline's bg part
+			// No need to rebuild texture if only overall BG changes
+			return *this;
+		}
+
+		TextBox &setOutlineColor(const SDL_Color &new_color)
+		{
+			if (config_dat_.outlineColor.r == new_color.r && /* ... */ config_dat_.outlineColor.a == new_color.a)
+				return *this;
+			config_dat_.outlineColor = new_color;
+			current_outline_color_ = new_color; // For immediate redraw
+			outlineRect.outline_color = current_outline_color_;
+			return *this;
+		}
+
+		TextBox &setRect(const SDL_FRect &new_rect)
+		{
+			config_dat_.rect = new_rect;
+			Build(this, config_dat_);
+			return *this;
+		}
+
+		TextBox &setMaxLines(uint32_t new_max_lines)
+		{
+			if (config_dat_.maxlines == new_max_lines)
+				return *this;
+			config_dat_.maxlines = new_max_lines;
+			Build(this, config_dat_);
+			return *this;
+		}
+
+		TextBox &onClick(std::function<void(TextBox *)> callback) noexcept
+		{
+			onClickedCallback_ = callback;
+			return *this;
+		}
+
+		std::string getText() const { return current_text_attributes_.text; }
+		const SDL_FRect &getBounds() const { return IView::bounds; }
+		uint32_t getId() const { return id_; } // Assuming id_ is a member
+		TextBox &setId(uint32_t id)
+		{
+			id_ = id;
+			return *this;
+		}
+
+		// Scrolling related (basic implementation)
+		void scroll(float dy_px)
+		{
+			if (!texture_ || !is_valid_)
+				return;
+
+			int tex_w, tex_h;
+			SDL_QueryTexture(texture_.get(), nullptr, nullptr, &tex_w, &tex_h);
+
+			float max_scroll_y = static_cast<float>(tex_h) - text_render_area_local_.h;
+			if (max_scroll_y < 0)
+				max_scroll_y = 0;
+
+			current_scroll_y_offset_px_ += dy_px;
+			current_scroll_y_offset_px_ = std::max(0.0f, std::min(current_scroll_y_offset_px_, max_scroll_y));
+
+			// Update capture_src_ for next draw
+			capture_src_.y = current_scroll_y_offset_px_;
+			capture_src_.h = std::min(static_cast<float>(tex_h) - current_scroll_y_offset_px_, text_render_area_local_.h);
+			if (capture_src_.h < 0)
+				capture_src_.h = 0;
+			// dest_rect_on_screen_ height also needs to match capture_src_.h
+			dest_rect_on_screen_.h = capture_src_.h;
+		}
+		float getCurrentScrollY() const { return current_scroll_y_offset_px_; }
+		float getMaxScrollY() const
+		{
+			if (!texture_ || !is_valid_)
+				return 0.0f;
+			int tex_w, tex_h;
+			SDL_QueryTexture(texture_.get(), nullptr, nullptr, &tex_w, &tex_h);
+			float max_s = static_cast<float>(tex_h) - text_render_area_local_.h;
+			return (max_s < 0) ? 0.0f : max_s;
+		}
+
+	private:
+		TTF_Font *getFont()
+		{
+			if (font_attributes_.font_file.empty())
+			{
+				// SDL_Log("TX: %s,     ws: %d", current_text_attributes_.text.c_str(),wrapped_text_.size());
+				Fonts[config_dat_.mem_font]->font_size = font_attributes_.font_size;
+				font_attributes_.font_file = Fonts[config_dat_.mem_font]->font_name;
+				return FontSystem::Get().getFont(*Fonts[config_dat_.mem_font]);
+			}
+			else
+			{
+				return FontSystem::Get().getFont(font_attributes_.font_file, font_attributes_.font_size);
+			}
+		}
+		/*
+		int mapFontStyleToSDL(FontStyle style)
+		{
+			switch (style)
+			{
+			case FontStyle::Normal:
+				return TTF_STYLE_NORMAL;
+			case FontStyle::Bold:
+				return TTF_STYLE_BOLD;
+			case FontStyle::Italic:
+				return TTF_STYLE_ITALIC;
+			case FontStyle::BoldItalic:
+				return TTF_STYLE_BOLD | TTF_STYLE_ITALIC;
+			// Add underline, strikethrough if your FontStyle enum supports them
+			default:
+				return TTF_STYLE_NORMAL;
+			}
+		}*/
+
+		void regenerateTextTexture()
+		{
+
+			if (!renderer || !is_valid_)
+			{ // is_valid_ check to ensure layout calcs were okay
+				texture_.reset();
+				GLogger.Log(Logger::Level::Info, "is_valid_ check to ensure layout calcs were okay");
+				return;
+			}
+			// texture_.reset();
+
+			TTF_Font *font = getFont();
+			if (!font)
+			{
+				GLogger.Log(Logger::Level::Info, "TextBox::regenerateTextTexture Error: Font not available.");
+				texture_.reset();
+				return;
+			}
+			GLogger.Log(Logger::Level::Info, "here");
+
+			// Texture dimensions are based on the text_render_area_local_ for width,
+			// and the total height of all wrapped lines that are meant to be rendered.
+			float total_required_text_height = 0;
+			size_t lines_to_actually_render_in_texture = wrapped_text_.size();
+			if (config_dat_.maxlines > 0 && lines_to_actually_render_in_texture > config_dat_.maxlines)
+			{
+				lines_to_actually_render_in_texture = config_dat_.maxlines;
+			}
+
+			if (lines_to_actually_render_in_texture > 0)
+			{
+				total_required_text_height = (lines_to_actually_render_in_texture * actual_line_height_) +
+											 ((lines_to_actually_render_in_texture - 1) * config_dat_.lineSpacing);
+			}
+			else if (!current_text_attributes_.text.empty() && lines_to_actually_render_in_texture == 0)
+			{
+				// Case: text exists, but wrapping resulted in 0 lines (e.g., area too small for even one char of first word)
+				// OR maxlines was 0 and text was empty.
+				// If text exists, we should at least try to render one line's height for the texture.
+				total_required_text_height = actual_line_height_;
+				if (wrapped_text_.empty())
+					lines_to_actually_render_in_texture = 1; // Render a blank line space
+			}
+
+			int texture_w = static_cast<int>(text_render_area_local_.w);
+			int texture_h = static_cast<int>(std::max(1.0f, total_required_text_height)); // Min 1px height
+
+			if (texture_w <= 0)
+			{ // Texture height can be 0 if no text and no min height
+				GLogger.Log(Logger::Level::Info, "TextBox::regenerateTextTexture Warning: Calculated texture width is <= 0.");
+				texture_.reset();
+				return;
+			}
+			if (texture_h <= 0 && !current_text_attributes_.text.empty())
+			{
+				texture_h = static_cast<int>(actual_line_height_); // Min height for one line if text exists
+			}
+			if (texture_h <= 0)
+			{
+				texture_.reset();
+				return;
+			}
+
+			texture_ = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
+										   SDL_TEXTUREACCESS_TARGET, texture_w, texture_h);
+			if (!texture_)
+			{
+				GLogger.Log(Logger::Level::Error, packToString("TextBox Error: Failed to create texture: ", SDL_GetError()));
+				return;
+			}
+			else
+				GLogger.Log(Logger::Level::Info, "text texture created");
+
+			CacheRenderTarget crt_(renderer);
+			SDL_SetRenderTarget(renderer, texture_.get());
+			SDL_SetTextureBlendMode(texture_.get(), SDL_BLENDMODE_BLEND);
+			SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0); // Clear with transparent
+			SDL_RenderClear(renderer);
+			/*
+			TTF_SetFontStyle(font, font_attributes_.sdl_ttf_style);
+			TTF_SetFontOutline(font, config_dat_.outlineThickness > 0 ? static_cast<int>(config_dat_.outlineThickness) : 0);
+			// Note: SDL_ttf outline color is not directly settable; it uses the main text color.
+			// For a different outline color, you'd render text twice (once for outline in outline color, then main text).
+			// This example uses the simpler TTF_SetFontOutline.
+	*/
+			float current_y_render_pos = 0.0f;
+			SDL_FRect line_render_rect = {0.0f, 0.0f, 0.0f, 0.0f};
+
+			for (size_t i = 0; i < lines_to_actually_render_in_texture; ++i)
+			{
+				const std::string &line_text = (i < wrapped_text_.size()) ? wrapped_text_[i] : ""; // Handle case where lines_to_actually_render_in_texture > wrapped_text_.size() (e.g. for blank space)
+
+				if (line_text.empty() && !(lines_to_actually_render_in_texture == 1 && current_text_attributes_.text.empty()))
+				{
+					// If it's an empty line (not the only line representing fully empty text), just advance Y
+					current_y_render_pos += actual_line_height_ + config_dat_.lineSpacing;
+					continue;
+				}
+				/*
+				// Use current_text_attributes_.text_color (can be changed by hover)
+				SDL_Surface *text_surface = TTF_RenderUTF8_Blended(font, line_text.c_str(), current_text_attributes_.text_color);
+				if (!text_surface)
+				{*/
+				FontSystem::Get().setFontAttributes({font_attributes_.font_file.c_str(), font_attributes_.font_style, font_attributes_.font_size}, 0);
+				auto line_texture_temp = FontSystem::Get().genTextTextureUnique(renderer, line_text.c_str(), current_text_attributes_.text_color);
+				if (!line_texture_temp.has_value())
+				{
+					GLogger.Log(Logger::Level::Warning, "TextBox Warning: SDL_CreateTextureFromSurface failed for line.");
+					current_y_render_pos += actual_line_height_ + config_dat_.lineSpacing;
+					continue;
+				}
+
+				int line_w_px, line_h_px;
+				SDL_QueryTexture(line_texture_temp.value().get(), nullptr, nullptr, &line_w_px, &line_h_px);
+
+				line_render_rect.y = current_y_render_pos;
+				line_render_rect.w = static_cast<float>(line_w_px);
+				line_render_rect.h = static_cast<float>(line_h_px); // Use actual rendered height of the line
+
+				switch (config_dat_.gravity)
+				{
+				case Gravity::Left:
+					line_render_rect.x = 0.0f;
+					break;
+				case Gravity::Center:
+					line_render_rect.x = (texture_w - line_render_rect.w) / 2.0f;
+					break;
+				case Gravity::Right:
+					line_render_rect.x = texture_w - line_render_rect.w;
+					break;
+				}
+				if (line_render_rect.x < 0)
+					line_render_rect.x = 0; // Ensure non-negative X
+
+				SDL_RenderCopyF(renderer, line_texture_temp.value().get(), nullptr, &line_render_rect);
+				// SDL_DestroyTexture(line_texture_temp);
+
+				current_y_render_pos += actual_line_height_ + config_dat_.lineSpacing;
+			}
+			GLogger.Log(Logger::Level::Info, "here final");
+			// Reset font styles if they were global for the TTF_Font object and you expect other users
+			// TTF_SetFontOutline(font, 0);
+			// TTF_SetFontStyle(font, TTF_STYLE_NORMAL);
+		}
+
+		bool isPointInside(const SDL_FPoint &point) const
+		{
+			// Check against the main bounds of the TextBox
+			return (point.x >= IView::bounds.x && point.x <= IView::bounds.x + IView::bounds.w &&
+					point.y >= IView::bounds.y && point.y <= IView::bounds.y + IView::bounds.h);
+		}
+
+		void handleMouseMove(const SDL_FPoint &mouse_pos)
+		{
+			bool currently_over = isPointInside(mouse_pos);
+			if (currently_over != mouse_is_over_)
+			{
+				mouse_is_over_ = currently_over;
+				if (config_dat_.highlightOnHover)
+				{
+					if (mouse_is_over_)
+					{
+						current_outline_color_ = config_dat_.onHoverOutlineColor;
+						current_bg_color_ = config_dat_.onHoverBgColor;
+						// Optionally change text color too
+						if (config_dat_.onHoverTextColor.a > 0)
+						{ // Check if hover text color is set
+							bool text_color_changed = !(current_text_attributes_.text_color.r == config_dat_.onHoverTextColor.r &&
+														current_text_attributes_.text_color.g == config_dat_.onHoverTextColor.g &&
+														current_text_attributes_.text_color.b == config_dat_.onHoverTextColor.b &&
+														current_text_attributes_.text_color.a == config_dat_.onHoverTextColor.a);
+							current_text_attributes_.text_color = config_dat_.onHoverTextColor;
+							if (text_color_changed && is_valid_)
+								regenerateTextTexture(); // Re-render if text color changes
+						}
+					}
+					else
+					{
+						current_outline_color_ = config_dat_.outlineColor;
+						current_bg_color_ = config_dat_.backgroundColor;
+						bool text_color_changed = !(current_text_attributes_.text_color.r == config_dat_.textAttributes.text_color.r &&
+													current_text_attributes_.text_color.g == config_dat_.textAttributes.text_color.g &&
+													current_text_attributes_.text_color.b == config_dat_.textAttributes.text_color.b &&
+													current_text_attributes_.text_color.a == config_dat_.textAttributes.text_color.a);
+						current_text_attributes_.text_color = config_dat_.textAttributes.text_color; // Revert to original
+						if (text_color_changed && is_valid_)
+							regenerateTextTexture();
+					}
+				}
+			}
+		}
+
+	protected:
+		// Internal state
+		TextBoxAttributes config_dat_;
+		FontAttributes font_attributes_;
+		TextAttributes current_text_attributes_; // For hover effects on text color
+		SDL_Color current_bg_color_;
+		SDL_Color current_outline_color_;
+
+		SharedTexture texture_ = nullptr;
+		std::deque<std::string> wrapped_text_;
+
+		SDL_FRect text_render_area_local_;		  // Text area relative to (0,0) of the texture (w,h for texture creation)
+		float text_render_area_abs_offset_x_ = 0; // Offset of text area from bounds.x
+		float text_render_area_abs_offset_y_ = 0; // Offset of text area from bounds.y
+
+		SDL_FRect dest_rect_on_screen_; // Where the (captured part of) texture is drawn on screen
+		SDL_FRect capture_src_;			// Which part of the texture_ to draw (for scrolling)
+
+		RectOutline outlineRect;
+
+		std::function<void(TextBox *)> onClickedCallback_ = nullptr;
+
+		bool is_valid_ = false; // Becomes true after a successful Build
+		bool mouse_is_over_ = false;
+		bool mouse_in_bounds_on_click_ = false; // To track if click started inside
+
+		float actual_line_height_ = 0.0f; // Calculated from TTF_FontLineSkip
+		uint32_t max_displayable_lines_ = 1;
+		float current_scroll_y_offset_px_ = 0.0f;
+
+		uint32_t id_ = 0; // If you need an ID
+	};
+} // namespace m1
+
+struct TextBoxAttributes
+{
+	Font mem_font = Font::RobotoBold;
+	SDL_FRect rect = {0.f, 0.f, 0.f, 0.f};
+	TextAttributes textAttributes = {"", {0x00, 0x00, 0x00, 0xff}, {0xff, 0xff, 0xff, 0xff}};
+	SDL_FRect margin = {0.f, 0.f, 0.f, 0.f};
+	std::string fontFile;
+	FontStyle fontStyle = FontStyle::Normal;
+	EdgeType edgeType = EdgeType::RECT;
+	uint32_t maxlines = 1;
+	TextWrapStyle textWrapStyle = TextWrapStyle::MAX_CHARS_PER_LN;
+	Gravity gravity = Gravity::Left;
+	float cornerRadius = 0.f;
+	int customFontstyle = 0x00;
+	float lineSpacing = 0.f;
+	float outline = 0.f;
+	bool isButton = false;
+	bool shrinkToFit = false;
+	bool useHaptics = false;
+	bool highlightOnHover = false;
+	SDL_Color outlineColor = {0x00, 0x00, 0x00, 0x00};
+	SDL_Color onHoverOutlineColor = {0x00, 0x00, 0x00, 0x00};
+	SDL_Color onHoverBgColor = {0x00, 0x00, 0x00, 0x00};
+	SDL_Color onHoverTxtColor = {0x00, 0x00, 0x00, 0x00};
+};
+
+class TextBox : public Context, public IView
+{
+public:
+	TextBox &setContext(Context *_context)
+	{
+		Context::setContext(_context);
+		Context::setView(this);
+		return *this;
+	}
+
+	TextBox &Build(Context *_context, const TextBoxAttributes &textboxAttr_)
+	{
+		Context::setContext(_context);
+		config_dat_ = textboxAttr_;
+		coner_radius_ = textboxAttr_.cornerRadius;
+		line_skip_ = textboxAttr_.lineSpacing;
+		isButton = textboxAttr_.isButton;
+		bounds = textboxAttr_.rect;
+		// outlineRect.Build(this, textboxAttr_.rect, textboxAttr_.outline, textboxAttr_.conerRadius, textboxAttr_.textAttributes.bg_color, textboxAttr_.outlineColor);
+
+		text_rect_ = {to_cust(textboxAttr_.margin.x, bounds.w),
+					  to_cust(textboxAttr_.margin.y, bounds.h),
+					  to_cust(100.f - (textboxAttr_.margin.w + textboxAttr_.margin.x), bounds.w),
+					  to_cust(100.f - (textboxAttr_.margin.h + textboxAttr_.margin.y), bounds.h)};
+		text_attributes_ = textboxAttr_.textAttributes;
+		font_attributes_.font_file = textboxAttr_.fontFile;
+		font_attributes_.font_style = textboxAttr_.fontStyle;
+		// font_attributes_.font_size = static_cast<uint8_t>(to_cust(95.f, text_rect_.h));
+		font_attributes_.font_size = static_cast<uint8_t>(text_rect_.h);
+		custom_fontstyle_ = textboxAttr_.customFontstyle;
+		max_lines_ = textboxAttr_.maxlines;
+		edge_type_ = textboxAttr_.edgeType;
+		text_wrap_style_ = textboxAttr_.textWrapStyle;
+		gravity_ = textboxAttr_.gravity;
+		shrink_to_fit = textboxAttr_.shrinkToFit;
+		wrapped_text_.clear();
+
+		TTF_Font *font = getFont();
+		if (!font)
+		{
+			GLogger.Log(Logger::Level::Info, "TextBox::getFont Error: Font not available.");
+			return *this;
+		}
+		int m_width_px = 0;
+		if (TTF_GlyphMetrics(font, 'a', nullptr, nullptr, nullptr, nullptr, &m_width_px) != 0)
+		{
+			m_width_px = text_rect_.h / 2; // Fallback if metrics fail
+		}
+		m_width_px = text_rect_.h / 2;
+		if (m_width_px == 0)
+			m_width_px = 1; // Avoid division by zero
+
+		max_displayable_chars_per_ln_ = static_cast<uint32_t>(text_rect_.w / m_width_px);
+		if (text_attributes_.text.size() < max_displayable_chars_per_ln_)
+		{
+			wrapped_text_.emplace_back(text_attributes_.text);
+		}
+		else
+		{
+			if (text_wrap_style_ == TextWrapStyle::MAX_WORDS_PER_LN)
+			{
+				TextProcessor::Get().wrap_by_word_unicode(text_attributes_.text, &wrapped_text_, " ,-_?\./:;|}[]())!",
+														  max_displayable_chars_per_ln_, max_lines_);
+			}
+			else
+			{
+				TextProcessor::Get().wrap_max_char_unicode(text_attributes_.text, &wrapped_text_, max_displayable_chars_per_ln_, max_lines_);
+			}
+		}
+		/*if(max_displayable_chars_per_ln_<text_attributes_.text.size()){
+				wrapped_text_.back() = wrapped_text_.back().replace(wrapped_text_.back().begin()+ (wrapped_text_.back().size()-3), wrapped_text_.back().end(),"...");
+			}*/
+		max_displayable_lines_ = std::clamp(static_cast<uint32_t>(std::floorf(bounds.h / text_rect_.h)), (uint32_t)1, (uint32_t)1000000);
+		capture_src_ = {0.f, 0.f, text_rect_.w, text_rect_.h * std::clamp((float)wrapped_text_.size(), 1.f, (float)max_displayable_lines_)};
+		dest_src_ = text_rect_;
+		dest_src_.h = capture_src_.h;
+		dest_src_.x += bounds.x;
+		dest_src_.y += bounds.y;
+
+		this->texture_.reset();
+		// CacheRenderTarget crt_(renderer);
+		this->texture_ = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
+											 SDL_TEXTUREACCESS_TARGET, static_cast<int>(text_rect_.w),
+											 static_cast<int>(text_rect_.h * wrapped_text_.size()));
+
+		outlineRect.Build(this, {textboxAttr_.rect.x, textboxAttr_.rect.y, textboxAttr_.rect.w, textboxAttr_.rect.h /* capture_src_.w, capture_src_.h*/}, textboxAttr_.outline, textboxAttr_.cornerRadius, textboxAttr_.textAttributes.bg_color, textboxAttr_.outlineColor);
+
+		// SDL_SetTextureBlendMode(this->texture_.get(), SDL_BLENDMODE_BLEND);
+		// SDL_SetRenderTarget(renderer, this->texture_.get());
+		// RenderClear(renderer, 0, 0, 0, 0);
+		// FontSystem::Get().setFontAttributes({ font_attributes_.font_file.c_str(), font_attributes_.font_style, font_attributes_.font_size, 0.f }, custom_fontstyle_);
+		try
+		{
+			genText();
+		}
+		catch (std::exception e)
+		{
+			GLogger.Log(Logger::Level::Error,e.what());
+		}
+		return *this;
+	}
+
+public:
+	void draw() override
+	{
+		if (hidden)return;
+		/*SDL_SetRenderDrawColor(renderer, text_attributes_.bg_color.r, text_attributes_.bg_color.g, text_attributes_.bg_color.b, text_attributes_.bg_color.a);
+			RenderFillRect(renderer, &dest_);*/
+		outlineRect.draw();
+		// fillRoundedRectF(renderer, dest_, coner_radius_, text_attributes_.bg_color);
+		// RenderTexture(renderer, texture_.get(), NULL, &dest_src_);
+		RenderTexture(renderer, texture_.get(), &capture_src_, &dest_src_);
+		// SDL_Log("d:%f,%f,%f,%f",dest_src_.x,dest_src_.y,dest_src_.w,dest_src_.h);
+		// SDL_Log("s:%f,%f,%f,%f",capture_src_.x,capture_src_.y,capture_src_.w,capture_src_.h);
+		//  return *this;
+	}
+
+	TextBox &onClick(std::function<bool(TextBox *)> _on_clicked_callback) noexcept
+	{
+		onClickedCallback_ = _on_clicked_callback;
+		return *this;
+	}
+
+	constexpr inline TextBox &setConerRadius(const float &cr_) noexcept
+	{
+		this->coner_radius_ = cr_;
+		return *this;
+	}
+
+	TextBox &setId(const uint32_t &_id) noexcept
+	{
+		this->id_ = _id;
+		return *this;
+	}
+
+	SDL_FRect &getBounds()
+	{
+		return bounds;
+	}
+
+	float getRealPosX() { return pv->getRealX() + bounds.x; }
+
+	float getRealPosY() { return pv->getRealY() + bounds.y; }
+
+	inline const SDL_FRect &getBoundsConst() const noexcept
+	{
+		return this->bounds;
+	}
+
+	TextBox &setPos(const float x, const float y)
+	{
+		return *this;
+	}
+
+	inline void updatePosBy(float x, float y) override
+	{
+		update_pos_internal(x, y, false);
+		// return *this;
+	}
+
+	TextBox &updatePosByAnimated(const float x, const float y)
+	{
+		update_pos_internal(x, y, true);
+		return *this;
+	}
+
+	std::string getText() const
+	{
+		return this->text_attributes_.text;
+	}
+
+	bool isEnabled() const
+	{
+		return is_enabled_;
+	}
+
+	void setEnabled(const bool &_enabled)
+	{
+		is_enabled_ = _enabled;
+	}
+
+	uint32_t getId() const
+	{
+		return this->id_;
+	}
+
+	TextBox &updateTextColor(const SDL_Color &bgColor, const SDL_Color &outlineColor, const SDL_Color &textColor)
+	{
+		text_attributes_.bg_color = bgColor;
+		text_attributes_.text_color = textColor;
+		outlineRect.color = bgColor;
+		outlineRect.outline_color = outlineColor;
+
+		CacheRenderTarget crt_(renderer);
+		SDL_SetRenderTarget(renderer, this->texture_.get());
+		SDL_SetTextureBlendMode(this->texture_.get(), SDL_BLENDMODE_BLEND);
+		RenderClear(renderer, 0, 0, 0, 0);
+		const SDL_FRect cache_text_rect = text_rect_;
+		int tmp_sw = 0, tmp_sh = 0;
+		text_rect_.y = 0.f;
+		text_rect_.x = 0.f;
+
+		TTF_Font *tmpFont = nullptr;
+		if (font_attributes_.font_file.empty())
+		{
+			Fonts[config_dat_.mem_font]->font_size = font_attributes_.font_size;
+			font_attributes_.font_file = Fonts[config_dat_.mem_font]->font_name;
+			tmpFont = FontSystem::Get().getFont(*Fonts[config_dat_.mem_font]);
+		}
+		else
+		{
+			tmpFont = FontSystem::Get().getFont(font_attributes_.font_file, font_attributes_.font_size);
+		}
+		const float fa_ = static_cast<float>(TTF_FontDescent(tmpFont));
+		FontSystem::Get().setFontAttributes({font_attributes_.font_file.c_str(), font_attributes_.font_style, font_attributes_.font_size}, custom_fontstyle_);
+		for (auto const &line_ : wrapped_text_)
+		{
+			auto textTex = FontSystem::Get().genTextTextureUnique(renderer, line_.c_str(), this->text_attributes_.text_color);
+			if (textTex.has_value())
+			{
+				SDL_QueryTexture(textTex.value().get(), nullptr, nullptr, &tmp_sw, &tmp_sh);
+				// SDL_Log("TW: %d, TH: %d", tmp_sw, tmp_sh);
+				text_rect_.w = static_cast<float>(tmp_sw);
+				// text_rect_.h = (float)(tmp_sh);
+				text_rect_.w = std::clamp(text_rect_.w, 0.f, cache_text_rect.w);
+
+				if (max_lines_ == 1)
+				{
+					if (gravity_ == Gravity::Center)
+					{
+						text_rect_.x = ((cache_text_rect.w - text_rect_.w) / 2.f);
+					}
+					if (shrink_to_fit)
+					{
+						float final_rad = 1.f;
+						if (bounds.h > bounds.w)
+						{
+							final_rad = ((coner_radius_ / 2.f) * bounds.w) / 100.f;
+						}
+						else if (bounds.h <= bounds.w)
+						{
+							final_rad = ((coner_radius_ / 2.f) * bounds.h) / 100.f;
+						}
+						// dest_.x = dest_.x + (text_rect_.x - final_rad);
+						// dest_.w = text_rect_.w + (final_rad * 2.f);
+					}
+				}
+				RenderTexture(renderer, textTex.value().get(), nullptr, &text_rect_);
+				text_rect_.y += line_skip_ + text_rect_.h;
+			}
+			else
+				break;
+		}
+		text_rect_ = cache_text_rect;
+		crt_.release(renderer);
+		return *this;
+	}
+
+	TextBox &updateText(const std::string new_text)
+	{
+		text_attributes_.text = new_text;
+		wrapped_text_.clear();
+		if (text_wrap_style_ == TextWrapStyle::MAX_WORDS_PER_LN)
+		{
+			TextProcessor::Get().wrap_by_word_unicode(
+				text_attributes_.text, &wrapped_text_, " ,-_?\./:;|}[]())!",
+				max_displayable_chars_per_ln_, max_lines_);
+		}
+		else
+		{
+			TextProcessor::Get().wrap_max_char_unicode(
+				text_attributes_.text, &wrapped_text_, max_displayable_chars_per_ln_, max_lines_);
+		}
+		try
+		{
+			genText();
+		}
+		catch (std::exception e)
+		{
+			std::cout << e.what();
+		}
+		return *this;
+	}
+
+	void resolveTextureReset()
+	{
+		// this->Build(this, config_dat_);
+		updateTextColor(config_dat_.textAttributes.bg_color, config_dat_.outlineColor, config_dat_.textAttributes.text_color);
+	}
+
+	bool handleEvent()
+	{
+		// SDL_Log("tb handle event");
+		bool result = false;
+		switch (event->type)
+		{
+		case EVT_RENDER_TARGETS_RESET:
+			resolveTextureReset();
+			result = true;
+			break;
+		case EVT_MOUSE_BTN_DOWN:
+			if (onClick(event->button.x, event->button.y))
+			{
+				mouse_in_bound_ = true, result = true;
+				if (config_dat_.useHaptics)
+					haptics->play_effect();
+			}
+			else
+				mouse_in_bound_ = false;
+			break;
+		case EVT_MOUSE_MOTION:
+			if (onClick(event->motion.x, event->motion.y))
+			{
+				mouse_in_bound_ = true;
+				if (config_dat_.highlightOnHover)
+				{
+					outlineRect.outline_color = config_dat_.onHoverOutlineColor;
+					outlineRect.color = config_dat_.onHoverBgColor;
+				}
+			}
+			else
+			{
+				mouse_in_bound_ = false;
+				if (config_dat_.highlightOnHover)
+				{
+					outlineRect.outline_color = config_dat_.outlineColor;
+					outlineRect.color = text_attributes_.bg_color;
+				}
+			}
+			break; /*
+			 case EVT_MOUSE_BTN_UP:
 				 if (onClick(event->motion.x, event->motion.y)) {
 					 if (isButton)result = true;
 					 if (onClickedCallback_!=nullptr) {
@@ -4999,65 +6191,68 @@ namespace Volt
 				 }
 				 mouse_in_bound_ = false;
 				 break;*/
-			case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
-			case SDL_EVENT_WINDOW_MAXIMIZED:
-				config_dat_.rect =
-					{
-						DisplayInfo::Get().toUpdatedWidth(config_dat_.rect.x),
-						DisplayInfo::Get().toUpdatedHeight(config_dat_.rect.y),
-						DisplayInfo::Get().toUpdatedWidth(config_dat_.rect.w),
-						DisplayInfo::Get().toUpdatedHeight(config_dat_.rect.h),
-					};
-				this->Build(this, config_dat_);
-				break;
-			case SDL_EVENT_FINGER_UP:
-				if (onClick(event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.y * DisplayInfo::Get().RenderH))
+		case EVT_WPSC:
+		case EVT_WMAX:
+			config_dat_.rect =
 				{
-					if (isButton)
-						result = true;
-					if (onClickedCallback_)
-					{
-						result = true;
-						onClickedCallback_(this);
-					}
+					DisplayInfo::Get().toUpdatedWidth(config_dat_.rect.x),
+					DisplayInfo::Get().toUpdatedHeight(config_dat_.rect.y),
+					DisplayInfo::Get().toUpdatedWidth(config_dat_.rect.w),
+					DisplayInfo::Get().toUpdatedHeight(config_dat_.rect.h),
+				};
+			this->Build(this, config_dat_);
+			break;
+		case EVT_FINGER_UP:
+			if (onClick(event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.y * DisplayInfo::Get().RenderH))
+			{
+				if (isButton)
+					result = true;
+				if (onClickedCallback_)
+				{
+					result = onClickedCallback_(this);
 				}
-				mouse_in_bound_ = false;
-				break;
 			}
-			return result;
+			mouse_in_bound_ = false;
+			break;
 		}
+		return result;
+	}
 
-	private:
-		void genText()
+private:
+	TTF_Font *getFont()
+	{
+		if (font_attributes_.font_file.empty())
 		{
-			CacheRenderTarget crt_(renderer);
-			SDL_SetTextureBlendMode(this->texture_.get(), SDL_BLENDMODE_BLEND);
-			SDL_SetRenderTarget(renderer, this->texture_.get());
-			renderClear(renderer, 0, 0, 0, 0);
-			const SDL_FRect cache_text_rect = text_rect_;
-			int tmp_sw = 0, tmp_sh = 0;
-			text_rect_.y = 0.f;
-			text_rect_.x = 0.f;
-			TTF_Font *tmpFont = nullptr;
+			// SDL_Log("TX: %s,     ws: %d", text_attributes_.text.c_str(),wrapped_text_.size());
+			Fonts[config_dat_.mem_font]->font_size = font_attributes_.font_size;
+			font_attributes_.font_file = Fonts[config_dat_.mem_font]->font_name;
+			return FontSystem::Get().getFont(*Fonts[config_dat_.mem_font]);
+		}
+		else
+		{
+			return FontSystem::Get().getFont(font_attributes_.font_file, font_attributes_.font_size);
+		}
+	}
 
-			if (font_attributes_.font_file.empty())
-			{
-				Fonts[config_dat_.mem_font]->font_size = font_attributes_.font_size;
-				font_attributes_.font_file = Fonts[config_dat_.mem_font]->font_name;
-				tmpFont = FontSystem::Get().getFont(*Fonts[config_dat_.mem_font]);
-			}
-			else
-			{
-				tmpFont = FontSystem::Get().getFont(font_attributes_.font_file, font_attributes_.font_size);
-			}
+	void genText()
+	{
+		CacheRenderTarget crt_(renderer);
+		SDL_SetTextureBlendMode(this->texture_.get(), SDL_BLENDMODE_BLEND);
+		SDL_SetRenderTarget(renderer, this->texture_.get());
+		RenderClear(renderer, 0, 0, 0, 0);
+		const SDL_FRect cache_text_rect = text_rect_;
+		int tmp_sw = 0, tmp_sh = 0, i = 0;
+		text_rect_.y = 0.f;
+		text_rect_.x = 0.f;
+		TTF_Font *tmpFont = getFont();
 
-			const auto fa_ = static_cast<float>(TTF_FontAscent(tmpFont));
-			const auto fd_ = static_cast<float>(TTF_FontDescent(tmpFont));
+		const auto fa_ = static_cast<float>(TTF_FontAscent(tmpFont));
+		const auto fd_ = static_cast<float>(TTF_FontDescent(tmpFont));
 
-			FontSystem::Get().setFontAttributes(std::move(FontAttributes{font_attributes_.font_file.c_str(), font_attributes_.font_style, font_attributes_.font_size}), custom_fontstyle_);
-			for (auto const &line_ : wrapped_text_)
-			{
-				/*
+		FontSystem::Get().setFontAttributes(std::move(FontAttributes{font_attributes_.font_file.c_str(), font_attributes_.font_style, font_attributes_.font_size}), custom_fontstyle_);
+		for (auto const &line_ : wrapped_text_)
+		{
+			/*
 				auto start_ = std::chrono::system_clock::now();
 				{
 					auto textTex = FontSystem::Get().genTextTextureUnique(renderer, line_.c_str(), this->text_attributes_.text_color);
@@ -5068,775 +6263,493 @@ namespace Volt
 				auto textTex = FontSystem::Get().genTextTextureUniqueV2(renderer, line_.c_str(), this->text_attributes_.text_color,text_rect_.w, text_rect_.h,true);
 				std::chrono::duration<double> dt = std::chrono::system_clock::now() - start_;
 				std::cout << "ntlt:" << dt.count() << std::endl;*/
-				auto textTex = FontSystem::Get().genTextTextureUnique(renderer, line_.c_str(), this->text_attributes_.text_color);
-				if (textTex.has_value())
-				{
-					SDL_QueryTexture(textTex.value().get(), nullptr, nullptr, &tmp_sw, &tmp_sh);
-					// SDL_Log("TW: %d, TH: %d", tmp_sw, tmp_sh);
-					text_rect_.w = static_cast<float>(tmp_sw);
-					// std::cout << "TT: " <<tmp_sh<< " - FA: " << fa_ << " - FD: " << fd_ << std::endl;
-					// text_rect_.h = static_cast<float>(tmp_sh);
-					// text_rect_.h = std::clamp(text_rect_.h, 0.f, text_rect_.h);
-					// text_rect_.w = std::clamp(text_rect_.w, 0.f, cache_text_rect.w);
-					if (static_cast<float>(tmp_sh) > text_rect_.h)
-						text_rect_.y += fd_, text_rect_.h = static_cast<float>(tmp_sh);
+			// SDL_Log("TXL: %s", line_.c_str());
 
-					if (max_lines_ == 1)
-					{
-						if (gravity_ == Gravity::Center)
-						{
-							text_rect_.x = ((cache_text_rect.w - text_rect_.w) / 2.f);
-						}
-						if (shrink_to_fit)
-						{
-							float final_rad = 1.f;
-							if (bounds.h > bounds.w)
-							{
-								final_rad = ((coner_radius_ / 2.f) * bounds.w) / 100.f;
-							}
-							else if (bounds.h <= bounds.w)
-							{
-								final_rad = ((coner_radius_ / 2.f) * bounds.h) / 100.f;
-							}
-							bounds.x = bounds.x + (text_rect_.x - final_rad);
-							bounds.w = text_rect_.w + (final_rad * 2.f);
-							outlineRect.rect.x = outlineRect.rect.x + (text_rect_.x - final_rad);
-							outlineRect.rect.w = text_rect_.w + (final_rad * 2.f);
-						}
-					}
-					SDL_RenderTexture(renderer, textTex.value().get(), nullptr, &text_rect_);
-					text_rect_.y += line_skip_ + text_rect_.h;
-					text_rect_.y += fd_;
-				}
-				else
-					break;
-			}
-			text_rect_ = cache_text_rect;
-			if (max_lines_ > 1)
+			auto textTex = FontSystem::Get().genTextTextureUnique(renderer, line_.c_str(), this->text_attributes_.text_color);
+			if (textTex.has_value())
 			{
-				if (shrink_to_fit)
+				SDL_QueryTexture(textTex.value().get(), nullptr, nullptr, &tmp_sw, &tmp_sh);
+				// SDL_Log("TW: %d, TH: %d", tmp_sw, tmp_sh);
+				text_rect_.w = static_cast<float>(tmp_sw);
+				// std::cout << "TT: " <<tmp_sh<< " - FA: " << fa_ << " - FD: " << fd_ << std::endl;
+				text_rect_.h = static_cast<float>(tmp_sh);
+				// text_rect_.h = std::clamp(text_rect_.h, 0.f, text_rect_.h);
+				text_rect_.w = std::clamp(text_rect_.w, 0.f, cache_text_rect.w);
+				if (static_cast<float>(tmp_sh) > text_rect_.h)
+					text_rect_.y += fd_, text_rect_.h = static_cast<float>(tmp_sh);
+
+				if (max_lines_ == 1)
 				{
-					float final_rad = 1.f;
-					if (bounds.h > bounds.w)
+					if (gravity_ == Gravity::Center)
 					{
-						final_rad = ((coner_radius_ / 2.f) * bounds.w) / 100.f;
+						text_rect_.x = ((cache_text_rect.w - text_rect_.w) / 2.f);
 					}
-					else if (bounds.h <= bounds.w)
+					if (gravity_ == Gravity::Right)
 					{
-						final_rad = ((coner_radius_ / 2.f) * bounds.h) / 100.f;
+						text_rect_.x = ((cache_text_rect.w - text_rect_.w));
 					}
-					bounds.x = bounds.x + (text_rect_.x - final_rad);
-					bounds.w = text_rect_.w + (final_rad * 2.f);
-					outlineRect.rect.x = outlineRect.rect.x + (text_rect_.x - final_rad);
-					outlineRect.rect.w = text_rect_.w + (final_rad * 2.f);
+					if (shrink_to_fit)
+					{
+						float final_rad = 1.f;
+						if (bounds.h > bounds.w)
+						{
+							final_rad = ((coner_radius_ / 2.f) * bounds.w) / 100.f;
+						}
+						else if (bounds.h <= bounds.w)
+						{
+							final_rad = ((coner_radius_ / 2.f) * bounds.h) / 100.f;
+						}
+						bounds.x = bounds.x + (text_rect_.x - final_rad);
+						bounds.w = text_rect_.w + (final_rad * 2.f);
+						outlineRect.rect.x = outlineRect.rect.x + (text_rect_.x - final_rad);
+						outlineRect.rect.w = text_rect_.w + (final_rad * 2.f);
+					}
 				}
+				RenderTexture(renderer, textTex.value().get(), nullptr, &text_rect_);
+				text_rect_.y += line_skip_ + text_rect_.h;
+				text_rect_.y += fd_;
 			}
+			else
+				break;
+			//++i;
+			// if (i >= max_lines_)
+			//	break;
+		}
+		text_rect_ = cache_text_rect;
+		if (max_lines_ > 1)
+		{
+			if (shrink_to_fit)
+			{
+				float final_rad = 1.f;
+				if (bounds.h > bounds.w)
+				{
+					final_rad = ((coner_radius_ / 2.f) * bounds.w) / 100.f;
+				}
+				else if (bounds.h <= bounds.w)
+				{
+					final_rad = ((coner_radius_ / 2.f) * bounds.h) / 100.f;
+				}
+				bounds.x = bounds.x + (text_rect_.x - final_rad);
+				bounds.w = text_rect_.w + (final_rad * 2.f);
+				outlineRect.rect.x = outlineRect.rect.x + (text_rect_.x - final_rad);
+				outlineRect.rect.w = text_rect_.w + (final_rad * 2.f);
+			}
+		}
+		crt_.release(renderer);
+	}
+
+protected:
+	template <typename T>
+	bool onClick(T x, T y, unsigned short axis = 0)
+	{
+		[[likely]] if (axis == 0)
+		{
+			if (x < pv->getRealX() + bounds.x || x > (pv->getRealX() + bounds.x + bounds.w) || y < pv->getRealY() + bounds.y ||
+				y > (pv->getRealY() + bounds.y + bounds.h))
+				return false;
+		}
+		else if (axis == 1 /*x-axis only*/)
+		{
+			if (x < bounds.x || x > (bounds.x + bounds.w))
+				return false;
+		}
+		else if (axis == 2 /*y-axis only*/)
+		{
+			if (y < bounds.y || y > (bounds.y + bounds.h))
+				return false;
+		}
+		return true;
+	}
+
+	inline void update_pos_internal(const float &x, const float &y, const bool &_is_animated) noexcept
+	{
+		bounds.x += x, bounds.y += y;
+		dest_src_.x += x, dest_src_.y += y;
+		config_dat_.rect.x += x, config_dat_.rect.y += y;
+		outlineRect.rect.x += x, outlineRect.rect.y += y;
+	}
+
+protected:
+	SDL_FRect text_rect_, dest_src_, capture_src_;
+	RectOutline outlineRect;
+	SharedTexture texture_;
+	ImageButton image_button_;
+	std::deque<std::string> wrapped_text_;
+	std::function<bool(TextBox *)> onClickedCallback_;
+	EdgeType edge_type_;
+	Gravity gravity_;
+	TextWrapStyle text_wrap_style_;
+	TextAttributes text_attributes_;
+	FontAttributes font_attributes_;
+	TextBoxAttributes config_dat_;
+	bool isButton = false, is_enabled_, highlight_on_mouse_hover_, mouse_in_bound_, shrink_to_fit;
+	float margin_ = 0.f, line_skip_ = 0.f, coner_radius_ = 0.f;
+	uint32_t id_, max_displayable_chars_per_ln_, max_displayable_lines_ = 1, max_lines_ = 1;
+	int custom_fontstyle_ = TTF_STYLE_NORMAL;
+};
+
+
+
+
+class CharStore :public Context {
+public:
+	CharStore() = default;
+	void setProps(Context* cntx, FontAttributes& fa, int _custom_ft_style = 0) {
+		Context::setContext(cntx);
+		fattr = fa;
+		custom_ft_style = _custom_ft_style;
+	}
+
+	SDL_Texture* getChar(std::string& _txt, SDL_Color& color) {
+		if (_txt.empty()) {
+			GLogger.Log(Logger::Level::Error, "CharStore::getChar invoked with empty string!");
+			return nullptr;
+		}
+		if (not char_textures.contains(_txt)) {
+			FontSystem::Get().setFontAttributes(fattr, custom_ft_style);
+			auto textTex = FontSystem::Get().genTextTextureRaw(renderer, _txt.c_str(), color);
+			if (textTex != nullptr) {
+				char_textures[_txt] = textTex;
+			}
+			else {
+				GLogger.Log(Logger::Level::Error, "CharStore::getChar::genText returned null!");
+				return nullptr;
+			}
+		}
+		return char_textures[_txt];
+	}
+
+	~CharStore() {
+		for (auto& [text, texture] : char_textures) {
+			SDL_DestroyTexture(texture);
+		}
+	}
+private:
+	std::unordered_map<std::string, SDL_Texture*> char_textures{};
+	FontAttributes fattr{};
+	int custom_ft_style = 0;
+};
+
+struct EditBoxAttributes
+{
+	SDL_FRect rect = {0.f, 0.f, 80.f, 30.f};
+	SDL_FRect placeholderRect = {10.f, 5.f, 80.f, 90.f};
+	TextAttributes textAttributes = {"", {0x00, 0x00, 0x00, 0xff}, {0xff, 0xff, 0xff, 0xff}};
+	TextAttributes placeholderTextAttributes = {"", {0x00, 0x00, 0x00, 0xff}, {0xff, 0xff, 0xff, 0xff}};
+	SDL_FRect margin = {0.f, 0.f, 100.f, 100.f};
+	Font mem_font = Font::RobotoBold;
+	std::string fontFile;
+	Font placeholder_mem_font = Font::RobotoBold;
+	std::string placeholderFontFile;
+	FontStyle fontStyle = FontStyle::Normal;
+	FontStyle defaultTxtFontStyle = FontStyle::Normal;
+	float line_height = 0.f;
+	EdgeType edgeType;
+	uint32_t maxlines = 1;
+	// max text size in code points
+	uint32_t maxTextSize = 1024000;
+	TextWrapStyle textWrapStyle = TextWrapStyle::MAX_CHARS_PER_LN;
+	Gravity gravity = Gravity::Left;
+	float cornerRadius = 0.f;
+	int customFontstyle = 0x00;
+	float lineSpacing = 0.f;
+	float outline = 0.f;
+	bool highlightOnHover = false;
+	SDL_Color outlineColor = {0x00, 0x00, 0x00, 0x00};
+	SDL_Color cursorColor = {0x00, 0x00, 0x00, 0xff};
+	SDL_Color onHoverOutlineColor = {0x00, 0x00, 0x00, 0x00};
+	SDL_Color onHoverBgColor = {0x00, 0x00, 0x00, 0x00};
+	SDL_Color onHoverTxtColor = {0x00, 0x00, 0x00, 0x00};
+	uint32_t cursorSpeed = 500;
+};
+
+
+class EditBox : public Context, public IView
+{
+public:
+	EditBox() = default;
+	int32_t id = (-1);
+
+	EditBox& registerOnTextInputCallback(std::function<void(EditBox&)> _onTextInputCallback)
+	{
+		onTextInputCallback = _onTextInputCallback;
+		return *this;
+	}
+
+	EditBox& onTextInputFilter(std::function<void(EditBox&, std::string&)> _onTextInputFilterCallback)
+	{
+		onTextInputFilterCallback = _onTextInputFilterCallback;
+		return *this;
+	}
+
+	EditBox& Build(Context* _context, EditBoxAttributes& _attr)
+	{
+		Context::setContext(_context);
+		adaptiveVsyncHD.setAdaptiveVsync(adaptiveVsync);
+		IView::type = "editbox";
+		bounds = _attr.rect;
+		textRect = {
+			bounds.x + to_cust(_attr.margin.x, bounds.w),
+			bounds.y + to_cust(_attr.margin.y, bounds.h),
+			to_cust(_attr.margin.w, bounds.w),
+			to_cust(_attr.margin.h, bounds.h),
+		};
+		finalTextRect = textRect;
+		line_height = std::clamp(_attr.line_height,0.f,255.f);
+		if (line_height == 0.f) {
+			line_height = textRect.h;
+		}
+
+		cornerRadius = _attr.cornerRadius;
+		textAttributes = _attr.textAttributes;
+		fontAttributes = { _attr.fontFile, _attr.fontStyle, static_cast<uint8_t>(line_height) };
+		maxCodePointsPerLn = static_cast<uint32_t>(textRect.w / (textRect.h / 2.f));
+		place_holder_text = _attr.placeholderTextAttributes.text;
+
+		cursor.setContext(getContext());
+		cursor.setColor(_attr.cursorColor);
+		cursor.setBlinkTm(_attr.cursorSpeed);
+		cursor.setRect({ textRect.x, textRect.y, to_cust(10.f, textRect.h), textRect.h });
+
+		TTF_Font* tmpFont = nullptr;
+
+		if (fontAttributes.font_file.empty())
+		{
+			Fonts[_attr.mem_font]->font_size = fontAttributes.font_size;
+			fontAttributes.font_file = Fonts[_attr.mem_font]->font_name;
+			tmpFont = FontSystem::Get().getFont(*Fonts[_attr.mem_font]);
+		}
+
+		charStore.setProps(getContext(), fontAttributes, _attr.customFontstyle);
+
+		maxTextSize = _attr.maxTextSize;
+		if (not _attr.placeholderTextAttributes.text.empty())
+		{
+			dflTxtRect =
+			{
+				bounds.x + to_cust(_attr.placeholderRect.x, bounds.w),
+				bounds.y + to_cust(_attr.placeholderRect.y, bounds.h),
+				to_cust(_attr.placeholderRect.w, bounds.w),
+				to_cust(_attr.placeholderRect.h, bounds.h),
+			};
+
+			FontAttributes plhFontAttr{
+				_attr.placeholderFontFile.c_str(), _attr.defaultTxtFontStyle, static_cast<uint8_t>(dflTxtRect.h) };
+
+			if (plhFontAttr.font_file.empty())
+			{
+				Fonts[_attr.placeholder_mem_font]->font_size = plhFontAttr.font_size;
+				plhFontAttr.font_file = Fonts[_attr.placeholder_mem_font]->font_name;
+				tmpFont = FontSystem::Get().getFont(*Fonts[_attr.placeholder_mem_font]);
+				//GLogger.Log(Logger::Level::Info, "place holder:", _attr.placeholderTextAttributes.text.c_str(), plhFontAttr.font_file);
+			}
+
+			FontSystem::Get().setFontAttributes({ plhFontAttr.font_file.c_str(), plhFontAttr.font_style, plhFontAttr.font_size }, 0);
+			auto textTex = FontSystem::Get().genTextTextureUnique(renderer, _attr.placeholderTextAttributes.text.c_str(), _attr.placeholderTextAttributes.text_color);
+
+			int test_w, test_h;
+			SDL_QueryTexture(textTex.value().get(), nullptr, nullptr, &test_w, &test_h);
+			if ((int)(test_w) < dflTxtRect.w)
+			{
+				dflTxtRect.w = (float)(test_w);
+			}
+			if (static_cast<float>(test_h) >= dflTxtRect.h)
+			{
+				dflTxtRect.y += static_cast<float>(TTF_FontDescent(tmpFont)); /*FontSystem::Get().getFont(_attr.placeholderFontFile, static_cast<int>(dflTxtRect.h))));*/
+				dflTxtRect.h = static_cast<float>(test_h);
+			}
+			//GLogger.Log(Logger::Level::Info, "real pos:", pv->getRealX(), pv->getRealY());
+			//GLogger.Log(Logger::Level::Info, "bounds rect{", bounds.x, bounds.y, bounds.w, bounds.h, "}");
+			//GLogger.Log(Logger::Level::Info, "dflt txt rect{", dflTxtRect.x, dflTxtRect.y, dflTxtRect.w, dflTxtRect.h, "}");
+
+			SDL_FRect dflSrc = { 0.f, 0.f, dflTxtRect.w, (float)test_h };
+			SDL_FRect dflDst = { 0.f, 0.f, dflTxtRect.w, dflTxtRect.h };
+
+			dflTxtTexture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
+				SDL_TEXTUREACCESS_TARGET, static_cast<int>(dflTxtRect.w), static_cast<int>(dflTxtRect.h));
+			CacheRenderTarget crt_(renderer);
+			SDL_SetRenderTarget(renderer, dflTxtTexture.get());
+			SDL_SetTextureBlendMode(dflTxtTexture.get(), SDL_BLENDMODE_BLEND);
+			RenderClear(renderer, 0, 0, 0, 0);
+			RenderTexture(renderer, textTex.value().get(), &dflSrc, &dflDst);
 			crt_.release(renderer);
 		}
+		outlineColor = _attr.outlineColor;
+		onHoverOutlineColor = _attr.onHoverOutlineColor;
+		highlightOnHover = _attr.highlightOnHover;
+		onHoverBgColor = _attr.onHoverBgColor;
+		outlineRect.Build(this, bounds, _attr.outline, cornerRadius, textAttributes.bg_color, _attr.outlineColor);
 
-	protected:
-		SDL_FRect text_rect_, dest_src_, capture_src_;
-		RectOutline outlineRect;
-		SharedTexture texture_;
-		ImageButton image_button_;
-		std::deque<std::string> wrapped_text_;
-		std::function<void(TextBox *)> onClickedCallback_;
-		EdgeType edge_type_;
-		Gravity gravity_;
-		TextWrapStyle text_wrap_style_;
-		TextAttributes text_attributes_;
-		FontAttributes font_attributes_;
-		TextBoxAttributes config_dat_;
-		bool isButton = false, is_enabled_, highlight_on_mouse_hover_, mouse_in_bound_, shrink_to_fit;
-		float margin_ = 0.f, line_skip_ = 0.f, coner_radius_ = 0.f;
-		uint32_t id_, max_displayable_chars_per_ln_, max_displayable_lines_ = 1, max_lines_ = 1;
-		int custom_fontstyle_ = TTF_STYLE_NORMAL;
-
-		template <typename T>
-		bool onClick(T x, T y, unsigned short axis = 0)
-		{
-			[[likely]] if (axis == 0)
-			{
-				if (x < pv->bounds.x + bounds.x || x > (pv->bounds.x + bounds.x + bounds.w) || y < pv->bounds.y + bounds.y ||
-					y > (pv->bounds.y + bounds.y + bounds.h))
-					return false;
-			}
-			else if (axis == 1 /*x-axis only*/)
-			{
-				if (x < bounds.x || x > (bounds.x + bounds.w))
-					return false;
-			}
-			else if (axis == 2 /*y-axis only*/)
-			{
-				if (y < bounds.y || y > (bounds.y + bounds.h))
-					return false;
-			}
-			return true;
-		}
-
-		inline void update_pos_internal(const float &x, const float &y, const bool &_is_animated) noexcept
-		{
-			bounds.x += x, bounds.y += y;
-			dest_src_.x += x, dest_src_.y += y;
-			config_dat_.rect.x += x, config_dat_.rect.y += y;
-			outlineRect.rect.x += x, outlineRect.rect.y += y;
-		}
-	};
-
-	class TextBoxBuilder
-	{
-	public:
-		TextBoxBuilder(Context *context)
-		{
-			context_ = context;
-		}
-
-		TextBoxBuilder &setConfigData(const TextBoxAttributes &textbox_config_data_)
-		{
-			tbcd_ = textbox_config_data_;
-			return *this;
-		}
-
-		operator TextBox &&()
-		{
-			// tb_.Build(texts, fontFile, fontStyle, dsv);
-			tb_.Build(context_, tbcd_);
-			return std::move(tb_);
-		}
-
-	private:
-		TextBox tb_;
-		Context *context_;
-		TextBoxAttributes tbcd_;
-	};
-
-	TextBoxBuilder TextBox::Builder(Context *context)
-	{
-		return TextBoxBuilder(context);
+		return *this;
 	}
 
-	class TextBoxNavBarBuilder;
-
-	class TextBoxNavBar : Context
+	void draw() override
 	{
-	public:
-		TextBoxNavBar() = default;
-		friend class TextBoxNavBarBuilder;
-		SDL_FRect rect;
-		static TextBoxNavBarBuilder Builder(Context *context);
-
-		TextBoxNavBar &handleEvent(const SDL_Event &event)
+		outlineRect.draw();
+		// fillRoundedRectF(renderer, rect, cornerRadius, textAttributes.bg_color);
+		if (not hasFocus)
 		{
-			if (event.type == SDL_EVENT_FINGER_DOWN)
+			if (internalText.empty())
 			{
-			}
-			else if (event.type == SDL_EVENT_FINGER_MOTION)
-			{
-			}
-			else if (event.type == SDL_EVENT_FINGER_UP)
-			{
-				const SDL_FPoint cf = {(event.tfinger.x * DisplayInfo::Get().RenderW) - rect.x,
-									   (event.tfinger.y * DisplayInfo::Get().RenderH) - rect.y};
-				std::size_t tmpSelectedTextViewIndex;
-				const bool found = std::any_of(textViews.begin(), textViews.end(), [&](const Volt::TextBox &textView)
-											   {
-					if (SDL_PointInRectFloat(&cf, &textView.getBoundsConst())) {
-						tmpSelectedTextViewIndex = textView.getId();
-						return true;
-					}
-					else return false; });
-				if (found && tmpSelectedTextViewIndex != selectedTextViewIndex)
-				{
-					UPDATE_SELECTED_TEXTVIEW = true;
-					textViews[selectedTextViewIndex].updateTextColor(unselectedTextBgColor, {0, 0, 0, 0}, unselectedTextColor);
-					textViews[tmpSelectedTextViewIndex].updateTextColor(selectedTextBgColor, {0, 0, 0, 0}, selectedTextColor);
-					if (is_scrollable)
-					{
-						float distance_to_move = get_distance_to_move(tmpSelectedTextViewIndex);
-						if (distance_to_move < 0.f)
-							ACTN_MINUS = true;
-						else
-							ACTN_MINUS = false;
-						animInterpolator.startWithDistance(std::fabs(distance_to_move));
-					}
-					selectedTextViewIndex = tmpSelectedTextViewIndex;
-				}
-			}
-			return *this;
-		}
-
-		void udpdateSelectedText(const uint32_t &_index)
-		{
-			if (_index > textViews.size())
-			{
-				SDL_Log("update SelectedText called with out of range index. index: %d, textViews size: %lu", _index, textViews.size());
-				return;
-			}
-			if (_index != selectedTextViewIndex)
-			{
-				if (onSelectedTextViewUpdateCallback != nullptr)
-					onSelectedTextViewUpdateCallback(textViews[selectedTextViewIndex]);
-				textViews[selectedTextViewIndex].updateTextColor({0, 0, 0, 0}, {0, 0, 0, 0}, unselectedTextColor);
-				textViews[_index].updateTextColor({0, 0, 0, 0}, {0, 0, 0, 0}, selectedTextColor);
-				selectedTextViewIndex = _index;
-				const float sel_x = (rect.w / 2.f) - pv->to_cust(20.f, rect.w);
-				const float distanceMoved = sel_x - textViews[_index].getBounds().x;
-
-				// SDL_Log("DM: %f", distanceMoved);
-				std::for_each(textViews.begin(), textViews.end(), [&](Volt::TextBox &textView)
-							  { textView.updatePosBy(distanceMoved, 0.f); });
-			}
-			if (onSelectedTextViewUpdateCallback != nullptr)
-				onSelectedTextViewUpdateCallback(textViews[selectedTextViewIndex]);
-			UPDATE_SELECTED_TEXTVIEW = true;
-		}
-
-		TextBoxNavBar &Draw()
-		{
-			if (UPDATE_SELECTED_TEXTVIEW)
-			{
-				if (animInterpolator.isAnimating())
-				{
-					animInterpolator.update();
-					dy = static_cast<int>(animInterpolator.getValue());
-					dy = ACTN_MINUS ? (0 - dy) : dy;
-				}
-				else
-				{
-					UPDATE_SELECTED_TEXTVIEW = false;
-					ACTN_MINUS = false;
-					if (onSelectedTextViewUpdateCallback != nullptr)
-						onSelectedTextViewUpdateCallback(textViews[selectedTextViewIndex]);
-				}
-				CacheRenderTarget rTargetCache(renderer);
-				SDL_SetRenderTarget(renderer, texture.get());
-				SDL_SetTextureBlendMode(texture.get(), SDL_BLENDMODE_BLEND);
-				renderClear(renderer, bgColor.r, bgColor.g, bgColor.b, bgColor.a);
-				for (auto &textview : textViews)
-				{
-					if (UPDATE_SELECTED_TEXTVIEW)
-						textview.updatePosBy(dy, 0.f);
-					textview.Draw();
-				}
-				dy = 0.f;
-				rTargetCache.release(renderer);
-			}
-			SDL_RenderTexture(renderer, texture.get(), nullptr, &rect);
-			return *this;
-		}
-
-	private:
-		TextBoxNavBar &registerOnSelectedTextViewUpdateCallback(std::function<void(const Volt::TextBox &)> _onSelectedTextViewUpdateCallback)
-		{
-			onSelectedTextViewUpdateCallback = std::move(_onSelectedTextViewUpdateCallback);
-			return *this;
-		}
-
-		TextBoxNavBar &Build(const std::vector<std::string> &_texts, Volt::TextBoxAttributes _tbcd, const size_t &_defaultSelectedTextIndex = 0)
-		{
-			// if (_dest.w < 1 || _dest.h < 1)return *this;
-			// Context::setContext(_context);
-			/*rect = _dest;
-			bgColor = _bgColor;
-			selectedTextColor = _selected_text_color;
-			unselectedTextColor = _unselected_text_color;*/
-
-			/*spacing = pv->to_cust(5.f, rect.w);
-			float i = 0.f, prev_tv_width = 0.f;*/
-			// for (const auto& text : _texts) {
-			//	textViews.emplace_back();
-			//	textViews.back().setContext(getContext())
-			//		.setShrinkToFit(true)
-			//		.setId(i)
-			//		.Build({ (i * spacing) + prev_tv_width, 0, rect.w/*to_cust(40.f, _dest.w)*/, rect.h },
-			//			{ text, i == _defaultSelectedTextIndex ? selectedTextColor : unselectedTextColor, {0,0,0,0} },
-			//			_fontFile, _fontStyle);
-			//	prev_tv_width += textViews.back().rect.w;
-			//	++i;
-			// }
-			_tbcd.shrinkToFit = true;
-			_tbcd.gravity = Gravity::Left;
-			_tbcd.edgeType = EdgeType::RADIAL;
-
-			spacing = pv->to_cust(5.f, rect.w);
-			float i = 0.f, prev_tv_width = 0.f;
-
-			for (const auto &text : _texts)
-			{
-				_tbcd.textAttributes.bg_color = (i == _defaultSelectedTextIndex ? selectedTextBgColor : unselectedTextBgColor);
-				_tbcd.textAttributes.text_color = (i == _defaultSelectedTextIndex ? selectedTextColor : unselectedTextColor);
-				_tbcd.rect = {(i * spacing) + spacing + prev_tv_width, 0.f, rect.w /*to_cust(40.f, _dest.w)*/, rect.h};
-				_tbcd.textAttributes.text = text;
-				textViews.emplace_back();
-				textViews.back().Build(getContext(), _tbcd).setId((uint32_t)(i));
-				prev_tv_width += textViews.back().getBounds().w;
-				++i;
-			}
-
-			// center the textviews
-			/// TODO: a better approach would be to add up the two dx's so that theycan balance and use a single for each instead
-			if (textViews.back().getBounds().x + textViews.back().getBounds().w > rect.w)
-			{
-				float dd = get_distance_to_move(_defaultSelectedTextIndex);
-				std::for_each(textViews.begin(), textViews.end(), [&dd](Volt::TextBox &textView)
-							  { textView.updatePosBy(dd, 0.f); });
-				is_scrollable = true;
+				RenderTexture(renderer, dflTxtTexture.get(), nullptr, &dflTxtRect);
 			}
 			else
 			{
-				float dx = rect.w - (textViews.back().getBounds().x + textViews.back().getBounds().w);
-				dx /= 2.f;
-				std::for_each(textViews.begin(), textViews.end(), [&dx](Volt::TextBox &textView)
-							  { textView.updatePosBy(dx, 0.f); });
+				RenderTexture(renderer, txtTexture.get(), nullptr, &finalTextRect);
 			}
-			selectedTextViewIndex = std::clamp(_defaultSelectedTextIndex, std::size_t(0), _texts.size());
-
-			CacheRenderTarget rTargetCache(renderer);
-			texture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, rect.w, rect.h);
-			SDL_SetRenderTarget(renderer, texture.get());
-			SDL_SetTextureBlendMode(texture.get(), SDL_BLENDMODE_BLEND);
-			renderClear(renderer, bgColor.r, bgColor.g, bgColor.b, bgColor.a);
-			// for (const auto& text : textViews) { text.Draw(); }
-			rTargetCache.release(renderer);
-			UPDATE_SELECTED_TEXTVIEW = true;
-			return *this;
 		}
-
-		float get_distance_to_move(const int &tmpSelectedTextViewIndex)
+		else
 		{
-			float distance_to_move = 0.f;
-			if (tmpSelectedTextViewIndex > selectedTextViewIndex)
+			if (not internalText.empty())
 			{
-				if (tmpSelectedTextViewIndex + 1 < textViews.size())
-				{
-					if (textViews[tmpSelectedTextViewIndex + 1].getBounds().x + textViews[tmpSelectedTextViewIndex + 1].getBounds().w > rect.w - spacing)
-					{
-						distance_to_move = (textViews[tmpSelectedTextViewIndex + 1].getBounds().x + textViews[tmpSelectedTextViewIndex + 1].getBounds().w) - (rect.w - spacing);
-						distance_to_move = 0.f - distance_to_move;
-					}
-				}
-				else
-				{
-					if (textViews[tmpSelectedTextViewIndex].getBounds().x + textViews[tmpSelectedTextViewIndex].getBounds().w > rect.w - spacing)
-					{
-						distance_to_move = (textViews[tmpSelectedTextViewIndex].getBounds().x + textViews[tmpSelectedTextViewIndex].getBounds().w) - (rect.w - spacing);
-						distance_to_move = 0.f - distance_to_move;
-					}
-				}
-			}
-			else if (tmpSelectedTextViewIndex < selectedTextViewIndex)
-			{
-				if (tmpSelectedTextViewIndex - 1 >= 0)
-				{
-					if (textViews[tmpSelectedTextViewIndex - 1].getBounds().x < spacing)
-					{
-						distance_to_move = std::fabs(textViews[tmpSelectedTextViewIndex - 1].getBounds().x) + spacing;
-					}
-				}
-				else
-				{
-					// SDL_Log("else");
-					if (textViews[tmpSelectedTextViewIndex].getBounds().x < 0.f)
-					{
-						distance_to_move = std::fabs(textViews[tmpSelectedTextViewIndex].getBounds().x) + spacing;
-						// distance_to_move = std::clamp(distance_to_move, -1000000.f, spacing);
-					}
-				}
-			}
-			return distance_to_move;
-		}
-
-	private:
-		bool UPDATE_SELECTED_TEXTVIEW = false, ACTN_MINUS = false;
-		float dy = 0.f, spacing = 0.f;
-		Interpolator animInterpolator;
-		// int tmpSelectedTextViewIndex = -1;
-		SDL_Color bgColor = {0, 0, 0, 0};
-		SDL_Color selectedTextBgColor, selectedTextColor = {0xff, 0xff, 0xff, 0xff};
-		SDL_Color unselectedTextBgColor, unselectedTextColor = {0xff, 0xff, 0xff, 127};
-		int selectedTextViewIndex = 0;
-		std::vector<Volt::TextBox> textViews;
-		std::shared_ptr<SDL_Texture> texture;
-		std::function<void(const Volt::TextBox &)> onSelectedTextViewUpdateCallback = nullptr;
-		bool is_scrollable = false;
-	};
-
-	class TextBoxNavBarBuilder
-	{
-	public:
-		TextBoxNavBarBuilder(Context *context)
-		{
-			textNavBar.setContext(context);
-		}
-
-		TextBoxNavBarBuilder &setRect(SDL_FRect _rect)
-		{
-			textNavBar.rect = _rect;
-			return *this;
-		}
-
-		TextBoxNavBarBuilder &setDefaultTextIndex(const int &_dsv)
-		{
-			dsv = _dsv;
-			return *this;
-		}
-
-		TextBoxNavBarBuilder &addTexts(const std::vector<std::string> &_texts)
-		{
-			texts = _texts;
-			return *this;
-		}
-
-		TextBoxNavBarBuilder &setBgColor(SDL_Color _bgColor)
-		{
-			textNavBar.bgColor = _bgColor;
-			return *this;
-		}
-
-		TextBoxNavBarBuilder &setTextBoxConfigData(Volt::TextBoxAttributes _tbcd)
-		{
-			tbcd = _tbcd;
-			return *this;
-		}
-
-		TextBoxNavBarBuilder &setSelectedTextColor(SDL_Color _selectedTextBgColor, SDL_Color _selectedTextColor)
-		{
-			textNavBar.selectedTextBgColor = _selectedTextBgColor;
-			textNavBar.selectedTextColor = _selectedTextColor;
-			return *this;
-		}
-
-		TextBoxNavBarBuilder &setUnselectedTextColor(SDL_Color _unselectedTextBgColor, SDL_Color _unselectedTextColor)
-		{
-			textNavBar.unselectedTextBgColor = _unselectedTextBgColor;
-			textNavBar.unselectedTextColor = _unselectedTextColor;
-			return *this;
-		}
-
-		TextBoxNavBarBuilder &registerOnSelectedTextViewUpdate(std::function<void(const TextBox &)> _onSelectedTextViewUpdateCallback)
-		{
-			textNavBar.onSelectedTextViewUpdateCallback = _onSelectedTextViewUpdateCallback;
-			return *this;
-		}
-
-		operator TextBoxNavBar &&()
-		{
-			textNavBar.Build(texts, tbcd, dsv);
-			return std::move(textNavBar);
-		}
-
-	private:
-		TextBoxNavBar textNavBar;
-		std::vector<std::string> texts;
-		int dsv = 0;
-		TextBoxAttributes tbcd;
-	};
-
-	TextBoxNavBarBuilder TextBoxNavBar::Builder(Context *context)
-	{
-		return TextBoxNavBarBuilder(context);
-	}
-
-	struct EditBoxAttributes
-	{
-		SDL_FRect rect = {0.f, 0.f, 0.f, 0.f};
-		SDL_FRect placeholderRect = {0.f, 0.f, 0.f, 0.f};
-		TextAttributes textAttributes = {"", {0x00, 0x00, 0x00, 0xff}, {0xff, 0xff, 0xff, 0xff}};
-		TextAttributes placeholderTextAttributes = {"", {0x00, 0x00, 0x00, 0xff}, {0xff, 0xff, 0xff, 0xff}};
-		SDL_FRect margin = {0.f, 0.f, 100.f, 100.f};
-		Font mem_font = Font::ConsolasBold;
-		std::string fontFile;
-		Font placeholder_mem_font = Font::ConsolasBold;
-		std::string placeholderFontFile;
-		FontStyle fontStyle = FontStyle::Normal;
-		FontStyle defaultTxtFontStyle = FontStyle::Normal;
-		EdgeType edgeType;
-		uint32_t maxlines = 1;
-		// max text size in code points
-		uint32_t maxTextSize = 1024000;
-		TextWrapStyle textWrapStyle = TextWrapStyle::MAX_CHARS_PER_LN;
-		Gravity gravity = Gravity::Left;
-		float cornerRadius = 0.f;
-		int customFontstyle = 0x00;
-		float lineSpacing = 0.f;
-		float outline = 0.f;
-		bool highlightOnHover = false;
-		SDL_Color outlineColor = {0x00, 0x00, 0x00, 0x00};
-		SDL_Color cusorColor = {0x00, 0x00, 0x00, 0xff};
-		SDL_Color onHoverOutlineColor = {0x00, 0x00, 0x00, 0x00};
-		SDL_Color onHoverBgColor = {0x00, 0x00, 0x00, 0x00};
-		SDL_Color onHoverTxtColor = {0x00, 0x00, 0x00, 0x00};
-		uint32_t cusorSpeed = 500;
-	};
-
-	class EditBoxBuilder;
-
-	class EditBox : public Context, IView
-	{
-	public:
-		using IView::bounds;
-		using IView::getView;
-		using IView::hide;
-		using IView::isHidden;
-		using IView::required;
-		using IView::show;
-		// using IView::id;
-
-		EditBox() = default;
-		int32_t id = (-1);
-		friend class EditBoxBuilder;
-
-		static EditBoxBuilder Builder(Context *context);
-
-		EditBox &registerOnTextInputCallback(std::function<void(EditBox &)> _onTextInputCallback)
-		{
-			onTextInputCallback = _onTextInputCallback;
-			return *this;
-		}
-
-		EditBox &registerOnTextInputFilterCallback(std::function<void(EditBox &, std::string &)> _onTextInputFilterCallback)
-		{
-			onTextInputFilterCallback = _onTextInputFilterCallback;
-			return *this;
-		}
-
-		EditBox &Build(Context *_context, EditBoxAttributes &_attr)
-		{
-			Context::setContext(_context);
-			adaptiveVsyncHD.setAdaptiveVsync(adaptiveVsync);
-			bounds = _attr.rect;
-			textRect = {
-				bounds.x + to_cust(_attr.margin.x, bounds.w),
-				bounds.y + to_cust(_attr.margin.y, bounds.h),
-				to_cust(_attr.margin.w, bounds.w),
-				to_cust(_attr.margin.h, bounds.h),
-			};
-			finalTextRect = textRect;
-
-			cornerRadius = _attr.cornerRadius;
-			textAttributes = _attr.textAttributes;
-			fontAttributes = {_attr.fontFile, _attr.fontStyle, static_cast<uint8_t>(textRect.h)};
-			maxCodePointsPerLn = static_cast<uint32_t>(textRect.w / (textRect.h / 2.f));
-			place_holder_text = _attr.placeholderTextAttributes.text;
-
-			cusor.setContext(getContext());
-			cusor.setColor(_attr.cusorColor);
-			cusor.setBlinkTm(_attr.cusorSpeed);
-			cusor.setRect({textRect.x, textRect.y, to_cust(10.f, textRect.h), textRect.h});
-
-			TTF_Font *tmpFont = nullptr;
-
-			if (fontAttributes.font_file.empty())
-			{
-				Fonts[_attr.mem_font]->font_size = fontAttributes.font_size;
-				fontAttributes.font_file = Fonts[_attr.mem_font]->font_name;
-				tmpFont = FontSystem::Get().getFont(*Fonts[_attr.mem_font]);
-			}
-
-			maxTextSize = _attr.maxTextSize;
-			if (not _attr.placeholderTextAttributes.text.empty())
-			{
-				dflTxtRect =
-					{
-						bounds.x + to_cust(_attr.placeholderRect.x, bounds.w),
-						bounds.y + to_cust(_attr.placeholderRect.y, bounds.h),
-						to_cust(_attr.placeholderRect.w, bounds.w),
-						to_cust(_attr.placeholderRect.h, bounds.h),
-					};
-
-				FontAttributes plhFontAttr{
-					_attr.placeholderFontFile.c_str(), _attr.defaultTxtFontStyle, static_cast<uint8_t>(dflTxtRect.h)};
-
-				if (plhFontAttr.font_file.empty())
-				{
-					Fonts[_attr.placeholder_mem_font]->font_size = plhFontAttr.font_size;
-					plhFontAttr.font_file = Fonts[_attr.placeholder_mem_font]->font_name;
-					tmpFont = FontSystem::Get().getFont(*Fonts[_attr.placeholder_mem_font]);
-				}
-
-				FontSystem::Get().setFontAttributes({plhFontAttr.font_file.c_str(), plhFontAttr.font_style, plhFontAttr.font_size}, 0);
-				auto textTex = FontSystem::Get().genTextTextureUnique(renderer, _attr.placeholderTextAttributes.text.c_str(), _attr.placeholderTextAttributes.text_color);
-
-				int test_w, test_h;
-				SDL_QueryTexture(textTex.value().get(), nullptr, nullptr, &test_w, &test_h);
-				if ((int)(test_w) < dflTxtRect.w)
-				{
-					dflTxtRect.w = (float)(test_w);
-				}
-				if (static_cast<float>(test_h) >= dflTxtRect.h)
-				{
-					dflTxtRect.y += static_cast<float>(TTF_FontDescent(FontSystem::Get().getFont(_attr.placeholderFontFile, static_cast<int>(dflTxtRect.h))));
-					dflTxtRect.h = static_cast<float>(test_h);
-				}
-				const SDL_FRect dflSrc = {0.f, 0.f, dflTxtRect.w, (float)test_h};
-				const SDL_FRect dflDst = {0.f, 0.f, dflTxtRect.w, dflTxtRect.h};
-
-				dflTxtTexture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
-													SDL_TEXTUREACCESS_TARGET, static_cast<int>(dflTxtRect.w), static_cast<int>(dflTxtRect.h));
-				CacheRenderTarget crt_(renderer);
-				SDL_SetRenderTarget(renderer, dflTxtTexture.get());
-				SDL_SetTextureBlendMode(dflTxtTexture.get(), SDL_BLENDMODE_BLEND);
-				renderClear(renderer, 0, 0, 0, 0);
-				SDL_RenderTexture(renderer, textTex.value().get(), &dflSrc, &dflDst);
-				crt_.release(renderer);
-			}
-			outlineColor = _attr.outlineColor;
-			onHoverOutlineColor = _attr.onHoverOutlineColor;
-			highlightOnHover = _attr.highlightOnHover;
-			onHoverBgColor = _attr.onHoverBgColor;
-			outlineRect.Build(this, bounds, _attr.outline, cornerRadius, textAttributes.bg_color, _attr.outlineColor);
-
-			return *this;
-		}
-
-		void Draw() override
-		{
-			outlineRect.Draw();
-			// fillRoundedRectF(renderer, rect, cornerRadius, textAttributes.bg_color);
-			if (not hasFocus)
-			{
-				if (internalText.empty())
-					SDL_RenderTexture(renderer, dflTxtTexture.get(), nullptr, &dflTxtRect);
-				else
-					SDL_RenderTexture(renderer, txtTexture.get(), nullptr, &finalTextRect);
+				RenderTexture(renderer, txtTexture.get(), nullptr, &finalTextRect);
 			}
 			else
 			{
-				if (not internalText.empty())
-				{
-					SDL_RenderTexture(renderer, txtTexture.get(), nullptr, &finalTextRect);
-				}
-				cusor.Draw();
+				RenderTexture(renderer, dflTxtTexture.get(), nullptr, &dflTxtRect);
 			}
-
-			if (onFocusView and hasFocus)
-				onFocusView->Draw();
-
-			// return *this;
+			cursor.Draw();
 		}
 
-		SDL_FRect &getRect()
-		{
-			return outlineRect.rect;
-		}
+		if (onFocusView != nullptr and hasFocus)
+			onFocusView->draw();
 
-		std::string getTextOrDefault()
-		{
-			return internalText.empty() ? place_holder_text : internalText;
-		}
+		// return *this;
+	}
 
-		std::string getText()
-		{
-			return internalText;
-		}
+	SDL_FRect& getRect()
+	{
+		return outlineRect.rect;
+	}
 
-		EditBox &setOnFocusView(IView *_onFocusView)
-		{
-			onFocusView = _onFocusView;
-			return *this;
-		}
+	std::string getTextOrDefault()
+	{
+		return internalText.empty() ? place_holder_text : internalText;
+	}
 
-		IView *getOnFocusView()
-		{
-			return onFocusView;
-		}
+	std::string getText()
+	{
+		return internalText;
+	}
 
-		bool isFocused()
-		{
-			return hasFocus;
-		}
+	EditBox& setOnFocusView(IView* _onFocusView)
+	{
+		onFocusView = _onFocusView;
+		return *this;
+	}
 
-		EditBox &killFocus()
+	IView* getOnFocusView()
+	{
+		return onFocusView;
+	}
+
+	bool isActive()
+	{
+		return hasFocus;
+	}
+
+	EditBox& killFocus()
+	{
+		if (SDL_IsTextInputActive())
+			SDL_StopTextInput();
+		adaptiveVsyncHD.stopRedrawSession();
+		hasFocus = false;
+		if (highlightOnHover)
 		{
-			if (SDL_TextInputActive())
-				SDL_StopTextInput();
-			adaptiveVsyncHD.stopRedrawSession();
-			hasFocus = false;
 			outlineRect.outline_color = outlineColor;
 			outlineRect.color = textAttributes.bg_color;
-			if (onFocusView)
-				onFocusView->hide();
-			return *this;
 		}
+		if (onFocusView != nullptr)
+			onFocusView->hide();
+		//GLogger.Log(Logger::Level::Info, "kill focus");
+		return *this;
+	}
 
-		bool handleEvent() override
+	bool handleEvent() override
+	{
+		bool result_ = false;
+
+		if (onFocusView and hasFocus)
+			if (onFocusView->handleEvent())
+				return true;
+		switch (event->type)
 		{
-			bool result_ = false;
-			if (hasFocus and not SDL_TextInputActive())
+		case EVT_WPSC:
+		{
+			outlineRect.handleEvent();
+			bounds =
+			{
+				DisplayInfo::Get().toUpdatedWidth(bounds.x),
+				DisplayInfo::Get().toUpdatedHeight(bounds.y),
+				DisplayInfo::Get().toUpdatedWidth(bounds.w),
+				DisplayInfo::Get().toUpdatedHeight(bounds.h),
+			};
+
+			dflTxtRect =
+			{
+				DisplayInfo::Get().toUpdatedWidth(dflTxtRect.x),
+				DisplayInfo::Get().toUpdatedHeight(dflTxtRect.y),
+				DisplayInfo::Get().toUpdatedWidth(dflTxtRect.w),
+				DisplayInfo::Get().toUpdatedHeight(dflTxtRect.h),
+			};
+
+			finalTextRect =
+			{
+				DisplayInfo::Get().toUpdatedWidth(finalTextRect.x),
+				DisplayInfo::Get().toUpdatedHeight(finalTextRect.y),
+				DisplayInfo::Get().toUpdatedWidth(finalTextRect.w),
+				DisplayInfo::Get().toUpdatedHeight(finalTextRect.h),
+			};
+
+			auto tmpRct = cursor.getRect();
+			tmpRct =
+			{
+				DisplayInfo::Get().toUpdatedWidth(tmpRct.x),
+				DisplayInfo::Get().toUpdatedHeight(tmpRct.y),
+				DisplayInfo::Get().toUpdatedWidth(tmpRct.w),
+				DisplayInfo::Get().toUpdatedHeight(tmpRct.h),
+			};
+			cursor.setRect(tmpRct);
+			// fontAttributes.font_size = DisplayInfo::Get().toUpdatedHeight(fontAttributes.font_size);
+			result_ = true;
+		}
+		break;
+		case EVT_FINGER_DOWN:
+		{
+			if (onClick(event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.y * DisplayInfo::Get().RenderH) and not hasFocus)
+			{
+				hasFocus = true;
+				adaptiveVsyncHD.startRedrawSession();
 				SDL_StartTextInput();
-
-			if (onFocusView and hasFocus)
-				if (onFocusView->handleEvent())
-					return true;
-			switch (event->type)
-			{
-			case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
-			{
-				outlineRect.handleEvent();
-				bounds =
-					{
-						DisplayInfo::Get().toUpdatedWidth(bounds.x),
-						DisplayInfo::Get().toUpdatedHeight(bounds.y),
-						DisplayInfo::Get().toUpdatedWidth(bounds.w),
-						DisplayInfo::Get().toUpdatedHeight(bounds.h),
-					};
-
-				dflTxtRect =
-					{
-						DisplayInfo::Get().toUpdatedWidth(dflTxtRect.x),
-						DisplayInfo::Get().toUpdatedHeight(dflTxtRect.y),
-						DisplayInfo::Get().toUpdatedWidth(dflTxtRect.w),
-						DisplayInfo::Get().toUpdatedHeight(dflTxtRect.h),
-					};
-
-				finalTextRect =
-					{
-						DisplayInfo::Get().toUpdatedWidth(finalTextRect.x),
-						DisplayInfo::Get().toUpdatedHeight(finalTextRect.y),
-						DisplayInfo::Get().toUpdatedWidth(finalTextRect.w),
-						DisplayInfo::Get().toUpdatedHeight(finalTextRect.h),
-					};
-
-				auto tmpRct = cusor.getRect();
-				tmpRct =
-					{
-						DisplayInfo::Get().toUpdatedWidth(tmpRct.x),
-						DisplayInfo::Get().toUpdatedHeight(tmpRct.y),
-						DisplayInfo::Get().toUpdatedWidth(tmpRct.w),
-						DisplayInfo::Get().toUpdatedHeight(tmpRct.h),
-					};
-				cusor.setRect(tmpRct);
-				// fontAttributes.font_size = DisplayInfo::Get().toUpdatedHeight(fontAttributes.font_size);
+				////TODO: cache current vsync then SDL_RenderSetVSync(20)
+				// SDL_GetRenderVSync(renderer, &prevVsync);
+				// SDL_SetRenderVSync(renderer, 20);
+				if (onFocusView)
+					onFocusView->show();
 				result_ = true;
 			}
-			break;
-			case SDL_EVENT_FINGER_DOWN:
+			else
 			{
-				if (onClick(event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.y * DisplayInfo::Get().RenderH) and not hasFocus)
+				if (hasFocus)
 				{
-					hasFocus = true;
-					adaptiveVsyncHD.startRedrawSession();
-					SDL_StartTextInput();
-					if (onFocusView)
-						onFocusView->show();
-				}
-				else
-				{
-					if (hasFocus)
+					killFocus();
+					/*
+					//SDL_SetRenderVSync(renderer, prevVsync);
+					SDL_StopTextInput(), hasFocus = false, adaptiveVsyncHD.stopRedrawSession();
+					if (highlightOnHover)
 					{
-						SDL_StopTextInput(), hasFocus = false, adaptiveVsyncHD.stopRedrawSession();
-						if (highlightOnHover)
-						{
-							outlineRect.outline_color = outlineColor;
-							outlineRect.color = textAttributes.bg_color;
-						}
-						if (onFocusView)
-							onFocusView->hide();
+						outlineRect.outline_color = outlineColor;
+						outlineRect.color = textAttributes.bg_color;
 					}
+					if (onFocusView)
+						onFocusView->hide();
+					*/
+					//result_ = true;
 				}
 			}
-			break;
-			/*case SDL_EVENT_FINGER_MOTION:
+		}
+		break;
+		/*case EVT_FINGER_MOTION:
 			{
 				if (onClick(_event.tfinger.x * DisplayInfo::Get().RenderW, _event.tfinger.y * DisplayInfo::Get().RenderH)){
 					if(highlightOnHover){
@@ -5849,1340 +6762,1057 @@ namespace Volt
 				}
 			}
 			break;*/
-			case SDL_EVENT_MOUSE_MOTION:
+		case EVT_MOUSE_MOTION:
+		{
+			if (onClick(event->motion.x, event->motion.y))
 			{
-				if (onClick(event->motion.x, event->motion.y))
+				if (highlightOnHover)
 				{
-					if (highlightOnHover)
-					{
-						outlineRect.outline_color = onHoverOutlineColor;
-						outlineRect.color = onHoverBgColor;
-					}
+					outlineRect.outline_color = onHoverOutlineColor;
+					outlineRect.color = onHoverBgColor;
 				}
-				else
+			}
+			else
+			{
+				if (highlightOnHover and not hasFocus)
 				{
-					if (highlightOnHover and not hasFocus)
+					outlineRect.outline_color = outlineColor;
+					outlineRect.color = textAttributes.bg_color;
+				}
+			}
+		}
+		break;
+		case EVT_FINGER_UP:
+		{
+			if (onClick(event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.x * DisplayInfo::Get().RenderH))
+			{
+				// hasFocus = true;
+			}
+			else
+			{
+				// if (hasFocus)SDL_StopTextInput(), hasFocus = false;
+			}
+		}
+		break;
+		case SDL_KEYDOWN:
+		{
+			if (hasFocus)
+			{
+				// SDL_Log("key down");
+				cursor.m_start = SDL_GetTicks();
+				if (event->key.keysym.scancode == SDL_SCANCODE_BACKSPACE and not internalText.empty())
+				{
+					internalText.erase(internalText.size() - (inputSize.back())),
+						inputSize.pop_back();
+					updateTextTexture("");
+					if (onTextInputCallback)
+						onTextInputCallback(*this);
+				}
+				if (event->key.keysym.scancode == SDL_SCANCODE_SELECT)
+				{
+				}
+				if (event->key.keysym.scancode == SDL_SCANCODE_AC_BACK)
+				{
+					if (hasFocus)
 					{
-						outlineRect.outline_color = outlineColor;
-						outlineRect.color = textAttributes.bg_color;
+						killFocus();
+						return true;
 					}
 				}
 			}
-			break;
-			case SDL_EVENT_FINGER_UP:
+		}
+		break;
+		case SDL_TEXTINPUT:
+		{
+			if (hasFocus)
 			{
-				if (onClick(event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.x * DisplayInfo::Get().RenderH))
+				// SDL_Log("txt input");
+				cursor.m_start = SDL_GetTicks();
+				std::string newText = event->text.text;
+				if (onTextInputFilterCallback)
+					onTextInputFilterCallback(*this, newText);
+				if (not newText.empty())
 				{
-					// hasFocus = true;
-				}
-				else
-				{
-					// if (hasFocus)SDL_StopTextInput(), hasFocus = false;
-				}
-			}
-			break;
-			case SDL_EVENT_KEY_DOWN:
-			{
-				if (hasFocus)
-				{
-					// SDL_Log("key down");
-					cusor.m_start = SDL_GetTicks();
-					if (event->key.keysym.scancode == SDL_SCANCODE_BACKSPACE and not internalText.empty())
+					if (inputSize.size() + 1 <= maxTextSize)
 					{
-						internalText.erase(internalText.size() - (inputSize.back())),
-							inputSize.pop_back();
-						updateTextTexture("");
+						inputSize.emplace_back(newText.size());
+						updateTextTexture(newText);
 						if (onTextInputCallback)
 							onTextInputCallback(*this);
 					}
-					else if (event->key.keysym.scancode == SDL_SCANCODE_SELECT)
-					{
-					}
 				}
+				return true;
 			}
+		}
+		break;
+		default:
 			break;
-			case SDL_EVENT_TEXT_INPUT:
-			{
-				if (hasFocus)
-				{
-					// SDL_Log("txt input");
-					cusor.m_start = SDL_GetTicks();
-					std::string newText = event->text.text;
-					if (onTextInputFilterCallback)
-						onTextInputFilterCallback(*this, newText);
-					if (not newText.empty())
-					{
-						if (inputSize.size() + 1 <= maxTextSize)
-						{
-							inputSize.emplace_back(newText.size());
-							updateTextTexture(newText);
-							if (onTextInputCallback)
-								onTextInputCallback(*this);
-						}
-					}
-				}
-			}
-			break;
-			}
-
-			return result_;
 		}
 
-		EditBox &setOnHoverOutlineColor(const SDL_Color &_color)
-		{
-			outlineRect.outline_color = _color;
-			onHoverOutlineColor = _color;
-			return *this;
-		}
-
-		EditBox &setOutlineColor(const SDL_Color &_color)
-		{
-			outlineRect.outline_color = _color;
-			outlineColor = _color;
-			return *this;
-		}
-
-		EditBox &clearAndSetText(const std::string &newText)
-		{
-			inputSize.clear();
-			internalText.clear();
-			for (const auto &ch_ : newText)
-			{
-				if (inputSize.size() + 1 <= maxTextSize)
-				{
-					inputSize.emplace_back(1);
-				}
-				else
-				{
-					updateTextTexture(newText.substr(0, inputSize.size()));
-					return *this;
-				}
-			}
-			updateTextTexture(newText);
-			// cusor.setPosX(textRect.x + float(tmpW));
-			return *this;
-		}
-
-	protected:
-		template <typename T>
-		bool onClick(T x, T y, unsigned short axis = 0)
-		{
-			[[likely]] if (axis == 0)
-			{
-				if (x < bounds.x or x > (bounds.x + bounds.w) or y < bounds.y ||
-					y > (bounds.y + bounds.h))
-					return false;
-			}
-			else if (axis == 1 /*x-axis only*/)
-			{
-				if (x < bounds.x or x > (bounds.x + bounds.w))
-					return false;
-			}
-			else if (axis == 2 /*y-axis only*/)
-			{
-				if (y < bounds.y or y > (bounds.y + bounds.h))
-					return false;
-			}
-			return true;
-		}
-
-	protected:
-		void updateTextTexture(const std::string &_newText)
-		{
-			internalText += _newText;
-			if (internalText.empty())
-			{
-				cusor.setPosX(textRect.x);
-				return;
-			}
-			std::string visibleText = internalText;
-			if (inputSize.size() <= maxCodePointsPerLn)
-				visibleText = internalText;
-			else
-			{
-				const int correctedTextSize = std::reduce(inputSize.begin() + (inputSize.size() - maxCodePointsPerLn), inputSize.end());
-				visibleText = internalText.substr(internalText.size() - correctedTextSize, internalText.size());
-			}
-
-			CacheRenderTarget rTargetCache(renderer);
-			txtTexture.reset();
-			auto textTex = FontSystem::Get().setFontAttributes(fontAttributes, 0).genTextTextureUnique(renderer, visibleText.c_str(), textAttributes.text_color);
-			int tmpW, tmpH;
-			SDL_QueryTexture(textTex.value().get(), nullptr, nullptr, &tmpW, &tmpH);
-			tmpW = std::clamp(tmpW, 0, (int)(textRect.w));
-			txtTexture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
-											 SDL_TEXTUREACCESS_TARGET, tmpW, textRect.h);
-			SDL_SetTextureBlendMode(txtTexture.get(), SDL_BLENDMODE_BLEND);
-			SDL_SetRenderTarget(renderer, txtTexture.get());
-
-			renderClear(renderer, 0, 0, 0, 0);
-			SDL_RenderTexture(renderer, textTex.value().get(), nullptr, nullptr);
-			rTargetCache.release(renderer);
-			cusor.setPosX(textRect.x + float(tmpW));
-			finalTextRect.w = tmpW;
-		}
-
-	protected:
-		IView *onFocusView = nullptr;
-
-	protected:
-		float cornerRadius = 0.f;
-		std::shared_ptr<SDL_Texture> txtTexture;
-		std::shared_ptr<SDL_Texture> dflTxtTexture;
-		std::function<void(EditBox &)> onTextInputCallback;
-		std::function<void(EditBox &)> onKeyPressEnter;
-		std::function<void(EditBox &, std::string &)> onTextInputFilterCallback;
-		TextAttributes textAttributes;
-		FontAttributes fontAttributes;
-		std::vector<uint32_t> inputSize;
-		uint32_t maxTextSize = 100;
-
-		SDL_FRect dflTxtRect;
-		// SDL_FRect cusorRect;
-		SDL_FRect textRect;
-		SDL_FRect finalTextRect;
-		std::string internalText, place_holder_text;
-		RectOutline outlineRect;
-		bool hasFocus = false;
-		// SDL_Color cusorColor;
-		Cursor cusor;
-		uint32_t maxCodePointsPerLn = 1;
-		AdaptiveVsyncHandler adaptiveVsyncHD, updAdaptiveVsyncHD;
-		bool highlightOnHover = false;
-		SDL_Color onHoverOutlineColor = {0x00, 0x00, 0x00, 0x00};
-		SDL_Color onHoverBgColor = {0x00, 0x00, 0x00, 0x00};
-		SDL_Color onHoverTxtColor = {0x00, 0x00, 0x00, 0x00};
-		SDL_Color outlineColor = {0x00, 0x00, 0x00, 0x00};
-	};
-
-	class EditBoxBuilder : Context
-	{
-	public:
-		EditBoxBuilder() = default;
-
-		EditBoxBuilder(Context *_context)
-		{
-			setContext(_context);
-		}
-		operator EditBox &&()
-		{
-			editBox.Build(this, editBoxAttr);
-			return std::move(editBox);
-		}
-
-	private:
-		EditBox editBox;
-		EditBoxAttributes editBoxAttr;
-	};
-
-	EditBoxBuilder EditBox::Builder(Context *context)
-	{
-		return EditBoxBuilder(context);
+		return result_;
 	}
 
-	namespace Expr
+	EditBox& setOnHoverOutlineColor(const SDL_Color& _color)
 	{
-		struct SliderAttributes
+		outlineRect.outline_color = _color;
+		onHoverOutlineColor = _color;
+		return *this;
+	}
+
+	EditBox& setOutlineColor(const SDL_Color& _color)
+	{
+		outlineRect.outline_color = _color;
+		outlineColor = _color;
+		return *this;
+	}
+
+	EditBox& clearAndSetText(const std::string& newText)
+	{
+		inputSize.clear();
+		internalText.clear();
+		for (const auto& ch_ : newText)
 		{
-			SDL_FRect rect = {};
-			float min_val = 0.f, max_val = 1.f, start_val = 0.f, knob_radius = 0.f;
-			bool show_knob = true;
-			SDL_Color bg_color = {50, 50, 50, 255};
-			SDL_Color level_bar_color = {255, 255, 255, 255};
-			SDL_Color knob_color = {255, 255, 255, 255};
-			Orientation orientation = Orientation::HORIZONTAL;
-		};
+			if (inputSize.size() + 1 <= maxTextSize)
+			{
+				inputSize.emplace_back(1);
+			}
+			else
+			{
+				//updateTextTexture(newText.substr(0, inputSize.size()));
+				return *this;
+			}
+		}
+		updateTextTexture(newText);
+		// cusor.setPosX(textRect.x + float(tmpW));
+		return *this;
+	}
 
-		class Slider : public Context, IView
+protected:
+	template <typename T>
+	bool onClick(T x, T y, unsigned short axis = 0)
+	{
+		[[likely]] if (axis == 0)
 		{
-		public:
-			using IView::getView;
-
-		public:
-			Slider &Build(Context *_context, SliderAttributes _attr)
-			{
-				setContext(_context);
-				knob.setContext(_context);
-				knob.Build(0.f, 0.f, _attr.knob_radius, _attr.knob_color);
-				rect = _attr.rect;
-				lvl_rect = rect;
-				bg_color = _attr.bg_color;
-				lvl_bar_color = _attr.level_bar_color;
-				orientation = _attr.orientation;
-				show_knob = _attr.show_knob;
-				updateMinMaxValues(_attr.min_val, _attr.max_val, _attr.start_val);
-				return *this;
-			}
-
-			bool handleEvent() override
-			{
-				bool result = false;
-				switch (event->type)
-				{
-				case SDL_EVENT_MOUSE_BUTTON_DOWN:
-					if (pointInBound(event->motion.x, event->motion.y))
-					{
-						key_down = true, result = true;
-						if (Orientation::VERTICAL == orientation)
-							updateValue(screenToWorld(event->motion.y - rect.y));
-						else if (Orientation::HORIZONTAL == orientation)
-							updateValue(screenToWorld(event->motion.x - rect.x));
-					}
-					break;
-				case SDL_EVENT_MOUSE_MOTION:
-					if (key_down)
-					{
-						result = true;
-						if (Orientation::VERTICAL == orientation)
-							updateValue(screenToWorld(event->motion.y - rect.y));
-						else if (Orientation::HORIZONTAL == orientation)
-							updateValue(screenToWorld(event->motion.x - rect.x));
-					}
-					break;
-				case SDL_EVENT_MOUSE_BUTTON_UP:
-					key_down = false;
-					break;
-				default:
-					break;
-				}
-				return result;
-			}
-
-			void Draw() override
-			{
-				if (Orientation::HORIZONTAL == orientation)
-				{
-					SDL_SetRenderDrawColor(renderer, bg_color.r, bg_color.g, bg_color.b, bg_color.a);
-					SDL_RenderFillRect(renderer, &rect);
-					SDL_SetRenderDrawColor(renderer, lvl_bar_color.r, lvl_bar_color.g, lvl_bar_color.b, lvl_bar_color.a);
-					SDL_RenderFillRect(renderer, &lvl_rect);
-				}
-				else if (Orientation::VERTICAL == orientation)
-				{
-					SDL_SetRenderDrawColor(renderer, lvl_bar_color.r, lvl_bar_color.g, lvl_bar_color.b, lvl_bar_color.a);
-					SDL_RenderFillRect(renderer, &rect);
-					SDL_SetRenderDrawColor(renderer, bg_color.r, bg_color.g, bg_color.b, bg_color.a);
-					SDL_RenderFillRect(renderer, &lvl_rect);
-				}
-
-				if (show_knob)
-				{
-					if (Orientation::HORIZONTAL == orientation)
-					{
-						knob.dest.x = lvl_rect.x + lvl_rect.w - (knob.dest.w / 2.f);
-						knob.dest.y = rect.y + (rect.h / 2.f) - (knob.dest.h / 2.f);
-					}
-					else if (Orientation::VERTICAL == orientation)
-					{
-						knob.dest.x = (lvl_rect.x + (lvl_rect.w / 2.f)) - (knob.dest.w / 2.f);
-						knob.dest.y = (lvl_rect.y + lvl_rect.h) - (knob.dest.w / 2.f);
-					}
-					knob.Draw(renderer);
-				}
-			}
-
-			Slider &registerOnValueUpdateCallback(std::function<void(Slider &)> onValUpdateClbk)
-			{
-				onValUpdate = onValUpdateClbk;
-				return *this;
-			}
-
-			auto getCurrentValue()
-			{
-				if (Orientation::VERTICAL == orientation)
-					return max_val - (current_val - min_pad);
-				return current_val - min_pad;
-			}
-
-			auto getMinValue() { return min_val - min_pad; }
-			auto getMaxValue() { return max_val - max_pad; }
-			auto isKeyDown() noexcept { return key_down; }
-			auto getLevelLength()
-			{
-				if (Orientation::HORIZONTAL == orientation)
-					return lvl_rect.w;
-				else if (Orientation::VERTICAL == orientation)
-					return rect.h - lvl_rect.h;
-				else if (Orientation::ANGLED == orientation)
-					return 0.f;
-			}
-
-			Slider &updateValue(float _val)
-			{
-				current_val = std::clamp(_val + min_pad, min_val, max_val);
-				if (Orientation::HORIZONTAL == orientation)
-					lvl_rect.w = (current_val * ratio);
-				else if (Orientation::VERTICAL == orientation)
-					lvl_rect.h = (current_val * ratio);
-				if (onValUpdate)
-					onValUpdate(*this);
-				return *this;
-			}
-
-			Slider &updateMinMaxValues(float _min_val, float _max_val, float _current_val)
-			{
-				min_val = _min_val;
-				max_val = _max_val;
-				// possible integer overflow bug if min/max val > INT_MAX/2
-				// should test and add a static assert
-				if (min_val < 0.f)
-					min_val = fabs(min_val), min_pad = min_val * 2.f;
-				if (max_val < 0.f)
-					max_val = fabs(max_val), max_pad = max_val * 2.f;
-				max_val += min_pad;
-				length = max_val - min_val;
-
-				if (Orientation::HORIZONTAL == orientation)
-					ratio = rect.w / length;
-				else if (Orientation::VERTICAL == orientation)
-					ratio = rect.h / length;
-				return updateValue(_current_val);
-			}
-
-			void updatePosBy(float dy, float dx) override
-			{
-				rect.x += dx;
-				rect.y += dy;
-				lvl_rect.x += dx;
-				lvl_rect.y += dy;
-			}
-
-		private:
-			bool pointInBound(const float &x, const float &y) const noexcept
-			{
-				if (Orientation::VERTICAL == orientation)
-				{
-					if ((x >= knob.dest.x) && (x < knob.dest.x + knob.dest.w) && (y >= rect.y) && (y < rect.y + rect.h))
-						return true;
-				}
-				else if (Orientation::HORIZONTAL == orientation)
-				{
-					if ((x >= rect.x) && (x < rect.x + rect.w) && (y >= knob.dest.y) && (y < knob.dest.y + knob.dest.h))
-						return true;
-				}
-				else if (Orientation::ANGLED == orientation)
-					return false;
+			if (x < pv->getRealX() + bounds.x || x >(pv->getRealX() + bounds.x + bounds.w) || y < pv->getRealY() + bounds.y ||
+				y >(pv->getRealY() + bounds.y + bounds.h))
 				return false;
-			}
+		}
+		else if (axis == 1 /*x-axis only*/)
+		{
+			if (x < bounds.x or x >(bounds.x + bounds.w))
+				return false;
+		}
+		else if (axis == 2 /*y-axis only*/)
+		{
+			if (y < bounds.y or y >(bounds.y + bounds.h))
+				return false;
+		}
+		return true;
+	}
 
-			float screenToWorld(const float val) const
-			{
-				if (Orientation::HORIZONTAL == orientation)
-					return (val * length) / rect.w;
-				else if (Orientation::VERTICAL == orientation)
-					return (val * length) / rect.h;
-				else
-					return 0.f;
-			}
-
-		private:
-			float min_val = 0.f, max_val = 0.f, current_val = 0.f, min_pad = 0.f, max_pad = 0.f;
-			SDL_Color bg_color = {50, 50, 50, 255};
-			SDL_Color lvl_bar_color = {255, 255, 255, 255};
-			Orientation orientation = Orientation::HORIZONTAL;
-			Circle knob;
-			SDL_FRect rect, lvl_rect;
-			bool show_knob = true, key_down = false;
-			float ratio = 0.f;
-			float length = 0.f;
-			std::function<void(Slider &)> onValUpdate = nullptr;
-		};
-	};
-
-	struct SliderAttributes
+protected:
+	void updateTextTexture(const std::string& _newText)
 	{
-		float x = 0.f, y = 0.f, w = 0.f, length = 0.f, min_value = 0.f, max_value = 0.f, current_value = 0.f, knob_radius = 0.f;
-		SDL_Color bar_color = {};
-		SDL_Color level_bar_color = {};
-		SDL_Color knob_color = {};
-		bool show_knob = true;
-		Orientation orientation = Orientation::VERTICAL;
-	};
+		internalText += _newText;
 
-	class Slider : public Context
-	{
-	public:
-		Slider() : x(0.f), y(0.f), w(0.f), length(0.f), min_val(0.f), max_val(0.f),
-				   current_val(0.f),
-				   bar_color({90, 90, 90, 0xff}),
-				   level_bar_color({0xff, 0xff, 0xff, 0xff}),
-				   knob_color({0xff, 0xff, 0xff, 0xff}) {}
-
-		Slider &SetUp(Context *_context, SliderAttributes _attr)
+		if (internalText.empty())
 		{
-			setContext(_context);
-			knob.setContext(_context);
-			knob_color = _attr.knob_color;
-			bar_color = _attr.bar_color;
-			level_bar_color = _attr.level_bar_color;
-			show_knob = _attr.show_knob;
-			radius = _attr.knob_radius;
-			orientation = _attr.orientation;
-			w = _attr.w;
-			if (w == 0.f)
-				w = DisplayInfo::Get().pw(1.5f);
-			if (radius == 0.f)
-				radius = w;
-			radius += 1;
-			x = _attr.x, y = _attr.y;
-			length = _attr.length;
-			knob.Build(0, 0, radius, knob_color);
-			if (orientation == Orientation::VERTICAL)
-			{
-				knob.dest.x = (x + (w / 2.f)) - radius + 1.f;
-				knob.dest.y = y + length - radius - current_bar_val;
+			cursor.setPosX(pv->getRealX() + textRect.x);
+			return;
+		}
+		std::string visibleText = internalText;
+		if (inputSize.size() <= maxCodePointsPerLn)
+			visibleText = internalText;
+		else
+		{
+			const int correctedTextSize = std::reduce(inputSize.begin() + (inputSize.size() - maxCodePointsPerLn), inputSize.end());
+			visibleText = internalText.substr(internalText.size() - correctedTextSize, internalText.size());
+		}
+
+		CacheRenderTarget rTargetCache(renderer);
+		txtTexture.reset();
+		if (txtTexture) {
+			txtTexture.reset();
+		}
+		txtTexture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
+			SDL_TEXTUREACCESS_TARGET, textRect.w, textRect.h);
+		SDL_SetTextureBlendMode(txtTexture.get(), SDL_BLENDMODE_BLEND);
+		SDL_SetRenderTarget(renderer, txtTexture.get());
+
+		RenderClear(renderer, 0, 0, 0, 0);
+		float tab = 0.f,cw=0.f,lw=0.f;
+		/*std::for_each(internalText.rbegin(), internalText.rend(), [this,&cw,&lw,&tab](char* _char) {
+			std::string outStr = { _char };
+			auto chtx = charStore.getChar(outStr, textAttributes.text_color);
+			int tmpW, tmpH;
+			SDL_QueryTexture(chtx, nullptr, nullptr, &tmpW, &tmpH);
+			lw = std::clamp((float)tmpW, 1.f, line_height / 1.5f);
+			SDL_FRect dst = { 1.f + cw,0.f,lw,line_height };
+			if (chtx != nullptr) {
+				RenderTexture(renderer, chtx, nullptr, &dst);
 			}
-			else if (orientation == Orientation::HORIZONTAL)
-			{
-				knob.dest.x = (x + (w / 2.f)) - radius + 1.f;
-				knob.dest.y = y + (w / 2.f) - radius + 1.f;
-			}
-			return *this;
-		}
+			tab += 1.f;
+			cw += 1.f + lw;
+			});*/
 
-		Slider &Build(float _min_val, float _max_val)
-		{
-			min_val = _min_val, max_val = _max_val;
-			if (min_val >= 0)
-				dt_min_max = max_val - min_val;
-			else
-				dt_min_max = max_val + fabs(min_val);
-			int ol = length - (radius * 2);
-			range_ratio = dt_min_max / length;
-			current_val = min_val;
-			ready = true;
-			return *this;
-		}
-
-		Slider &SetShowKnob(const bool &show_knob_)
-		{
-			this->show_knob = show_knob_;
-			return *this;
-		}
-
-		Slider &SetKnobColor(const SDL_Color &knob_color_)
-		{
-			this->knob_color = knob_color_;
-			return *this;
-		}
-
-		Slider &SetKnobBorderColor(const SDL_Color &knob_border_color_)
-		{
-			this->knob.border_color = knob_border_color_;
-			return *this;
-		}
-
-		Slider &SetLevelBarColor(const SDL_Color &level_bar_color_)
-		{
-			this->level_bar_color = level_bar_color_;
-			return *this;
-		}
-
-		Slider &SetBarColor(const SDL_Color &bar_color_)
-		{
-			this->bar_color = bar_color_;
-			return *this;
-		}
-
-		Slider &UpdateValue(const float &value)
-		{
-			if (value < min_val)
-				current_val = min_val, SDL_Log("slider value is less than min_val");
-			else if (value > max_val)
-				current_val = max_val, SDL_Log("slider value is greater than max_val");
-			else
-				current_val = value;
-			current_bar_val = (current_val - min_val) / range_ratio;
-			update(current_bar_val);
-			return *this;
-		}
-
-		Slider &SetKnobRadius(const float &knob_radius_)
-		{
-			this->radius = knob_radius_;
-			return *this;
-		}
-
-		Slider &SetW(const float &w_)
-		{
-			this->w = w_;
-			return *this;
-		}
-
-		float GetValue() const
-		{
-			return this->current_val;
-		}
-
-		float GetLvlBarLength()
-		{
-			return this->current_bar_val;
-		}
-
-		SDL_FRect GetLevelPos() const
-		{
-			return knob.dest;
-		}
-
-		bool OnClick(const float &x_, const float &y_)
-		{
-			if (orientation == Orientation::VERTICAL)
-			{
-				if (x_ >= x - radius + (w / 2) && x_ <= x + w + (w / 2) && y_ >= y &&
-					y_ <= y + length)
-					return true;
-			}
-			else if (orientation == Orientation::HORIZONTAL)
-			{
-				if (x_ >= x && x_ <= x + length &&
-					y_ >= y && y_ <= y + w)
-					return true;
-			}
-			return false;
-		}
-
-		bool handle_event(const SDL_Event &e)
-		{
-			bool RESULT = false;
-			switch (e.type)
-			{
-			case SDL_EVENT_MOUSE_BUTTON_DOWN:
-				if (OnClick(e.motion.x, e.motion.y))
-				{
-					key_down = true, RESULT = true;
-					if (orientation == Orientation::VERTICAL)
-						update(length - (e.motion.y - y));
-					else if (orientation == Orientation::HORIZONTAL)
-						update(e.motion.x - x);
-				}
+		for (auto& _char : internalText) {
+			std::string outStr = { _char };
+			auto chtx=charStore.getChar(outStr, textAttributes.text_color);
+			int tmpW, tmpH;
+			SDL_QueryTexture(chtx, nullptr, nullptr, &tmpW, &tmpH);
+			lw = std::clamp((float)tmpW, 1.f, line_height / 1.5f);
+			SDL_FRect dst = { 1.f+cw,0.f,lw,line_height };
+			// check for overflow on the right side
+			/*if (dst.x + dst.w > textRect.x + textRect.w) {
+				lw = 0.f;
 				break;
-			case SDL_EVENT_MOUSE_MOTION:
-				if (key_down)
-				{
-					RESULT = true;
-					if (orientation == Orientation::VERTICAL)
-						update(length - (e.motion.y - y));
-					else if (orientation == Orientation::HORIZONTAL)
-						update(e.motion.x - x);
-				}
-				break;
-			case SDL_EVENT_MOUSE_BUTTON_UP:
-				key_down = false;
-				break;
-			default:
-				break;
-			}
-
-			return RESULT;
-		}
-
-		void Draw() const
-		{
-			if (ready)
-			{
-				if (orientation == Orientation::VERTICAL)
-				{
-					fillRoundedRectF(renderer, {x, y, w, length}, 100, bar_color);
-					if (current_bar_val > 1)
-						fillRoundedRectF(renderer, {x, y + length - current_bar_val, w, current_bar_val}, 100, level_bar_color);
-				}
-				else if (orientation == Orientation::HORIZONTAL)
-				{
-					fillRoundedRectF(renderer, {x, y, length, w}, 100, bar_color);
-					if (current_bar_val > 1)
-						fillRoundedRectF(renderer, {x, y, current_bar_val, w}, 100, level_bar_color);
-				}
-				if (show_knob)
-					knob.Draw(renderer);
-			}
-		}
-
-	private:
-		SDL_Color bar_color, level_bar_color, knob_color;
-		Orientation orientation;
-		Circle knob;
-		SDL_Rect dest;
-		float x, y, w, length, radius, range_ratio, min_val, max_val, current_val, current_bar_val, dt_min_max;
-		bool key_down = false, show_knob, ready = false;
-
-		void update(const float &val)
-		{
-			if (orientation == Orientation::VERTICAL)
-			{
-				current_bar_val = val;
-				if (current_bar_val > length)
-					current_bar_val = length;
-				if (current_bar_val < 0)
-					current_bar_val = 0;
-				knob.dest.y = y + length - radius - current_bar_val;
-			}
-			else if (orientation == Orientation::HORIZONTAL)
-			{
-				current_bar_val = val;
-				if (current_bar_val > length)
-					current_bar_val = length;
-				if (current_bar_val < 0)
-					current_bar_val = 0;
-				knob.dest.x = ((x)-radius) + current_bar_val;
-			}
-
-			current_val = min_val + (current_bar_val * range_ratio);
-
-			// SDL_Log("CURRENT_VAL: %f", current_val);
-		}
-	};
-
-	class ToggleButton : public Context, IView
-	{
-	public:
-		using IView::bounds;
-		ToggleButton() : checked(false), clicked(false),
-						 unchecked_color({100, 100, 100, 0xff}),
-						 checked_color({39, 169, 55, 0xff}),
-						 v_padding(0), h_padding(0), knob_color({0xff, 0xff, 0xff, 0xff}) {}
-
-		bool checked, clicked;
-		// SDL_FRect dest;
-		Circle knob;
-		float knob_x_unchecked, knob_x_checked, v_padding, h_padding, knob_r;
-		SDL_Color unchecked_color, checked_color, knob_color;
-
-		ToggleButton &setContext(Context *context_)
-		{
-			Context::setContext(context_);
-			this->knob.setContext(context_);
-			return *this;
-		}
-
-		ToggleButton &setOnClickedCallback(std::function<void()> on_clicked_callback)
-		{
-			onClickedCallback = on_clicked_callback;
-			return *this;
-		}
-
-		ToggleButton &SetRect(const SDL_FRect &dest_)
-		{
-			this->bounds = dest_;
-			return *this;
-		}
-
-		ToggleButton &SetOffColor(const SDL_Color &off_color_)
-		{
-			this->unchecked_color = off_color_;
-			return *this;
-		}
-
-		ToggleButton &SetOnColor(const SDL_Color &on_color_)
-		{
-			this->checked_color = on_color_;
-			return *this;
-		}
-
-		ToggleButton &SetKnobColor(const SDL_Color &knob_color_)
-		{
-			this->knob_color = knob_color_;
-			return *this;
-		}
-
-		void Build()
-		{
-			v_padding = (to_cust(5.f, bounds.h));
-			h_padding = to_cust(2.f, bounds.w);
-			knob_r = to_cust(45.f, bounds.h);
-			knob_x_unchecked = bounds.x + h_padding + to_cust(2.f, bounds.h);
-			knob_x_checked = bounds.x + bounds.w + h_padding - to_cust(98.f, bounds.h);
-			knob.Build(checked ? knob_x_checked : knob_x_unchecked,
-					   bounds.y + v_padding, knob_r, knob_color);
-		}
-
-		bool OnClick(const float &x_, const float &y_)
-		{
-			if (x_ >= bounds.x && x_ <= bounds.x + bounds.w && y_ >= bounds.y &&
-				y_ <= bounds.y + bounds.h)
-				return true;
-			return false;
-		}
-
-		bool HandleEvent()
-		{
-			bool RESULT = false;
-			switch (event->type)
-			{
-			case SDL_EVENT_MOUSE_BUTTON_DOWN:
-				if (OnClick(event->motion.x, event->motion.y))
-					clicked = true;
-				break;
-			case SDL_EVENT_MOUSE_MOTION:
-				if (!OnClick(event->motion.x, event->motion.y))
-					clicked = false;
-				break;
-			case SDL_EVENT_MOUSE_BUTTON_UP:
-				if (OnClick(event->motion.x, event->motion.y) && clicked)
-				{
-					if (checked)
-						checked = false, this->knob.dest.x = this->knob_x_unchecked;
-					else
-						checked = true, this->knob.dest.x = knob_x_checked;
-					RESULT = true;
-					if (onClickedCallback != nullptr)
-						onClickedCallback();
-				}
-				this->clicked = false;
-				break;
-			default:
-				break;
-			}
-			return RESULT;
-		}
-
-		void Draw()
-		{
-			/*fillRoundedRect(renderer,{dest.x, dest.y, dest.w, dest.h}, 100,
-							checked ? checked_color : unchecked_color);*/
-			drawRoundedRectF(renderer, {bounds.x, bounds.y, bounds.w, bounds.h}, 100.f,
-							 checked ? checked_color : unchecked_color);
-			this->knob.Draw(renderer);
-			// DrawCircle(renderer, knob.dest.x + knob.dest.w / 2, knob.dest.y + knob.dest.h / 2, knob.dest.w / 2, { 0,0,0xff,0xff });
-		}
-
-	private:
-		std::function<void()> onClickedCallback = nullptr;
-	};
-
-	class ScrollBar : public UIWidget, public Context
-	{
-	private:
-		bool auto_hide_;
-		Uint64 auto_hide_time_;
-		unsigned short free_axis_;
-		Orientation orientation_;
-		Uint64 then_;
-		Uint8 alpha_;
-		float range_min_, range_max_, cache_x_, ratio_, value_, reference_;
-		SDL_FRect range;
-		short first_t;
-
-	public:
-		ScrollBar() {}
-
-		ScrollBar(const float &x, const float &y, const float &w, const float &h,
-				  const int &range_min, const int &range_max, const unsigned short &free_axis,
-				  const SDL_Color &color, const bool &auto_hide = true)
-		{
-			create(x, y, w, h, range_min, range_max, free_axis, color, auto_hide);
-		}
-
-		ScrollBar &setContext(Context *context_)
-		{
-			Context::setContext(context_);
-			return *this;
-		}
-
-		void create(const float &x, const float &y, const float &w, const float &h,
-					const int &range_min, const int &range_max, const unsigned short &free_axis,
-					const SDL_Color &color, const bool &auto_hide = true)
-		{
-			first_t = 0;
-			this->dest = {x, y, w,
-						  h},
-			this->range_min_ = range_min, this->range_max_ = range_max, this->auto_hide_ = auto_hide, this->auto_hide_time_ = 3000, this->free_axis_ = free_axis, this->value_ = 0.f;
-			this->range = {x + 4.f, (float)range_min, w - 8.f, (float)(range_max - range_min)};
-			cache_x_ = x;
-			// anim_cnt = range.w;
-			alpha_ = 100;
-			this->texture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
-												SDL_TEXTUREACCESS_TARGET, w, h);
-			SDL_SetTextureBlendMode(this->texture.get(), SDL_BLENDMODE_BLEND);
-			CacheRenderTarget rTargetCache(renderer);
-			SDL_SetRenderTarget(renderer, this->texture.get());
-			renderClear(renderer, 0, 0, 0, 0);
-			fillRoundedRectF(renderer, {0, 0, w, h}, 100, color);
-			rTargetCache.release(renderer);
-		}
-
-		void draw()
-		{
-			// if(first_t==0)this->then_ = SDL_GetTicks(), first_t++;
-			Uint64 dt = SDL_GetTicks() - then_;
-
-			if (dt <= 500)
-			{
-				range.x = cache_x_ + 4.f, dest.x = cache_x_;
-				dest.y = range_min_ + value_;
-				alpha_ = 100;
-				if (dest.y < range_min_)
-					dest.y = range_min_;
-				SDL_SetRenderDrawColor(renderer, 100, 100, 100, 100);
-				SDL_RenderFillRect(renderer, &range);
-				// drawBorderedRect(renderer, range.x, range.y, range.h, range.w, 100, {0xff, 0xff, 0xff, 100});
-				UIWidget::Draw(renderer);
-			}
-			else if (dt > 500 && dest.x <= DisplayInfo::Get().RenderW)
-			{
-				alpha_ -= 5;
-				if (alpha_ <= 5)
-					alpha_ = 5, dest.x += 2, range.x += 2;
-
-				SDL_SetRenderDrawColor(renderer, 100, 100, 100, alpha_);
-				SDL_RenderFillRect(renderer, &range);
-				// drawBorderedRect(renderer, range.x, range.y, range.h, range.w, 95, {0xff, 0xff, 0xff, alp});
-				UIWidget::Draw(renderer);
-			}
-			/*if (dest.x>DisplayMetrics::Get().RenderW)
-			{
-				range.x = cache_x + 4.f, dest.x = cache_x;
-				return;
 			}*/
-			/*else if (dt > 3000)
-			{
-				range.x = cache_x + 4.f, dest.x = cache_x;
-				return;
-			}*/
-		}
-
-		void scroll_neg(const float &val_moved)
-		{
-			// ratio_ = reference_ / range.h;
-			float res = (val_moved * range.h) / reference_;
-			value_ -= res;
-		}
-
-		void scroll_pos(const float &val_moved)
-		{
-			// ratio_ = reference_ / range.h;
-			float res = (val_moved * range.h) / reference_;
-			// SDL_Log("ref: %f range: %f res: %f val_m: %f", reference_,range.h,res,val_moved);
-			value_ += res;
-		}
-
-		void set_reference(const float &reference)
-		{
-			reference_ = reference;
-		}
-
-		void set_range_max(const float &range_max)
-		{
-			if (range_max < range_max_)
-			{
-				float diff = range_max_ - range_max;
-				// value_-=diff;
+			if (getRealX() + textRect.x + cw - lw > textRect.x + textRect.w) {
+				lw = 0.f;
+				break;
 			}
-			else if (range_max > range_max_)
-			{
-				float diff = range_max - range_max_;
-				// value_+=diff;
+			if (chtx != nullptr) {
+				RenderTexture(renderer, chtx, nullptr, &dst);
 			}
-			else if (range_max == range_max_)
-				return;
-			range_max_ = range_max;
-			range.h = range_max_ - range_min_;
+			tab += 1.f;
+			cw += 1.f+lw;
 		}
+		rTargetCache.release(renderer);
+		cursor.setPosX(getRealX() + textRect.x + cw-lw);
+		/*GLogger.Log(Logger::Level::Info, "cursor x:" + std::to_string(cursor.getRect().x) + ", y:" + std::to_string(cursor.getRect().y) + ", w:" +
+			std::to_string(cursor.getRect().w) + ", h:" + std::to_string(cursor.getRect().h));*/
+		finalTextRect.w = textRect.w;
+	}
 
-		void set_then(const Uint64 &then)
-		{
-			this->then_ = then;
-		}
-	};
+protected:
+	IView* onFocusView = nullptr;
 
-	class Icon : public Context
+protected:
+	CharStore charStore{};
+	float cornerRadius = 0.f,line_height=0.f;
+	std::shared_ptr<SDL_Texture> txtTexture;
+	std::shared_ptr<SDL_Texture> dflTxtTexture;
+	std::function<void(EditBox&)> onTextInputCallback;
+	std::function<void(EditBox&)> onKeyPressEnter;
+	std::function<void(EditBox&, std::string&)> onTextInputFilterCallback;
+	TextAttributes textAttributes;
+	FontAttributes fontAttributes;
+	std::vector<uint32_t> inputSize;
+	uint32_t maxTextSize = 100;
+
+	SDL_FRect dflTxtRect;
+	// SDL_FRect cusorRect;
+	SDL_FRect textRect;
+	SDL_FRect finalTextRect;
+	std::string internalText, place_holder_text;
+	RectOutline outlineRect;
+	bool hasFocus = false;
+	// SDL_Color cusorColor;
+	Cursor cursor;
+	uint32_t maxCodePointsPerLn = 1;
+	AdaptiveVsyncHandler adaptiveVsyncHD, updAdaptiveVsyncHD;
+	bool highlightOnHover = false;
+	SDL_Color onHoverOutlineColor = { 0x00, 0x00, 0x00, 0x00 };
+	SDL_Color onHoverBgColor = { 0x00, 0x00, 0x00, 0x00 };
+	SDL_Color onHoverTxtColor = { 0x00, 0x00, 0x00, 0x00 };
+	SDL_Color outlineColor = { 0x00, 0x00, 0x00, 0x00 };
+	int prevVsync = 1200;
+};
+class UIWidget
+{
+public:
+	SharedTexture texture;
+	int id, transition;
+	std::string s_id;
+	SDL_Color bg_color, border_color;
+	bool isButton, held;
+	SDL_FRect dest;
+	EdgeType edgeType;
+
+	UIWidget()
 	{
-	public:
-		Icon &setContext(Context *context_)
-		{
-			Context::setContext(context_);
-			return *this;
-		}
+		id = transition = 0;
+		bg_color = border_color = {0, 0, 0, 0};
+		isButton = held = false;
+		dest = {0.f, 0.f, 0.f, 0.f};
+		edgeType = EdgeType::RECT;
+	}
 
-		void create(const std::string &name, const SDL_FRect &rc)
-		{
-			if (rc.w <= 0.f || rc.h <= 0.f)
-			{
-				SDL_Log("Error Loading Icon - Invalid Rect Values");
-				return;
-			}
-			SDL_Surface *ldSurface = IMG_Load(name.c_str());
-			SDL_Texture *load_icn = SDL_CreateTextureFromSurface(renderer, ldSurface);
-			SDL_DestroySurface(ldSurface);
-			CacheRenderTarget rTargetCache(renderer);
-			texture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
-										  SDL_TEXTUREACCESS_TARGET, (int)rc.w,
-										  (int)rc.h);
-			SDL_SetRenderTarget(renderer, this->texture.get());
-			SDL_SetTextureBlendMode(texture.get(), SDL_BLENDMODE_BLEND);
-			renderClear(renderer, 0x0, 0x0, 0x0, 0x0);
-			SDL_RenderTexture(renderer, load_icn, nullptr, nullptr);
-			rTargetCache.release(renderer);
-			this->dest = rc;
-			SDL_DestroyTexture(load_icn);
-			load_icn = nullptr;
-		}
+	void draw(SDL_Renderer *renderer) const
+	{
+		RenderTexture(renderer, this->texture.get(), nullptr, &dest);
+	}
 
-		void create(const std::string &name)
+	/// TODO: add a std::function parameter that will be called if true
+	template <typename T>
+	bool onClick(T x, T y, unsigned short axis = 0)
+	{
+		if (axis == 0)
 		{
-			SDL_Surface *ldSurface = IMG_Load(name.c_str());
-			texture = CreateSharedTextureFromSurface(renderer, ldSurface);
-			SDL_DestroySurface(ldSurface);
-			// dest = {0.f, 0.f, 0.f, 0.f};
+			if (x > dest.x && x < (dest.w + dest.w))
+				if (y > dest.y && y < (dest.h + dest.y))
+					return true;
 		}
-
-		void registerCustomLazyImageLoaderCallBack(std::function<SDL_Surface *()> _CustomLazyImageLoaderCallBack)
+		else if (axis == 1 /*x-axis only*/)
 		{
-			CustomLazyImageLoaderCallBack_ = _CustomLazyImageLoaderCallBack;
-		}
-
-		void createLazy(const std::string &name, const SDL_FRect &rc)
-		{
-			if (rc.w <= 0.f || rc.h <= 0.f)
-			{
-				SDL_Log("Error Loading Icon - Invalid Rect Values");
-				return;
-			}
-			// lazyLoadFuture.
-		}
-
-		bool onClick(const float &x, const float &y) const
-		{
-			if (x > dest.x && x < (dest.x + dest.w) && y > dest.y && y < dest.y + dest.h)
+			if (x > dest.x && x < (dest.w + dest.w))
 				return true;
-			return false;
 		}
-
-		inline void setDestRect(const SDL_FRect &rect)
+		else if (axis == 2 /*y-axis only*/)
 		{
-			this->dest = rect;
+			if (y > dest.y && y < (dest.h + dest.y))
+				return true;
 		}
+		return false;
+	}
+};
 
-		SDL_FRect &getRect()
+class Circle : public UIWidget, public Context
+{
+public:
+	Circle() {}
+
+	Circle(Context *context_, const int &x_centre, const int &y_centre, const int &r,
+		   const SDL_Color &col, const bool &filled = true,
+		   const unsigned short &quadrant = 0)
+	{
+		Context::setContext(context_);
+		this->Build(x_centre, y_centre, r, col, filled, quadrant);
+	}
+
+	Circle &setContext(Context *context_)
+	{
+		Context::setContext(context_);
+		return *this;
+	}
+
+	void Build(const float &x_centre, const float &y_centre, const float &r,
+			   const SDL_Color &col, const bool &filled = true,
+			   const unsigned short &quadrant = 0)
+	{
+		if (quadrant == 0)
+			dest = {r, r, r + r, r + r};
+		else if (quadrant == 1)
+			dest = {x_centre - r, y_centre - r, r, r};
+		else if (quadrant == 2)
+			dest = {x_centre, y_centre - r, r, r};
+		else if (quadrant == 3)
+			dest = {x_centre - r, y_centre, r, r};
+		else if (quadrant == 4)
+			dest = {x_centre, y_centre, r, r};
+
+		if (this->texture.get() != nullptr)
 		{
-			return this->dest;
+			SDL_DestroyTexture(this->texture.get());
+			this->texture.reset();
 		}
 
-		inline void draw() const
+		this->texture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
+											SDL_TEXTUREACCESS_TARGET, this->dest.h + 1,
+											this->dest.h + 1);
+		SDL_SetTextureBlendMode(this->texture.get(), SDL_BLENDMODE_BLEND);
+		CacheRenderTarget rTargetCache(renderer);
+		SDL_SetRenderTarget(renderer, this->texture.get());
+		RenderClear(renderer, 0, 0, 0, 0);
+
+		if (filled)
+			FillCircle(renderer, dest.x + 1, dest.y + 1, r - 1, col),
+				DrawCircle(renderer, dest.x, dest.y, r, border_color);
+
+		else
+			DrawCircle(renderer, dest.x, dest.y, r, col);
+		dest.x = x_centre;
+		dest.y = y_centre;
+
+		rTargetCache.release(renderer);
+	}
+
+	void set_pos(int x, int y)
+	{
+		dest.x = x - dest.w / 2;
+		dest.y = y - dest.w / 2;
+	}
+};
+
+
+
+
+
+
+class ToggleButton;
+
+enum class BtnState {
+	ON,
+	OFF,
+};
+
+struct ToggleButtonAttr {
+	SDL_FRect rect{ 0.f,0.f,0.f,0.f };
+	// background color when OFF
+	SDL_Color bg{ 0xff,0xff,0xff,0xff };
+	// background color when ON
+	SDL_Color bg_on_color{ 0x00,0xff,0x00,255 };
+	// dot background color when OFF
+	SDL_Color dot_color{ 0x00,0x00,0x00,0xff };
+	// dot background color when ON
+	SDL_Color dot_on_color{ 0x00,0x00,0x00,0xff };
+	SDL_Color outline_color{ 0x00,0xff,0x00,255 };
+	float outline_px = 0.f;
+	// inner dot radius in percentage
+	float dot_rad_px = 85.f;
+	// button's initial state defalut is OFF
+	BtnState default_state = BtnState::OFF;
+	// callback invoked when state changes. default is nullptr
+	std::function<void(ToggleButton&)> onToggle = nullptr;
+};
+
+class ToggleButton: public Context, public IView {
+public:
+	ToggleButton(){}
+
+	ToggleButton(Context* _context, ToggleButtonAttr tbr) {
+		Build(_context, tbr);
+	}
+
+	ToggleButton& Build(Context* _context, ToggleButtonAttr tbr) {
+		setContext(_context);
+		attr = tbr;
+		state = attr.default_state;
+		//GLogger.Log(Logger::Level::Debug, "org dot rect{", attr.rect.x, attr.rect.y, attr.rect.w, attr.rect.h, "}");
+		if (attr.outline_px > 0.f) {
+			outline_px=to_cust(attr.outline_px, attr.rect.h);
+			attr.rect = {
+				attr.rect.x + to_cust(attr.outline_px,attr.rect.h),
+				attr.rect.y + to_cust(attr.outline_px,attr.rect.h),
+				attr.rect.w - (to_cust(attr.outline_px,attr.rect.h) * 2.f),
+				attr.rect.h - (to_cust(attr.outline_px,attr.rect.h) * 2.f)
+			};
+		}
+		bounds = attr.rect;
+		//if (attr.rect.w > attr.rect.h) {
+		dotr = ph(attr.dot_rad_px / 2.f);
+		dotx = state == BtnState::OFF ? (dotr + bounds.x + (ph(100.f - attr.dot_rad_px) / 2.f)) : ((dotr + bounds.x + bounds.w) - ph(attr.dot_rad_px) - (ph(100.f - attr.dot_rad_px)));
+		doty = dotr + bounds.y + ph(100.f - attr.dot_rad_px) / 2.f;
+		//}
+		/*else if (attr.rect.w < attr.rect.h or attr.rect.w == attr.rect.h) {
+			dotr = pw(attr.dot_rad_px/2.f);
+			dotx = bounds.x + pw(100.f - attr.dot_rad_px) / 2.f;
+			doty = bounds.y + pw(100.f - attr.dot_rad_px) / 2.f;
+		}*/
+		/*GLogger.Log(Logger::Level::Debug, "dot rect{", bounds.x, bounds.y, bounds.w, bounds.h, "}");
+		GLogger.Log(Logger::Level::Debug, "dot parm{ dotr:",dotr,"dotx:",dotx,"doty:",doty,"}");*/
+		return *this;
+	}
+
+	bool handleEvent()override final
+	{
+		bool result = false;
+		switch (event->type)
 		{
-			if (texture.get() != nullptr)
-				SDL_RenderTexture(renderer, texture.get(), nullptr, &dest);
+		case EVT_MOUSE_BTN_DOWN:
+			if (pointInBound(event->motion.x, event->motion.y))
+			{
+				//GLogger.Log(Logger::Level::Debug, "point in bound");
+				key_down = true, result = true;
+			}
+			break;
+		case EVT_MOUSE_MOTION:
+			key_down = false;
+			break;
+		case EVT_MOUSE_BTN_UP:
+		{
+			if (key_down) {
+				toggleState();
+				if (nullptr != attr.onToggle) {
+					attr.onToggle(*this);
+				}
+				result = true;
+			}
+			key_down = false;
 		}
+			break;
+		default:
+			break;
+		}
+		return result;
+	}
 
-		/*Icon *getClass() {
-			return this;
+	void onUpdate()override final
+	{
+
+	}
+
+	void draw()override final
+	{
+		/*if (attr.outline_px > 0.f) {
+			fillRoundedRectOutline(renderer, bounds, 100.f, outline_px, attr.outline_color);
 		}*/
 
-		Icon &setOnClickedCallback(std::function<void()> on_clicked_callback)
-		{
-			onClickedCallback = std::move(on_clicked_callback);
-			return *this;
-		}
+		fillRoundedRectF(renderer, bounds, 100.f, state==BtnState::OFF?attr.bg:attr.bg_on_color);
+		draw_filled_circle(renderer, dotx, doty,dotr , state == BtnState::OFF ? attr.dot_color : attr.dot_on_color);
+	}
 
-		Icon &handleEvent(const SDL_Event &event)
-		{
-			if (event.type == SDL_EVENT_FINGER_UP)
-			{
-				if (onClick(event.tfinger.x * DisplayInfo::Get().RenderW, event.tfinger.y * DisplayInfo::Get().RenderH) &&
-					onClickedCallback != nullptr)
-					onClickedCallback();
-			}
-			return *this;
-		}
+	BtnState getState() {
+		return state;
+	}
 
-		SDL_FRect dest;
-
-	private:
-		std::shared_future<SDL_Surface *> lazyLoadFuture;
-		SharedTexture texture;
-		SDL_Texture *defaultTexture_ = nullptr;
-		std::function<void()> onClickedCallback = nullptr;
-		std::function<SDL_Surface *()> CustomLazyImageLoaderCallBack_ = nullptr;
-	};
-
-	class Pointer : public Context, IView
+	void setState(BtnState _state) {
+		state = _state == BtnState::ON ? BtnState::ON : BtnState::OFF;
+		dotx = state == BtnState::OFF ? (dotr + bounds.x + (ph(100.f - attr.dot_rad_px) / 2.f)) : ((dotr + bounds.x + bounds.w) - ph(attr.dot_rad_px) - (ph(100.f - attr.dot_rad_px)));
+	}
+private:
+	bool pointInBound(const float& x, const float& y) const noexcept
 	{
-	public:
-		Direction openDir;
-		Triangle tri;
+		if ((x >= pv->getRealX() + bounds.x) && (x < pv->getRealX() + bounds.x + bounds.w) 
+			&& (y >= pv->getRealY() + bounds.y) && (y < pv->getRealY() + bounds.y + bounds.h))
+			return true;
+		return false;
+	}
 
-	public:
-		Pointer(Context *_context, Triangle &_tri, Direction openDirection)
-		{
-			Build(_context, _tri, openDirection);
+	void toggleState() {
+		state = state == BtnState::ON ? BtnState::OFF : BtnState::ON;
+		dotx = state == BtnState::OFF ? (dotr + bounds.x + (ph(100.f - attr.dot_rad_px) / 2.f)) : ((dotr + bounds.x + bounds.w) - ph(attr.dot_rad_px) - (ph(100.f - attr.dot_rad_px)));
+		if (attr.onToggle != nullptr) {
+			attr.onToggle(*this);
 		}
+	}
+private:
+	ToggleButtonAttr attr;
+	float dotx = 0.f, doty = 0.f, dotr = 80.f, outline_px=0.f;
+	bool key_down = false;
+	BtnState state{};
+};
 
-		Pointer &setContext(Context *_context)
+
+
+
+
+
+struct SliderAttributes
+{
+	SDL_FRect rect = {};
+	float min_val = 0.f, max_val = 1.f, start_val = 0.f,
+		  knob_radius = 0.f, corner_radius = 0.f;
+	bool show_knob = true;
+	SDL_Color bg_color = {50, 50, 50, 255};
+	SDL_Color level_bar_color = {255, 255, 255, 255};
+	SDL_Color knob_color = {255, 255, 255, 255};
+	Orientation orientation = Orientation::HORIZONTAL;
+};
+
+class Slider : public Context, IView
+{
+public:
+	using IView::getView;
+
+public:
+	Slider &Build(Context *_context, SliderAttributes _attr)
+	{
+		setContext(_context);
+		knob.setContext(_context);
+		knob.Build(0.f, 0.f,
+				   to_cust(_attr.knob_radius,
+						   _attr.orientation == Orientation::HORIZONTAL ? _attr.rect.h : _attr.rect.w),
+				   _attr.knob_color);
+		rect = _attr.rect;
+		lvl_rect = rect;
+		bg_color = _attr.bg_color;
+		lvl_bar_color = _attr.level_bar_color;
+		orientation = _attr.orientation;
+		show_knob = _attr.show_knob;
+		corner_radius = _attr.corner_radius;
+		updateMinMaxValues(_attr.min_val, _attr.max_val, _attr.start_val);
+		return *this;
+	}
+
+	bool handleEvent() override
+	{
+		bool result = false;
+		switch (event->type)
 		{
-			Context::setContext(_context);
-			Context::setView(this);
-			return *this;
-		}
-
-		Pointer &Build(Context *_context, Triangle &_tri, Direction openDirection, bool isOpen = false)
-		{
-			this->setContext(_context);
-			tri = _tri;
-			is_open = isOpen;
-			// auto trirect = getTriangleBounds(tri);
-
-			bounds = {0.f, 0.f, 0.f, 0.f};
-			return *this;
-		}
-
-		bool handleEvent() override
-		{
-			bool result = false;
-			if (event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
+		case EVT_MOUSE_BTN_DOWN:
+			if (pointInBound(event->motion.x, event->motion.y))
 			{
-				bounds =
-					{
-						DisplayInfo::Get().toUpdatedWidth(bounds.x),
-						DisplayInfo::Get().toUpdatedHeight(bounds.y),
-						DisplayInfo::Get().toUpdatedWidth(bounds.w),
-						DisplayInfo::Get().toUpdatedHeight(bounds.h),
-					};
-				return false;
+				key_down = true, result = true;
+				if (Orientation::VERTICAL == orientation)
+					updateValue(screenToWorld(event->motion.y - (pv->getRealY() + rect.y)));
+				else if (Orientation::HORIZONTAL == orientation)
+					updateValue(screenToWorld(event->motion.x - (pv->getRealX() + rect.x)));
 			}
-			else if (event->type == SDL_EVENT_FINGER_DOWN)
+			break;
+		case EVT_MOUSE_MOTION:
+			if (key_down)
 			{
-				if (not motion_occured)
-				{
-					auto cf = SDL_FPoint{event->tfinger.x * DisplayInfo::Get().RenderW,
-										 event->tfinger.y * DisplayInfo::Get().RenderH};
-					if (isPosInbound(cf.x, cf.y))
-					{
-						if (is_open)
-							closeTri();
-						else
-							openTri();
-					}
-				}
-				motion_occured = false;
+				result = true;
+				if (Orientation::VERTICAL == orientation)
+					updateValue(screenToWorld(event->motion.y - (pv->getRealY() + rect.y)));
+				else if (Orientation::HORIZONTAL == orientation)
+					updateValue(screenToWorld(event->motion.x - (pv->getRealX() + rect.x)));
 			}
-			else if (event->type == SDL_EVENT_FINGER_UP)
-			{
-				motion_occured = false;
-			}
-			else if (event->type == SDL_EVENT_FINGER_MOTION)
-			{
-				motion_occured = true;
-			}
-			return result;
+			break;
+		case EVT_MOUSE_BTN_UP:
+			key_down = false;
+			break;
+		default:
+			break;
+		}
+		return result;
+	}
+
+	void draw() override
+	{
+		if (Orientation::HORIZONTAL == orientation)
+		{
+			SDL_SetRenderDrawColor(renderer, bg_color.r, bg_color.g, bg_color.b, bg_color.a);
+			fillRoundedRectF(renderer, rect, corner_radius, bg_color);
+			SDL_SetRenderDrawColor(renderer, lvl_bar_color.r, lvl_bar_color.g, lvl_bar_color.b, lvl_bar_color.a);
+			fillRoundedRectF(renderer, lvl_rect, corner_radius, lvl_bar_color);
+		}
+		else if (Orientation::VERTICAL == orientation)
+		{
+			SDL_SetRenderDrawColor(renderer, lvl_bar_color.r, lvl_bar_color.g, lvl_bar_color.b, lvl_bar_color.a);
+			fillRoundedRectF(renderer, rect, corner_radius, lvl_bar_color);
+			SDL_SetRenderDrawColor(renderer, bg_color.r, bg_color.g, bg_color.b, bg_color.a);
+			fillRoundedRectF(renderer, lvl_rect, corner_radius, bg_color);
 		}
 
-		void Draw() override
+		if (show_knob)
 		{
-			drawFilledTriangle(renderer, tri);
+			knob.draw(renderer);
 		}
+	}
 
-	private:
-		bool motion_occured = false;
-		bool is_open = false;
+	Slider &registerOnValueUpdateCallback(std::function<void(Slider &)> onValUpdateClbk)
+	{
+		onValUpdate = onValUpdateClbk;
+		return *this;
+	}
 
-	private:
-		[[nodiscard]] bool isPosInbound(const float &valX, const float &valY) const noexcept
+	auto getCurrentValue()
+	{
+		if (Orientation::VERTICAL == orientation)
+			return max_val - (current_val - min_pad);
+		return current_val - min_pad;
+	}
+
+	auto getMinValue() { return min_val - min_pad; }
+	auto getMaxValue() { return max_val - max_pad; }
+	auto isKeyDown() noexcept { return key_down; }
+	auto getLevelLength()
+	{
+		if (Orientation::HORIZONTAL == orientation)
+			return lvl_rect.w;
+		else if (Orientation::VERTICAL == orientation)
+			return rect.h - lvl_rect.h;
+		else if (Orientation::ANGLED == orientation)
+			return 0.f;
+	}
+
+	Slider &updateValue(float _val)
+	{
+		current_val = std::clamp(_val + min_pad, min_val, max_val);
+		if (Orientation::HORIZONTAL == orientation)
 		{
-			if (valX > bounds.x && valX < bounds.x + bounds.w && valY > bounds.y &&
-				valY < bounds.y + bounds.h)
+			lvl_rect.w = (current_val * ratio);
+			knob.dest.x = lvl_rect.x + lvl_rect.w - (knob.dest.w / 2.f);
+			knob.dest.y = rect.y + (rect.h / 2.f) - (knob.dest.h / 2.f) - 1.f;
+		}
+		else if (Orientation::VERTICAL == orientation)
+		{
+			lvl_rect.h = (current_val * ratio);
+			knob.dest.x = (lvl_rect.x + (lvl_rect.w / 2.f)) - (knob.dest.w / 2.f);
+			knob.dest.y = (lvl_rect.y + lvl_rect.h) - (knob.dest.w / 2.f);
+		}
+		if (onValUpdate)
+			onValUpdate(*this);
+		return *this;
+	}
+
+	Slider &updateMinMaxValues(float _min_val, float _max_val, float _current_val)
+	{
+		min_val = _min_val;
+		max_val = _max_val;
+		// possible integer overflow bug if min/max val > INT_MAX/2
+		// should test and add a static assert
+		if (min_val < 0.f)
+			min_val = fabs(min_val), min_pad = min_val * 2.f;
+		if (max_val < 0.f)
+			max_val = fabs(max_val), max_pad = max_val * 2.f;
+		max_val += min_pad;
+		length = max_val - min_val;
+
+		if (Orientation::HORIZONTAL == orientation)
+			ratio = rect.w / length;
+		else if (Orientation::VERTICAL == orientation)
+			ratio = rect.h / length;
+		return updateValue(_current_val);
+	}
+
+	void updatePosBy(float dx, float dy) override
+	{
+		rect.x += dx;
+		rect.y += dy;
+		lvl_rect.x += dx;
+		lvl_rect.y += dy;
+		knob.dest.x += dx;
+		knob.dest.y += dy;
+	}
+
+private:
+	bool pointInBound(const float &x, const float &y) const noexcept
+	{
+		if (Orientation::VERTICAL == orientation)
+		{
+			if ((x >= pv->getRealX() + knob.dest.x) && (x < pv->getRealX() + knob.dest.x + knob.dest.w) && (y >= pv->getRealY() + rect.y) && (y < pv->getRealY() + rect.y + rect.h))
 				return true;
+		}
+		else if (Orientation::HORIZONTAL == orientation)
+		{
+			if ((x >= pv->getRealX() + rect.x) && (x < pv->getRealX() + rect.x + rect.w) && (y >= pv->getRealY() + knob.dest.y) && (y < pv->getRealY() + knob.dest.y + knob.dest.h))
+				return true;
+		}
+		else if (Orientation::ANGLED == orientation)
 			return false;
-		}
+		return false;
+	}
 
-		void openTri()
-		{
-		}
-
-		void closeTri()
-		{
-		}
-	};
-
-	class cellblock_visitor
+	float screenToWorld(const float val) const
 	{
-	public:
-		template <typename T>
-		explicit cellblock_visitor(const T &_t) : object{&_t}
-		//,
-		//	getMaxVerticalGrids_{ [](const void* obj) {
-		//	return static_cast<const T*>(obj)->getMaxVerticalGrids();
-		//} },
-		/*getCellSpacing_{ [](const void* obj) {
-		  return static_cast<const T*>(obj)->getCellSpacing();
-		} },
-		getCellWidth_{ [](const void* obj) {
-		  return static_cast<const T*>(obj)->getCellWidth();
-		} }*/
-		{
-		}
+		if (Orientation::HORIZONTAL == orientation)
+			return (val * length) / rect.w;
+		else if (Orientation::VERTICAL == orientation)
+			return (val * length) / rect.h;
+		else
+			return 0.f;
+	}
 
-	private:
-		const void *object;
-		void (*getMaxVerticalGrids_)(const void *);
-		void (*getCellSpacing_)(const float *);
-		void (*getCellWidth_)(const float *);
-		void (*getLowestBoundCell_)(const float *);
-	};
+private:
+	float min_val = 0.f, max_val = 0.f, current_val = 0.f, min_pad = 0.f, max_pad = 0.f;
+	SDL_Color bg_color = {50, 50, 50, 255};
+	SDL_Color lvl_bar_color = {255, 255, 255, 255};
+	Orientation orientation = Orientation::HORIZONTAL;
+	Circle knob;
+	float corner_radius = 0.f;
+	SDL_FRect rect, lvl_rect;
+	bool show_knob = true, key_down = false;
+	float ratio = 0.f;
+	float length = 0.f;
+	std::function<void(Slider &)> onValUpdate = nullptr;
+};
 
-	template <typename T>
+/*
+template <typename T>
 	concept is_cellblock = requires(T _t) {
 		//{_t.getMaxVerticalGrids()}->std::convertible_to<int>;
 		_t.getMaxVerticalGrids();
 		_t.getLowestBoundCell();
 		_t.getCellSpacing();
 		_t.getCellWidth();
-	};
+	};*/
 
-	// class Select : Context, IView;
+class CellBlock;
+class Select;
 
-	class Cell : public Context, IView
+class Cell : public Context, public IView
+{
+	/*
+  public:
+	struct State
 	{
-	private:
-		// private helpers used by CellBlock
-		bool isHeader = false;
-		uint32_t num_vert_grids = 1;
-		float org_mx = 0.f, org_my = 0.f, mx = 0.f, my = 0.f;
+		SDL_Color bg_color = {50, 50, 50, 255};
+		SDL_Color on_hover_bg_color = {0x00, 0x00, 0x00, 0x00};
+		float corner_radius = 0.0f;
+		IViewAttributes iv_attr;
 
-	public:
-		friend class CellBlock;
-		using Context::adaptiveVsync;
-		using Context::event;
-		using Context::getContext;
-		using Context::pv;
-		using IView::addChildView;
-		using IView::bounds;
-		using IView::getChildView;
-		using IView::getView;
-		// using IView::type;
-		using IView::action;
-		using IView::childViews;
-		using IView::hide;
-		using IView::is_form;
-		using IView::isHidden;
-		using IView::prevent_default_behaviour;
-		using IView::show;
-		using FormData = std::unordered_map<std::string, std::string>;
+		std::vector<TextBoxAttributes> tb_attr;
+		std::vector<EditBoxAttributes> editb_attr;
+		std::vector<ImageButtonAttributes> img_attr;
+		std::vector<SliderAttributes> slider_attr;
 
-	public:
-		// std::string type
-	public:
-		uint64_t index = 0;
-		SDL_Color bg_color = {0x00, 0x00, 0x00, 0x00};
-		SDL_Color onHoverBgColor = {0x00, 0x00, 0x00, 0x00};
-		float corner_radius = 0.f;
-		std::any user_data, dataSetChangedData;
-		std::function<void(Cell &)> customDrawCallback;
-		std::function<bool(Cell &)> customEventHandlerCallback;
-		std::function<void(Cell &, std::any _data)> onDataSetChanged;
-		std::function<void(Cell &, FormData _data)> onFormSubmit;
-		std::deque<TextBox> textBox;
-		std::deque<EditBox> editBox;
-		std::deque<RunningText> runningText;
-		std::deque<Expr::Slider> sliders;
-		std::deque<ImageButton> imageButton;
-		std::deque<IView *> iViews;
-		bool selected = false;
-		bool isHighlighted = false;
-		bool highlightOnHover = false;
-		bool ignoreTextEvents = true;
+		// Callbacks or other interactive properties
+		std::function<void(Cell &)> customDrawCallback = nullptr;
+		std::function<bool(Cell &)> customEventHandlerCallback = nullptr;
+		std::function<void(Cell &, std::any _data)> onDataSetChanged = nullptr;
+		//std::function<void(Cell &, FormData _data)> onFormSubmit = nullptr;
+		std::function<void(Cell &)> onUpdateCallback = nullptr;
 
-	public:
-		Cell &setContext(Context *context_) noexcept
+		// Any other data needed to fully describe a cell's content and appearance
+		// bool needsRebuild = true; // If Cell UI needs full re-config from this data
+	};
+*/
+private:
+	// private helpers used by CellBlock
+	bool isHeader = false;
+	uint32_t num_vert_grids = 1;
+	float org_mx = 0.f, org_my = 0.f, mx = 0.f, my = 0.f,
+		  scroll_y = 0.f, max_scroll = 0.f, dy = 0.f;
+	/*current finger*/
+	v2d_generic<float> cf = {0.f, 0.f};
+	/*previous finger*/
+	v2d_generic<float> pf = {0.f, 0.f};
+
+	bool finger_down = false;
+
+	enum class ScrollAction
+	{
+		None,
+		Up,
+		Down,
+		Left,
+		Right
+	};
+	ScrollAction scrlAction;
+	bool cellblock_parent = false;
+private:
+	void updatePosByInternal(float _dx, float _dy)
+	{
+		for (auto &imgBtn : imageButton)
+			imgBtn.updatePosBy(_dx, _dy);
+		for (auto &textBx : textBox)
+			textBx.updatePosBy(_dx, _dy);
+		for (auto &slider : sliders)
+			slider.updatePosBy(_dx, _dy);
+		for (auto &rtext : runningText)
+			rtext.updatePosBy(_dx, _dy);
+		for (auto &iview : iViews)
+			iview->updatePosBy(_dx, _dy);
+	}
+
+	void internal_handle_motion()
+	{
+		// ACTION_UP
+		if (cf.y < pf.y)
 		{
-			Context::setContext(context_);
-			Context::setView(this);
-			return *this;
-		}
-
-		Cell &registerCustomDrawCallback(std::function<void(Cell &)> _customDrawCallback) noexcept
-		{
-			this->customDrawCallback = std::move(_customDrawCallback);
-			return *this;
-		}
-
-		Cell &registerCustomEventHandlerCallback(std::function<bool(Cell &)> _customEventHandlerCallback) noexcept
-		{
-			this->customEventHandlerCallback = std::move(_customEventHandlerCallback);
-			return *this;
-		}
-
-		Cell &registerOnDataSetChangedCallback(std::function<void(Cell &, std::any _data)> _onDataSetChanged) noexcept
-		{
-			this->onDataSetChanged = std::move(_onDataSetChanged);
-			return *this;
-		}
-
-		Cell &registerOnFormSubmitCallback(std::function<void(Cell &, FormData _data)> _onFormSubmit) noexcept
-		{
-			this->onFormSubmit = std::move(_onFormSubmit);
-			return *this;
-		}
-
-		Cell &setIndex(const uint64_t &_index) noexcept
-		{
-			this->index = _index;
-			return *this;
-		}
-
-		Cell &addView(IView *iview)
-		{
-			// iViews.emplace_back(iview);
-			return *this;
-		}
-
-		Cell &addTextBox(TextBoxAttributes _TextBoxAttr) noexcept
-		{
-			_TextBoxAttr.rect = {bounds.x + pv->to_cust(_TextBoxAttr.rect.x, bounds.w),
-								 bounds.y + pv->to_cust(_TextBoxAttr.rect.y, bounds.h),
-								 pv->to_cust(_TextBoxAttr.rect.w, bounds.w),
-								 pv->to_cust(_TextBoxAttr.rect.h, bounds.h)};
-			textBox.emplace_back()
-				.Build(this, _TextBoxAttr);
-			// if (is_form and _TextBoxAttr.type="submit"){
-			// textBox.back().setonsubmithandler }
-			return *this;
-		}
-
-		Cell &addTextBoxFront(TextBoxAttributes _TextBoxAttr) noexcept
-		{
-			_TextBoxAttr.rect = {bounds.x + pv->to_cust(_TextBoxAttr.rect.x, bounds.w),
-								 bounds.y + pv->to_cust(_TextBoxAttr.rect.y, bounds.h),
-								 pv->to_cust(_TextBoxAttr.rect.w, bounds.w),
-								 pv->to_cust(_TextBoxAttr.rect.h, bounds.h)};
-			textBox.emplace_front()
-				.Build(this, _TextBoxAttr);
-			// if (is_form and _TextBoxAttr.type="submit"){
-			// textBox.back().setonsubmithandler }
-			return *this;
-		}
-
-		Cell &addTextBoxVertArray(TextBoxAttributes _TextBoxAttr, float percentageMargin, std::vector<std::string> _texts)
-		{
-			const auto yStep = _TextBoxAttr.rect.h + percentageMargin;
-			for (auto &_txt : _texts)
+			if (scroll_y + (pf.y - cf.y) < max_scroll + ph(5.f))
 			{
-				_TextBoxAttr.textAttributes.text = _txt;
-				addTextBox(_TextBoxAttr);
-				_TextBoxAttr.rect.y += yStep;
+				dy = 0.f - (pf.y - cf.y);
+				scroll_y += std::fabs(dy);
+				updatePosByInternal(0.f, dy);
+				scrlAction = ScrollAction::Up;
 			}
-			return *this;
 		}
-
-		Cell &addTextBoxHorArray(TextBoxAttributes _TextBoxAttr, std::vector<std::string> _texts)
+		// ACTION_DOWN
+		else if (pf.y < cf.y)
 		{
-			return *this;
+			if (scroll_y - (cf.y - pf.y) > 0.f)
+			{
+				dy = (cf.y - pf.y);
+				scroll_y -= dy;
+				updatePosByInternal(0.f, dy);
+				scrlAction = ScrollAction::Down;
+			}
 		}
+		pf = cf;
+		dy = 0.f;
+	}
 
-		Cell &addTextBoxFlexArray(TextBoxAttributes _TextBoxAttr, std::vector<std::string> _texts)
-		{
-			return *this;
-		}
+public:
+	friend class CellBlock;
+	using FormData = std::unordered_map<std::string, std::string>;
 
-		Cell &addRunningText(RunningText::Attr _RTextAttr)
+public:
+	SharedTexture texture = nullptr;
+	bool redraw = true;
+
+public:
+	uint64_t index = 0;
+	SDL_Color bg_color = {0x00, 0x00, 0x00, 0x00};
+	SDL_Color onHoverBgColor = {0x00, 0x00, 0x00, 0x00};
+	float corner_radius = 0.f;
+	std::any user_data, dataSetChangedData;
+	std::function<void(Cell &)> customDrawCallback = nullptr;
+	std::function<bool(Cell &)> customEventHandlerCallback = nullptr;
+	std::function<void(Cell &, std::any _data)> onDataSetChanged = nullptr;
+	std::function<void(Cell &, FormData _data)> onFormSubmit = nullptr;
+	std::function<void(Cell &)> onUpdateCallback = nullptr;
+	std::deque<TextBox> textBox;
+	std::deque<EditBox> editBox;
+	std::deque<RunningText> runningText;
+	std::deque<Slider> sliders;
+	std::deque<ToggleButton> togButton;
+	std::deque<ImageButton> imageButton;
+	std::deque<IView *> iViews;
+	// std::deque<std::shared_ptr<CellBlock>> blocks;
+	std::vector<CellBlock> blocks;
+	bool selected = false;
+	bool isHighlighted = false;
+	bool highlightOnHover = false;
+	bool ignoreTextEvents = true;
+
+	std::vector<Cell> header_footer{};
+	std::vector<Select> select;
+
+public:
+	Cell &setContext(Context *context_) noexcept
+	{
+		Context::setContext(context_);
+		Context::setView(this);
+		return *this;
+	}
+	/*
+	Cell::State getState()
+	{
+		return Cell::State{};
+	}
+
+	Cell &BuildFromState(Cell::State &_cell_state)
+	{
+		return *this;
+	}*/
+
+	Cell &clear()
+	{
+		scroll_y = 0.f, max_scroll = 0.f, dy = 0.f;
+		textBox.clear();
+		editBox.clear();
+		imageButton.clear();
+		sliders.clear();
+		//runningText.clear();
+		return *this;
+	}
+
+	Cell &registerCustomDrawCallback(std::function<void(Cell &)> _customDrawCallback) noexcept
+	{
+		this->customDrawCallback = std::move(_customDrawCallback);
+		return *this;
+	}
+
+	Cell &registerCustomEventHandlerCallback(std::function<bool(Cell &)> _customEventHandlerCallback) noexcept
+	{
+		this->customEventHandlerCallback = std::move(_customEventHandlerCallback);
+		return *this;
+	}
+
+	Cell &registerOnDataSetChangedCallback(std::function<void(Cell &, std::any _data)> _onDataSetChanged) noexcept
+	{
+		this->onDataSetChanged = std::move(_onDataSetChanged);
+		return *this;
+	}
+
+	Cell &registerOnFormSubmitCallback(std::function<void(Cell &, FormData _data)> _onFormSubmit) noexcept
+	{
+		this->onFormSubmit = std::move(_onFormSubmit);
+		return *this;
+	}
+
+	Cell &setIndex(const uint64_t &_index) noexcept
+	{
+		this->index = _index;
+		return *this;
+	}
+
+	Cell &addView(IView *iview)
+	{
+		// iViews.emplace_back(iview);
+		return *this;
+	}
+
+	Cell& addFooter(SDL_FRect pbounds,SDL_Color bg={0,0,0,0}, float _corner_radius = 0.f)
+	{
+		header_footer.push_back({});
+		auto& cell = header_footer.back();
+		cell.setContext(this);
+		cell.bounds = { pw(pbounds.x), ph(pbounds.y), pw(pbounds.w), ph(pbounds.h) };
+		cell.bg_color = bg;
+		cell.corner_radius = _corner_radius;
+		GLogger.Log(Logger::Level::Info, "Cell bounds rect{", bounds.x, bounds.y, bounds.w, bounds.h, "}");
+		GLogger.Log(Logger::Level::Info, "Footer Cell bounds rect{", cell.bounds.x, cell.bounds.y, cell.bounds.w, cell.bounds.h,"}");
+		return header_footer.back();
+	}
+
+	Cell& addSelect(/*Select::Props sprops, std::vector<Select::Value> values*/)
+	{
+		/*sprops.rect = {
+			/*bounds.x + * pv->to_cust(sprops.rect.x, bounds.w),
+			/*bounds.y + * pv->to_cust(sprops.rect.y, bounds.h),
+			pv->to_cust(sprops.rect.w, bounds.w),
+			pv->to_cust(sprops.rect.h, bounds.h),
+		};
+		select.emplace_back().Build(this, sprops,values);
+		max_scroll = std::max(max_scroll, (sprops.rect.y + sprops.rect.h) - bounds.h);
+		redraw = true;*/
+		return *this;
+	}
+
+	Cell& addToggleButton(ToggleButtonAttr togBtnAttr) {
+		togBtnAttr.rect = {/*bounds.x + */ pv->to_cust(togBtnAttr.rect.x, bounds.w),
+			/*bounds.y + */ pv->to_cust(togBtnAttr.rect.y, bounds.h),
+			pv->to_cust(togBtnAttr.rect.w, bounds.w),
+			pv->to_cust(togBtnAttr.rect.h, bounds.h) };
+		togButton.emplace_back()
+			.Build(this, togBtnAttr);
+		max_scroll = std::max(max_scroll, (togBtnAttr.rect.y + togBtnAttr.rect.h) - bounds.h);
+		// if (is_form and _TextBoxAttr.type="submit"){
+		// textBox.back().setonsubmithandler }
+		redraw = true;
+		return *this;
+	}
+
+	Cell &addTextBox(TextBoxAttributes _TextBoxAttr) noexcept
+	{
+		_TextBoxAttr.rect = {/*bounds.x + */ pv->to_cust(_TextBoxAttr.rect.x, bounds.w),
+							 /*bounds.y + */ pv->to_cust(_TextBoxAttr.rect.y, bounds.h),
+							 pv->to_cust(_TextBoxAttr.rect.w, bounds.w),
+							 pv->to_cust(_TextBoxAttr.rect.h, bounds.h)};
+		textBox.emplace_back()
+			.Build(this, _TextBoxAttr);
+		max_scroll = std::max(max_scroll, (_TextBoxAttr.rect.y + _TextBoxAttr.rect.h) - bounds.h);
+		// if (is_form and _TextBoxAttr.type="submit"){
+		// textBox.back().setonsubmithandler }
+		redraw = true;
+		return *this;
+	}
+
+	Cell &addTextBoxFront(TextBoxAttributes _TextBoxAttr) noexcept
+	{
+		_TextBoxAttr.rect = {/*bounds.x + */ pv->to_cust(_TextBoxAttr.rect.x, bounds.w),
+							 /*bounds.y + */ pv->to_cust(_TextBoxAttr.rect.y, bounds.h),
+							 pv->to_cust(_TextBoxAttr.rect.w, bounds.w),
+							 pv->to_cust(_TextBoxAttr.rect.h, bounds.h)};
+		textBox.emplace_front()
+			.Build(this, _TextBoxAttr);
+		// if (is_form and _TextBoxAttr.type="submit"){
+		// textBox.back().setonsubmithandler }
+		redraw = true;
+		return *this;
+	}
+
+	Cell &addTextBoxVertArray(TextBoxAttributes _TextBoxAttr, float percentageMargin, std::vector<std::string> _texts)
+	{
+		const auto yStep = _TextBoxAttr.rect.h + percentageMargin;
+		for (auto &_txt : _texts)
 		{
-			_RTextAttr.rect = {bounds.x + pv->to_cust(_RTextAttr.rect.x, bounds.w),
-							   bounds.y + pv->to_cust(_RTextAttr.rect.y, bounds.h),
-							   pv->to_cust(_RTextAttr.rect.w, bounds.w),
-							   pv->to_cust(_RTextAttr.rect.h, bounds.h)};
-			runningText.emplace_back()
-				.Build(this, _RTextAttr);
-			return *this;
+			_TextBoxAttr.textAttributes.text = _txt;
+			addTextBox(_TextBoxAttr);
+			_TextBoxAttr.rect.y += yStep;
 		}
-		/*
+		redraw = true;
+		return *this;
+	}
+
+	Cell &addTextBoxHorArray(TextBoxAttributes _TextBoxAttr, std::vector<std::string> _texts)
+	{
+		return *this;
+	}
+
+	Cell &addTextBoxFlexArray(TextBoxAttributes _TextBoxAttr, std::vector<std::string> _texts)
+	{
+		return *this;
+	}
+
+	Cell &addRunningText(RunningText::Attr _RTextAttr)
+	{
+		_RTextAttr.rect = {/*bounds.x + */ pv->to_cust(_RTextAttr.rect.x, bounds.w),
+						   /*bounds.y + */ pv->to_cust(_RTextAttr.rect.y, bounds.h),
+						   pv->to_cust(_RTextAttr.rect.w, bounds.w),
+						   pv->to_cust(_RTextAttr.rect.h, bounds.h)};
+		runningText.emplace_back()
+			.Build(this, _RTextAttr);
+		max_scroll = std::max(max_scroll, (_RTextAttr.rect.y + _RTextAttr.rect.h) - bounds.h);
+		redraw = true;
+		return *this;
+	} /*
+
 		Cell& addSlider(SliderAttributes _Attr) {
 			_RTextAttr.rect = { dest.x + pv->to_cust(_RTextAttr.rect.x, dest.w),
 					dest.y + pv->to_cust(_RTextAttr.rect.y, dest.h),
@@ -7193,31 +7823,37 @@ namespace Volt
 			return *this;
 		}
 		*/
-		Cell &addEditBox(EditBoxAttributes _EditBoxAttr)
-		{
-			_EditBoxAttr.rect = {
-				bounds.x + pv->to_cust(_EditBoxAttr.rect.x, bounds.w),
-				bounds.y + pv->to_cust(_EditBoxAttr.rect.y, bounds.h),
-				pv->to_cust(_EditBoxAttr.rect.w, bounds.w),
-				pv->to_cust(_EditBoxAttr.rect.h, bounds.h)};
-			editBox.emplace_back()
-				.Build(this, _EditBoxAttr);
-			return *this;
-		}
+	Cell &addEditBox(EditBoxAttributes _EditBoxAttr)
+	{
+		_EditBoxAttr.rect = {
+			/*bounds.x + */ pv->to_cust(_EditBoxAttr.rect.x, bounds.w),
+			/*bounds.y + */ pv->to_cust(_EditBoxAttr.rect.y, bounds.h),
+			pv->to_cust(_EditBoxAttr.rect.w, bounds.w),
+			pv->to_cust(_EditBoxAttr.rect.h, bounds.h)};
+		//GLogger.Log(Logger::Level::Info,"Cell bounds rect{",bounds.x,bounds.y,bounds.w,bounds.h,"}");
+		//GLogger.Log(Logger::Level::Info,"Edit bounds rect{",_EditBoxAttr.rect.x,_EditBoxAttr.rect.y,_EditBoxAttr.rect.w,_EditBoxAttr.rect.h,"}");
+		editBox.emplace_back()
+			.Build(this, _EditBoxAttr);
+		max_scroll = std::max(max_scroll, (_EditBoxAttr.rect.y + _EditBoxAttr.rect.h) - bounds.h);
+		redraw = true;
+		return *this;
+	}
 
-		Cell &addEditBoxFront(EditBoxAttributes _EditBoxAttr)
-		{
-			_EditBoxAttr.rect = {
-				bounds.x + pv->to_cust(_EditBoxAttr.rect.x, bounds.w),
-				bounds.y + pv->to_cust(_EditBoxAttr.rect.y, bounds.h),
-				pv->to_cust(_EditBoxAttr.rect.w, bounds.w),
-				pv->to_cust(_EditBoxAttr.rect.h, bounds.h)};
-			editBox.emplace_front()
-				.Build(this, _EditBoxAttr);
-			return *this;
-		}
+	Cell &
+	addEditBoxFront(EditBoxAttributes _EditBoxAttr)
+	{
+		_EditBoxAttr.rect = {
+			/*bounds.x + */ pv->to_cust(_EditBoxAttr.rect.x, bounds.w),
+			/*bounds.y + */ pv->to_cust(_EditBoxAttr.rect.y, bounds.h),
+			pv->to_cust(_EditBoxAttr.rect.w, bounds.w),
+			pv->to_cust(_EditBoxAttr.rect.h, bounds.h)};
+		editBox.emplace_front()
+			.Build(this, _EditBoxAttr);
+		redraw = true;
+		return *this;
+	}
 
-		/*Cell& addEditBoxVertArray(EditBoxAttributes _TextBoxAttr, float percentageMargin, std::vector<std::string> _texts)
+	/*Cell& addEditBoxVertArray(EditBoxAttributes _TextBoxAttr, float percentageMargin, std::vector<std::string> _texts)
 		{
 			const auto yStep = _TextBoxAttr.rect.h + percentageMargin;
 			for (auto& _txt : _texts)
@@ -7229,715 +7865,810 @@ namespace Volt
 			return *this;
 		}*/
 
-		template <is_cellblock T>
-		Cell &addImageButton(T &parent_block, ImageButtonAttributes imageButtonAttributes, const PixelSystem &pixel_system = PixelSystem::PERCENTAGE)
+	/*	template <is_cellblock T>
+	Cell &addImageButton(T &parent_block, ImageButtonAttributes imageButtonAttributes, const PixelSystem &pixel_system = PixelSystem::PERCENTAGE)
+	{
+		imageButton.emplace_back().setContext(this);
+		if (pixel_system == PixelSystem::PERCENTAGE)
 		{
-			imageButton.emplace_back().setContext(this);
-			if (pixel_system == PixelSystem::PERCENTAGE)
-			{
-				imageButtonAttributes.rect = SDL_FRect{
-					bounds.x + pv->to_cust(imageButtonAttributes.rect.x, bounds.w),
-					bounds.y + pv->to_cust(imageButtonAttributes.rect.y, bounds.h),
-					pv->to_cust(imageButtonAttributes.rect.w, bounds.w),
-					pv->to_cust(imageButtonAttributes.rect.h, bounds.h)};
+			imageButtonAttributes.rect = SDL_FRect{
+				bounds.x + pv->to_cust(imageButtonAttributes.rect.x, bounds.w),
+				bounds.y + pv->to_cust(imageButtonAttributes.rect.y, bounds.h),
+				pv->to_cust(imageButtonAttributes.rect.w, bounds.w),
+				pv->to_cust(imageButtonAttributes.rect.h, bounds.h)};
 
-				imageButton.back().Build(imageButtonAttributes);
-			}
-			else
+			imageButton.back().Build(imageButtonAttributes);
+		}
+		else
+		{
+			imageButton.back().Build(imageButtonAttributes);
+		}
+		if (imageButtonAttributes.image_load_style == IMAGE_LD_STYLE::ASYNC_PATH || imageButtonAttributes.image_load_style == IMAGE_LD_STYLE::ASYNC_CUSTOM_SURFACE_LOADER)
+			parent_block.addToCellsWithAsyncImage(&imageButton.back());
+		return *this;
+	}
+*/
+
+	Cell &addImageButton(ImageButtonAttributes imageButtonAttributes, const PixelSystem &pixel_system = PixelSystem::PERCENTAGE)
+	{
+		imageButton.emplace_back().setContext(this);
+		if (pixel_system == PixelSystem::PERCENTAGE)
+		{
+			imageButtonAttributes.rect = SDL_FRect{
+				/*bounds.x + */ pv->to_cust(imageButtonAttributes.rect.x, bounds.w),
+				/*bounds.y + */ pv->to_cust(imageButtonAttributes.rect.y, bounds.h),
+				pv->to_cust(imageButtonAttributes.rect.w, bounds.w),
+				pv->to_cust(imageButtonAttributes.rect.h, bounds.h)};
+			imageButton.back().Build(imageButtonAttributes);
+			max_scroll = std::max(max_scroll, (imageButtonAttributes.rect.y + imageButtonAttributes.rect.h) - bounds.h);
+		}
+		else
+		{
+			imageButton.back().Build(imageButtonAttributes);
+		}
+		redraw = true;
+		return *this;
+	}
+
+	Cell &addImageButtonFront(ImageButtonAttributes imageButtonAttributes, const PixelSystem &pixel_system = PixelSystem::PERCENTAGE)
+	{
+		imageButton.emplace_front().setContext(this);
+		if (pixel_system == PixelSystem::PERCENTAGE)
+		{
+			imageButtonAttributes.rect = SDL_FRect{
+				/*bounds.x + */ pv->to_cust(imageButtonAttributes.rect.x, bounds.w),
+				/*bounds.y + */ pv->to_cust(imageButtonAttributes.rect.y, bounds.h),
+				pv->to_cust(imageButtonAttributes.rect.w, bounds.w),
+				pv->to_cust(imageButtonAttributes.rect.h, bounds.h)};
+
+			imageButton.front().Build(imageButtonAttributes);
+		}
+		else
+		{
+			imageButton.front().Build(imageButtonAttributes);
+		}
+		redraw = true;
+		return *this;
+	}
+
+	Cell &addSlider(SliderAttributes sAttr)
+	{
+		sAttr.rect = {
+			/*bounds.x + */ pv->to_cust(sAttr.rect.x, bounds.w),
+			/*bounds.y + */ pv->to_cust(sAttr.rect.y, bounds.h),
+			pv->to_cust(sAttr.rect.w, bounds.w),
+			pv->to_cust(sAttr.rect.h, bounds.h),
+		};
+		sliders.emplace_back().Build(this, sAttr);
+		max_scroll = std::max(max_scroll, (sAttr.rect.y + sAttr.rect.h) - bounds.h);
+		redraw = true;
+		return *this;
+	}
+
+	const bool isPointInBound(float x, float y) const noexcept
+	{
+		if (x > pv->getRealX() + bounds.x && x < (pv->getRealX() + bounds.x + bounds.w) && y > pv->getRealY() + bounds.y && y < pv->getRealY() + bounds.y + bounds.h)
+			return true;
+
+		return false;
+	}
+
+	void updatePosBy(float _dx, float _dy) override
+	{
+		bounds.x += _dx;
+		bounds.y += _dy;
+	}
+
+	void notifyDataSetChanged(std::any _dataSetChangedData)
+	{
+		// add a check for empty _dataSetChangedData before storing
+		// or even consider passing _dataSetChangedData directly to the onDataSetChanged() callback
+		dataSetChangedData = _dataSetChangedData;
+		if (onDataSetChanged != nullptr)
+			onDataSetChanged(*this, dataSetChangedData);
+	}
+
+	bool handleEvent() override
+	{
+		bool result = false;
+		if (customEventHandlerCallback != nullptr)
+		{
+			bool temp_res = customEventHandlerCallback(*this);
+			// redraw =temp_res;
+			if (prevent_default_behaviour)
 			{
-				imageButton.back().Build(imageButtonAttributes);
+				// reset the default behaviour to false
+				prevent_default_behaviour = false;
+				return temp_res;
 			}
-			if (imageButtonAttributes.image_load_style == IMAGE_LD_STYLE::ASYNC_PATH || imageButtonAttributes.image_load_style == IMAGE_LD_STYLE::ASYNC_CUSTOM_SURFACE_LOADER)
-				parent_block.addToCellsWithAsyncImage(&imageButton.back());
-			return *this;
 		}
 
-		Cell &addImageButton(ImageButtonAttributes imageButtonAttributes, const PixelSystem &pixel_system = PixelSystem::PERCENTAGE)
-		{
-			imageButton.emplace_back().setContext(this);
-			if (pixel_system == PixelSystem::PERCENTAGE)
-			{
-				imageButtonAttributes.rect = SDL_FRect{
-					bounds.x + pv->to_cust(imageButtonAttributes.rect.x, bounds.w),
-					bounds.y + pv->to_cust(imageButtonAttributes.rect.y, bounds.h),
-					pv->to_cust(imageButtonAttributes.rect.w, bounds.w),
-					pv->to_cust(imageButtonAttributes.rect.h, bounds.h)};
-
-				imageButton.back().Build(imageButtonAttributes);
-			}
-			else
-			{
-				imageButton.back().Build(imageButtonAttributes);
-			}
-			return *this;
-		}
-
-		Cell &addImageButtonFront(ImageButtonAttributes imageButtonAttributes, const PixelSystem &pixel_system = PixelSystem::PERCENTAGE)
-		{
-			imageButton.emplace_front().setContext(this);
-			if (pixel_system == PixelSystem::PERCENTAGE)
-			{
-				imageButtonAttributes.rect = SDL_FRect{
-					bounds.x + pv->to_cust(imageButtonAttributes.rect.x, bounds.w),
-					bounds.y + pv->to_cust(imageButtonAttributes.rect.y, bounds.h),
-					pv->to_cust(imageButtonAttributes.rect.w, bounds.w),
-					pv->to_cust(imageButtonAttributes.rect.h, bounds.h)};
-
-				imageButton.front().Build(imageButtonAttributes);
-			}
-			else
-			{
-				imageButton.front().Build(imageButtonAttributes);
-			}
-			return *this;
-		}
-
-		Cell &addSlider(Expr::SliderAttributes sAttr)
-		{
-			sAttr.rect = {
-				bounds.x + pv->to_cust(sAttr.rect.x, bounds.w),
-				bounds.y + pv->to_cust(sAttr.rect.y, bounds.h),
-				pv->to_cust(sAttr.rect.w, bounds.w),
-				pv->to_cust(sAttr.rect.h, bounds.h),
-			};
-			sliders.emplace_back().Build(this, sAttr);
-			return *this;
-		}
-
-		void updatePosBy(float _dx, float _dy) override
-		{
-			bounds.x += _dx;
-			bounds.y += _dy;
-			for (auto &imgBtn : imageButton)
-				imgBtn.updatePosBy(_dx, _dy);
-			for (auto &textBx : textBox)
-				textBx.updatePosBy(_dx, _dy);
-			for (auto &rtext : runningText)
-				rtext.updatePosBy(_dx, _dy);
-			for (auto &iview : iViews)
-				iview.updatePosBy(_dx, _dy);
-		}
-
-		void notifyDataSetChanged(std::any _dataSetChangedData)
-		{
-			// add a check for empty _dataSetChangedData before storing
-			// or even consider passing _dataSetChangedData directly to the onDataSetChanged() callback
-			dataSetChangedData = _dataSetChangedData;
-			if (onDataSetChanged != nullptr)
-				onDataSetChanged(*this, dataSetChangedData);
-		}
-
-		bool handleEvent() override
-		{
-			bool result = false;
-			auto p_ = SDL_FPoint{-1.f, -1.f};
-			if (customEventHandlerCallback != nullptr)
-			{
-				bool temp_res = customEventHandlerCallback(*this);
-				if (prevent_default_behaviour)
-				{
-					// reset the default behaviour to false
-					prevent_default_behaviour = false;
-					return temp_res;
-				}
-			}
-
-			if (hidden)
-				return result;
-
-			for (auto child : childViews)
-			{
-				if (child->handleEvent())
-				{
-					return true;
-				}
-			}
-
-			if (event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
-			{
-				bounds =
-					{
-						DisplayInfo::Get().toUpdatedWidth(bounds.x),
-						DisplayInfo::Get().toUpdatedHeight(bounds.y),
-						DisplayInfo::Get().toUpdatedWidth(bounds.w),
-						DisplayInfo::Get().toUpdatedHeight(bounds.h),
-					};
-
-				for (auto &imgBtn : imageButton)
-					imgBtn.handleEvent();
-				for (auto &textBx : textBox)
-					textBx.handleEvent();
-				for (auto &_editBox : editBox)
-					_editBox.handleEvent();
-				return false;
-			}
-			if (isHidden())
-				return result;
-
-			if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN)
-			{
-				p_ = SDL_FPoint{event->button.x, event->button.y};
-				if (SDL_PointInRectFloat(&p_, &bounds))
-					result |= true;
-				// std::cout << result << ", downx:" << p_.x << ", y:" << p_.y << std::endl;
-			}
-			else if (event->type == SDL_EVENT_MOUSE_BUTTON_UP)
-			{
-				p_ = SDL_FPoint{event->button.x, event->button.y};
-				if (SDL_PointInRectFloat(&p_, &bounds))
-					result |= true;
-				// std::cout << result << ", upx:" << p_.x << ", y:" << p_.y << std::endl;
-			}
-			else if (event->type == SDL_EVENT_FINGER_DOWN)
-			{
-				p_ = SDL_FPoint{event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.y * DisplayInfo::Get().RenderH};
-				if (SDL_PointInRectFloat(&p_, &bounds))
-					result |= true;
-				// std::cout << "mouse" << ", x:" << event->tfinger.x << ", y:" << event->tfinger.y << std::endl;
-			}
-			else if (event->type == SDL_EVENT_FINGER_UP)
-			{
-				p_ = SDL_FPoint{event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.y * DisplayInfo::Get().RenderH};
-				if (SDL_PointInRectFloat(&p_, &bounds))
-					result |= true;
-				// std::cout << "mouse" << ", x:" << event->tfinger.x << ", y:" << event->tfinger.y << std::endl;
-			}
-			else if (event->type == SDL_EVENT_FINGER_MOTION)
-			{
-				p_ = SDL_FPoint{event->tfinger.x, event->tfinger.y};
-				if (SDL_PointInRectFloat(&p_, &bounds))
-					result |= true;
-				// std::cout << "mouse" << ", x:" << event->tfinger.x << ", y:" << event->tfinger.y << std::endl;
-			}
-			else if (event->type == SDL_EVENT_MOUSE_MOTION)
-			{
-				p_ = SDL_FPoint{event->motion.x, event->motion.y};
-				if (SDL_PointInRectFloat(&p_, &bounds))
-					result |= true;
-				// std::cout << "mouse" << ", x:" << event->motion.x << ", y:" << event->motion.y << std::endl;
-			}
-
-			for (auto &imgBtn : imageButton)
-				result |= imgBtn.handleEvent();
-			for (auto &textBx : textBox)
-				result |= textBx.handleEvent();
-			for (auto &_editBox : editBox)
-				result or_eq _editBox.handleEvent();
-
-			// std::cout << ", w:" << bounds.w << ", h:" << bounds.h << std::endl;
-
+		if (hidden)
 			return result;
+
+		for (auto child : childViews)
+		{
+			if (child->handleEvent())
+			{
+				return true;
+			}
 		}
 
-		void Draw() override
+		if (event->type == EVT_WPSC)
 		{
-			if (isHidden())
-				return;
+			bounds =
+				{
+					DisplayInfo::Get().toUpdatedWidth(bounds.x),
+					DisplayInfo::Get().toUpdatedHeight(bounds.y),
+					DisplayInfo::Get().toUpdatedWidth(bounds.w),
+					DisplayInfo::Get().toUpdatedHeight(bounds.h),
+				};
+			return false;
+		}
+		if (isHidden())
+			return result;
+
+		bool ft_handled = false;
+		for (auto& ft : header_footer) {
+			if (ft.handleEvent()) {
+				result = true;
+				ft_handled = true;
+				redraw = true;
+			}
+		}
+		if (not ft_handled) {
+			for (auto& imgBtn : imageButton) {
+				result |= imgBtn.handleEvent();
+				if (result)break;
+			}
+			for (auto& textBx : textBox) {
+				result |= textBx.handleEvent();
+				if (result)break;
+			}
+			for (auto& _editBox : editBox) {
+				result or_eq _editBox.handleEvent();
+				if (result)break;
+			}
+			for (auto& _slider : sliders) {
+				result or_eq _slider.handleEvent();
+				if (result)break;
+			}
+			for (auto& rt : runningText) {
+				result or_eq rt.handleEvent();
+				if (result)break;
+			}
+			for (auto& tb : togButton) {
+				result or_eq tb.handleEvent();
+				if (result)break;
+			}
+			/*for (auto& sl : select)
+				result or_eq sl.handleEvent();*/
+		}
+
+
+		if (event->type == EVT_FINGER_DOWN)
+		{
+			pf = cf = { event->tfinger.x * DisplayInfo::Get().RenderW,
+					   event->tfinger.y * DisplayInfo::Get().RenderH };
+			if (isPointInBound(cf.x, cf.y))
+			{
+				dy = 0.f;
+				if (not ft_handled and not result) { finger_down = true; }
+				result or_eq true;
+			}
+			else {
+				if (auto_hide) {
+					hide();
+				}
+			}
+		}
+		else if (event->type == EVT_FINGER_MOTION)
+		{
+			cf = { event->tfinger.x * DisplayInfo::Get().RenderW,
+					  event->tfinger.y * DisplayInfo::Get().RenderH };
+			if (finger_down and not result and max_scroll > 0.f)
+			{
+				internal_handle_motion();
+				result or_eq true;
+				// movedDistance += {0.f, dy};
+				/*
+				if (SDL_fabsf(dy) < 2.f)
+				{
+					scrlAction = ScrollAction::None;
+				}*/
+				//GLogger.Log(Logger::Level::Debug, "internal handle motion");
+			}
+		}
+		else if (event->type == EVT_MOUSE_MOTION)
+		{
+#ifdef _MSC_VER
+			if (not cellblock_parent) {
+				if (isPointInBound(event->motion.x, event->motion.y) and highlightOnHover)
+				{
+					isHighlighted = true;
+					//GLogger.Log(Logger::Level::Debug, "highlight on hover event");
+					redraw = true;
+					result = true;
+				}
+				else {
+					if (isHighlighted and highlightOnHover) {
+						isHighlighted = false;
+						redraw = true;
+					}
+				}
+			}
+#endif // _MSC_VER
+
+		}
+		else if (event->type == EVT_FINGER_UP)
+		{
+			finger_down = false;
+			dy = 0.f;
+		}
+
+		if (redraw == false)
+		{
+			redraw = result;
+			// if(result)GLogger.Log(Logger::Level::Info,"cell redraw in event");
+		}
+
+		// std::cout << ", w:" << bounds.w << ", h:" << bounds.h << std::endl;
+
+		return result;
+	}
+
+	void onUpdate() override
+	{
+		for (auto& _editBox : editBox)
+		{
+			if (_editBox.isActive())
+			{
+				redraw = true;
+				break;
+			}
+		}
+		if (not runningText.empty()) { redraw = true; }
+
+		for (auto &ft : header_footer) {
+			ft.onUpdate();
+			if (ft.redraw) {
+				redraw = true;
+			}
+		}
+
+		if (onUpdateCallback != nullptr)
+		{
+			onUpdateCallback(*this);
+		}
+	}
+
+	void draw() override
+	{
+		if (isHidden())
+			return;
+		if (texture == nullptr)
+		{
+			texture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
+										  SDL_TEXTUREACCESS_TARGET, (int)bounds.w, (int)bounds.h);
+			SDL_SetTextureBlendMode(texture.get(), SDL_BLENDMODE_BLEND);
+			// tbuild = true;
+		}
+		if (redraw)
+		{
+			CacheRenderTarget crt_(renderer);
+			SDL_SetRenderTarget(renderer, texture.get());
+			RenderClear(renderer, 0, 0, 0, 0);
 			// use custom draw fun if available
 			// the default draw func has no ordering
 			if (nullptr == customDrawCallback)
 			{
-				if (not highlightOnHover and not isHighlighted)
-					fillRoundedRectF(renderer,
-									 {bounds.x, bounds.y, bounds.w, bounds.h}, corner_radius,
-									 {bg_color.r, bg_color.g, bg_color.b, bg_color.a});
-				if (highlightOnHover and isHighlighted)
-					fillRoundedRectF(renderer,
-									 {bounds.x, bounds.y, bounds.w, bounds.h}, corner_radius,
-									 {onHoverBgColor.r, onHoverBgColor.g, onHoverBgColor.b, onHoverBgColor.a});
+				// GLogger.Log(Logger::Level::Info,"dstd");
+				if (not highlightOnHover and not isHighlighted) {
+					RenderClear(renderer, bg_color.r, bg_color.g, bg_color.b, bg_color.a);
+				}
+				if (highlightOnHover and isHighlighted) {
+					RenderClear(renderer, onHoverBgColor.r, onHoverBgColor.g, onHoverBgColor.b, onHoverBgColor.a);
+					//GLogger.Log(Logger::Level::Debug, "highlight on hover");
+				}
 
 				for (auto &imgBtn : imageButton)
-					imgBtn.Draw();
+					imgBtn.draw();
 				for (auto &textBx : textBox)
-					textBx.Draw();
+					textBx.draw();
 				for (auto &_editBox : editBox)
-					_editBox.Draw();
+					_editBox.draw();
 				for (auto &_rtext : runningText)
-					_rtext.Draw();
+					_rtext.draw();
+				for (auto &_slider : sliders)
+					_slider.draw();
+				for (auto& tb : togButton)
+					tb.draw();
+				for (auto& ft : header_footer)
+					ft.draw();
+				/*for (auto& sl : select)
+					sl.draw();*/
 			}
 			else
 			{
+				// GLogger.Log(Logger::Level::Info,"cstd");
 				customDrawCallback(*this);
 			}
-
-			for (auto child : childViews)
-				child->Draw();
+			redraw = false;
+			crt_.release(renderer);
+			transformToRoundedTexture(renderer, texture.get(), corner_radius);
 		}
+
+		RenderTexture(renderer, texture.get(), nullptr, &bounds);
+
+		for (auto child : childViews)
+			child->draw();
+	}
+};
+
+struct CellBlockProps
+{
+	SDL_FRect rect = {0.f, 0.f, 0.f, 0.f};
+	Margin margin = {0.f, 0.f, 0.f, 0.f};
+	float cornerRadius = 0.f;
+	SDL_Color bgColor = {0, 0, 0, 0};
+	float cellSpacingX = 1.f;
+	float cellSpacingY = 1.f;
+};
+
+class CellBlock : public Context, public IView
+{
+public:
+	uint32_t prevLineCount = 0, consumedCells = 0, lineCount = 0, numPrevLineCells = 0;
+	float consumedWidth = 0.f;
+
+public:
+	const SDL_FRect &getBounds() const noexcept
+	{
+		return bounds;
+	}
+
+	SDL_FRect &getBounds()
+	{
+		return bounds;
+	}
+
+	const float &getCellWidth() const noexcept
+	{
+		return this->cellWidth;
+	}
+
+	const uint32_t &getMaxVerticalGrids() const noexcept
+	{
+		return numVerticalGrids;
+	}
+
+	const float &getCellSpacing() const noexcept
+	{
+		return this->CellSpacing;
+	}
+
+	const Cell &getLowestBoundCell() const noexcept
+	{
+		return cells[bottomCell];
+	}
+
+	std::size_t size() const noexcept
+	{
+		return cells.size();
+	}
+
+	bool empty() const noexcept
+	{
+		return cells.empty();
+	}
+
+	Cell &back()
+	{
+		return cells.back();
 	};
 
-	struct CellBlockProps
+	Cell &front()
 	{
-		SDL_FRect rect = {0.f, 0.f, 0.f, 0.f};
-		Margin margin = {0.f, 0.f, 0.f, 0.f};
-		float cornerRadius = 0.f;
-		SDL_Color bgColor = {0, 0, 0, 0};
-		float cellSpacingX = 0.f;
-		float cellSpacingY = 0.f;
+		return cells.front();
 	};
 
-	class CellBlock : public Context, private IView
+	void eraseCell(std::size_t _cell_index)
 	{
-	public:
-		using Context::event;
-		using IView::addChildView;
-		using IView::bounds;
-		using IView::childViews;
-		using IView::clearAndAddChildView;
-		using IView::getChildView;
-		using IView::getView;
-		using IView::hide;
-		using IView::isHidden;
-		using IView::label;
-		using IView::prevent_default_behaviour;
-		using IView::show;
+		toBeErasedCells.emplace_back(_cell_index);
+	}
 
-	public:
-		uint32_t prevLineCount = 0, consumedCells = 0, lineCount = 0, numPrevLineCells = 0;
-		float consumedWidth = 0.f;
+	void triggerRedrawSession()
+	{
+		adaptiveVsyncHD.startRedrawSession();
+	}
 
-	public:
-		const SDL_FRect &getBounds() const noexcept
+	void stopRedrawSession()
+	{
+		adaptiveVsyncHD.stopRedrawSession();
+	}
+
+	void notifyDataSetChanged(std::any _data = 0)
+	{
+		// data_set_changed=true;
+	}
+
+	Cell &getCell(std::size_t _index)
+	{
+		return cells[_index];
+	}
+
+	Cell &getSelectedCell()
+	{
+		return cells[SELECTED_CELL];
+	}
+
+	auto getSelectedCellIndex()
+	{
+		return SELECTED_CELL;
+	}
+
+	CellBlock &setSelectedItem(const int64_t _selectedCell)
+	{
+		updateSelectedCell(_selectedCell);
+		adaptiveVsyncHD.startRedrawSession();
+		return *this;
+	}
+
+	void addToCellsWithAsyncImage(ImageButton *_cell)
+	{
+		cellsWithAsyncImages.push_back(_cell);
+	}
+
+	CellBlock &incrementYBy(const float &val) noexcept
+	{
+		this->bounds.y += val;
+		return *this;
+	}
+
+	CellBlock &setCellBGColor(const SDL_Color &_cell_bg_color) noexcept
+	{
+		this->cell_bg_color = _cell_bg_color;
+		return *this;
+	}
+
+	CellBlock &updateHeight(const float &height)
+	{
+		if (height == bounds.h)
+			return *this;
+		const float df = height - bounds.h;
+		if (df >= 0.f)
+			dy = df, scrlAction = ScrollAction::Up;
+		else
+			dy = 0.f, scrlAction = ScrollAction::Down;
+		this->bounds.h = height;
+		this->margin.h += df;
+		if (texture.get() != nullptr)
+			texture.reset();
+		CacheRenderTarget rTargetCache(renderer);
+		texture = CreateUniqueTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, (int)bounds.w, (int)bounds.h);
+		SDL_SetTextureBlendMode(texture.get(), SDL_BLENDMODE_BLEND);
+		SDL_SetRenderTarget(renderer, texture.get());
+		RenderClear(renderer, bgColor.r, bgColor.g, bgColor.b, bgColor.a);
+		rTargetCache.release(renderer);
+		return *this;
+	}
+
+	CellBlock &setCellSpacing(const float cell_spacing) noexcept
+	{
+		this->CellSpacing = cell_spacing;
+		return *this;
+	}
+
+	CellBlock &onClick(std::function<void(Cell &)> on_cell_clicked_callback) noexcept
+	{
+		onCellClickedCallback = std::move(on_cell_clicked_callback);
+		return *this;
+	}
+
+	CellBlock &setOnFillNewCellData(
+		std::function<void(Cell &)> _fillNewCellDataCallback) noexcept
+	{
+		fillNewCellDataCallback = std::move(_fillNewCellDataCallback);
+		return *this;
+	}
+
+	CellBlock &updateNoMaxCells(const int &_noMaxCells) noexcept
+	{
+		maxCells = _noMaxCells;
+		// first_load =true;
+		return *this;
+	}
+
+	CellBlock &updateNoMaxCellsBy(const int &_numCells) noexcept
+	{
+		maxCells += _numCells;
+		// first_load =true;
+		return *this;
+	}
+
+	CellBlock &setEnabled(const bool &_enabled) noexcept
+	{
+		enabled = _enabled;
+		return *this;
+	}
+
+	std::size_t getSizeOfPreAddedCells()
+	{
+		return sizeOfPreAddedCells;
+	}
+
+	CellBlock &clearAndReset()
+	{
+		update_top_and_bottom_cells();
+		ANIM_ACTION_DN = false;
+		ANIM_ACTION_UP = false;
+		interpolated.stop();
+		backIndex = frontIndex = 0;
+		topCell = bottomCell = 0;
+		lineCount = 0;
+		consumedCells = 0;
+		prevLineCount = 0;
+		SELECTED_CELL = 0 - 1;
+		PREV_SELECTED_CELL = 0 - 1;
+		FIRST_LOAD = true;
+		cellsWithAsyncImages.clear();
+		visibleCells.clear();
+		cells.clear();
+		toBeErasedCells.clear();
+
+		// pre added cells
+		const int originalMaxCells = maxCells;
+		for (auto preAddedCellSetUpCallback : preAddedCellsSetUpCallbacks)
 		{
-			return bounds;
+			update_top_and_bottom_cells();
+			cells.emplace_back()
+				.setContext(this)
+				.setIndex(cells.size() - 1);
+			/// FIXME: the cells adptiveVsync =&CellsSmartFrame should be a single
+			/// call with the cell.setContext so that any cell::smartframehd can be init
+			/// with the correct AdaptiveVsync cotext
+			cells.back().adaptiveVsync = &CellsAdaptiveVsync;
+			cells.back().cellblock_parent = true;
+			preAddedCellSetUpCallback(cells.back());
+			visibleCells.push_back(&cells.back());
+			++backIndex;
+			update_top_and_bottom_cells();
 		}
 
-		SDL_FRect &getBounds()
+		if (maxCells > 0)
 		{
-			return bounds;
+			cells.emplace_back()
+				.setContext(this)
+				.setIndex(cells.size() - 1)
+				.bg_color = cell_bg_color;
+			cells.back().adaptiveVsync = &CellsAdaptiveVsync;
+			cells.back().pv = this;
+			cells.back().getView()->rel_x = bounds.x;
+			cells.back().getView()->rel_y = bounds.y;
+			cells.back().cellblock_parent = true;
+			fillNewCellDataCallback(cells.back());
+			visibleCells.emplace_back(&cells.back());
+			scrlAction = ScrollAction::Up;
 		}
+		adaptiveVsyncHD.startRedrawSession();
+		update_top_and_bottom_cells();
+		return *this;
+	}
 
-		const float &getCellWidth() const noexcept
-		{
-			return this->cellWidth;
-		}
+	void setHeaderCellVisible(bool is_visible)
+	{
+	}
 
-		const uint32_t &getMaxVerticalGrids() const noexcept
-		{
-			return numVerticalGrids;
-		}
+	void setFooterCellVisible(bool is_visible)
+	{
+	}
 
-		const float &getCellSpacing() const noexcept
-		{
-			return this->CellSpacing;
-		}
-
-		const Cell &getLowestBoundCell() const noexcept
-		{
-			return cells[bottomCell];
-		}
-
-		std::size_t size() const noexcept
-		{
-			return cells.size();
-		}
-
-		bool empty() const noexcept
-		{
-			return cells.empty();
-		}
-
-		Cell &back()
-		{
-			return cells.back();
-		};
-
-		Cell &front()
+	std::optional<std::reference_wrapper<Cell>> getHeaderCell()
+	{
+		if (fillNewCellDataCallbackHeader and not cells.empty())
 		{
 			return cells.front();
-		};
-
-		void eraseCell(std::size_t _cell_index)
-		{
-			toBeErasedCells.emplace_back(_cell_index);
 		}
-
-		void triggerRedrawSession()
+		else
 		{
-			adaptiveVsyncHD.startRedrawSession();
+			// GLogger.Log(Logger::Level::Error, "CellBlock::getHeaderCell() failed. no header cell was found. call CellBlock::addHeaderCell() before CellBlock::getHeaderCell()");
+			return {};
 		}
+	}
 
-		void stopRedrawSession()
+	// Note this method must be invoked before CellBlock::Build() and CellBlock::addCell
+	CellBlock &addHeaderCell(std::function<void(Cell &)> newCellSetUpCallback)
+	{
+		fillNewCellDataCallbackHeader = newCellSetUpCallback;
+		return *this;
+	}
+
+	CellBlock &addFooterCell(std::function<void(Cell &)> newCellSetUpCallback)
+	{
+		return *this;
+	}
+
+	CellBlock &addCell(std::function<void(Cell &)> newCellSetUpCallback)
+	{
+		if (!BuildWasCalled)
 		{
-			adaptiveVsyncHD.stopRedrawSession();
+			preAddedCellsSetUpCallbacks.push_back(newCellSetUpCallback);
+			sizeOfPreAddedCells = preAddedCellsSetUpCallbacks.size();
 		}
-
-		void notifyDataSetChanged(std::any _data = 0)
+		else
 		{
-			// data_set_changed=true;
-		}
-
-		Cell &getCell(std::size_t _index)
-		{
-			return cells[_index];
-		}
-
-		Cell &getSelectedCell()
-		{
-			return cells[SELECTED_CELL];
-		}
-
-		auto getSelectedCellIndex()
-		{
-			return SELECTED_CELL;
-		}
-
-		CellBlock &setSelectedItem(const int64_t _selectedCell)
-		{
-			updateSelectedCell(_selectedCell);
-			adaptiveVsyncHD.startRedrawSession();
-			return *this;
-		}
-
-		void addToCellsWithAsyncImage(ImageButton *_cell)
-		{
-			cellsWithAsyncImages.push_back(_cell);
-		}
-
-		CellBlock &incrementYBy(const float &val) noexcept
-		{
-			this->bounds.y += val;
-			return *this;
-		}
-
-		CellBlock &setCellBGColor(const SDL_Color &_cell_bg_color) noexcept
-		{
-			this->cell_bg_color = _cell_bg_color;
-			return *this;
-		}
-
-		CellBlock &updateHeight(const float &height)
-		{
-			if (height == bounds.h)
-				return *this;
-			const float df = height - bounds.h;
-			if (df >= 0.f)
-				dy = df, scrlAction = ScrollAction::Up;
-			else
-				dy = 0.f, scrlAction = ScrollAction::Down;
-			this->bounds.h = height;
-			this->margin.h += df;
-			if (texture.get() != nullptr)
-				texture.reset();
-			CacheRenderTarget rTargetCache(renderer);
-			texture = CreateUniqueTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, (int)bounds.w, (int)bounds.h);
-			SDL_SetTextureBlendMode(texture.get(), SDL_BLENDMODE_BLEND);
-			SDL_SetRenderTarget(renderer, texture.get());
-			renderClear(renderer, bgColor.r, bgColor.g, bgColor.b, bgColor.a);
-			rTargetCache.release(renderer);
-			return *this;
-		}
-
-		CellBlock &setCellSpacing(const float cell_spacing) noexcept
-		{
-			this->CellSpacing = cell_spacing;
-			return *this;
-		}
-
-		CellBlock &setOnCellClickedCallback(std::function<void(Cell &)> on_cell_clicked_callback) noexcept
-		{
-			onCellClickedCallback = std::move(on_cell_clicked_callback);
-			return *this;
-		}
-
-		CellBlock &setOnFillNewCellData(
-			std::function<void(Cell &)> _fillNewCellDataCallback) noexcept
-		{
-			fillNewCellDataCallback = std::move(_fillNewCellDataCallback);
-			return *this;
-		}
-
-		CellBlock &updateNoMaxCells(const int &_noMaxCells) noexcept
-		{
-			maxCells = _noMaxCells;
-			// first_load =true;
-			return *this;
-		}
-
-		CellBlock &updateNoMaxCellsBy(const int &_numCells) noexcept
-		{
-			maxCells += _numCells;
-			// first_load =true;
-			return *this;
-		}
-
-		CellBlock &setEnabled(const bool &_enabled) noexcept
-		{
-			enabled = _enabled;
-			return *this;
-		}
-
-		std::size_t getSizeOfPreAddedCells()
-		{
-			return sizeOfPreAddedCells;
-		}
-
-		CellBlock &clearAndReset()
-		{
-			update_top_and_bottom_cells();
-			ANIM_ACTION_DN = false;
-			ANIM_ACTION_UP = false;
-			scrollAnimInterpolator.setIsAnimating(false);
-			backIndex = frontIndex = 0;
-			topCell = bottomCell = 0;
-			lineCount = 0;
-			consumedCells = 0;
-			prevLineCount = 0;
-			SELECTED_CELL = 0 - 1;
-			PREV_SELECTED_CELL = 0 - 1;
-			FIRST_LOAD = true;
-			cellsWithAsyncImages.clear();
-			visibleCells.clear();
-			cells.clear();
-			toBeErasedCells.clear();
-
-			// pre added cells
-			const int originalMaxCells = maxCells;
-			for (auto preAddedCellSetUpCallback : preAddedCellsSetUpCallbacks)
+			auto &new_cell = cells.emplace_back()
+								 .setContext(this)
+								 .setIndex(cells.size() - 1);
+			new_cell.adaptiveVsync = &CellsAdaptiveVsync;
+			new_cell.cellblock_parent = true;
+			newCellSetUpCallback(new_cell);
+			if (maxCells < cells.size())
+				maxCells = cells.size();
+			if (new_cell.bounds.y <= margin.h)
 			{
-				update_top_and_bottom_cells();
-				cells.emplace_back()
-					.setContext(this)
-					.setIndex(cells.size() - 1);
-				/// FIXME: the cells adptiveVsync =&CellsSmartFrame should be a single
-				/// call with the cell.setContext so that any cell::smartframehd can be init
-				/// with the correct AdaptiveVsync cotext
-				cells.back().adaptiveVsync = &CellsAdaptiveVsync;
-				preAddedCellSetUpCallback(cells.back());
 				visibleCells.push_back(&cells.back());
-				++backIndex;
-				update_top_and_bottom_cells();
 			}
-
-			if (maxCells > 0)
-			{
-				cells.emplace_back()
-					.setContext(this)
-					.setIndex(cells.size() - 1)
-					.bg_color = cell_bg_color;
-				cells.back().adaptiveVsync = &CellsAdaptiveVsync;
-				cells.back().pv = this;
-				fillNewCellDataCallback(cells.back());
-				visibleCells.emplace_back(&cells.back());
-				scrlAction = ScrollAction::Up;
-			}
-			adaptiveVsyncHD.startRedrawSession();
+			SIMPLE_RE_DRAW = true;
 			update_top_and_bottom_cells();
-			return *this;
+		}
+		return *this;
+	}
+
+	/*
+	 * instead of going through all visible cell to get the
+	 * lowest and highest bound cell, calculate them on the fly and cache them as cells get added.
+	 * this approach is not only faster but fixes the bug introduced by adding cells manually
+	 * on a non empty block
+	 */
+	CellBlock &setCellRect(Cell &_cell, uint32_t numVertGrids, const float h, const float margin_x = 0.f, const float margin_y = 0.f)
+	{
+		[[unlikely]] if (_cell.isHeader)
+		{
+			numVertGrids = numVerticalGrids;
+		}
+		numVertGrids = std::clamp(numVertGrids, uint32_t(0), numVerticalGrids);
+		if (numVertGrids == numVerticalGrids)
+			isFlexible = false;
+		_cell.num_vert_grids = numVertGrids;
+		_cell.org_mx = margin_x;
+		_cell.org_my = margin_y;
+		_cell.mx = margin_x;
+		_cell.my = margin_y;
+		if (getMaxVerticalGrids() - consumedCells < numVertGrids)
+			lineCount++, _cell.bounds.y += margin_y;
+		SDL_FRect lbc;
+		if (not _cell.isHeader)
+			lbc = getLowestBoundCell().bounds;
+		else
+			lbc = header_cell.bounds;
+		if (cells.size() > 1)
+		{
+			const auto &bck = cells[cells.size() - 2].bounds;
+			if (lbc.y + lbc.h < bck.y + bck.h)
+				lbc = bck;
 		}
 
-		void setHeaderCellVisible(bool is_visible)
+		_cell.bounds.y += lbc.y;
+		if (lineCount != prevLineCount)
+			consumedCells = 0, _cell.bounds.y += lbc.h + CellSpacingY;
+		_cell.bounds.x += CellSpacingX / 2.f;
+		_cell.bounds.x += (consumedCells * (getCellWidth() + CellSpacingX)) + margin_x;
+		_cell.bounds.w = (static_cast<float>(numVertGrids) * getCellWidth()) - CellSpacingX;
+		_cell.bounds.w -= margin_x * 2.f;
+		_cell.bounds.h = h - (margin_y * 2.f);
+		prevLineCount = lineCount;
+		consumedCells += numVertGrids;
+		[[unlikely]] if (_cell.isHeader)
 		{
+			_cell.bounds.x += bounds.x;
+			_cell.bounds.y += bounds.y;
+		}
+		return *this;
+	}
+
+	float sumGainedGrids = 0.f;
+
+	void handleFlexResize(float dw)
+	{
+		if (dw == 0.f)
+			return;
+		if (max_vert_grids <= 1)
+		{
+			cellWidth = margin.w / static_cast<float>(numVerticalGrids);
+			allCellsHandleEvent();
+			return;
 		}
 
-		void setFooterCellVisible(bool is_visible)
+		// check if we lost or gained width
+		if (dw < 0.f)
 		{
-		}
-
-		std::optional<std::reference_wrapper<Cell>> getHeaderCell()
-		{
-			if (fillNewCellDataCallbackHeader and not cells.empty())
+			// handle lost grids
+			const float lostGrids = std::fabs(dw) / cellWidth;
+			const float fLostGrids = std::floor(lostGrids);
+			std::cout << "LostGrids:" << lostGrids << "\n";
+			std::cout << "PrevCellSpacingX:" << CellSpacingX << "\n";
+			if (lostGrids >= 1.0f)
 			{
-				return cells.front();
-			}
-			else
-			{
-				GLogger.Log(Logger::Level::Error, "CellBlock::getHeaderCell() failed. no header cell was found. call CellBlock::addHeaderCell() before CellBlock::getHeaderCell()");
-				return {};
-			}
-		}
-
-		// Note this method must be invoked before CellBlock::Build() and CellBlock::addCell
-		CellBlock &addHeaderCell(std::function<void(Cell &)> newCellSetUpCallback)
-		{
-			fillNewCellDataCallbackHeader = newCellSetUpCallback;
-			return *this;
-		}
-
-		CellBlock &addFooterCell(std::function<void(Cell &)> newCellSetUpCallback)
-		{
-			return *this;
-		}
-
-		CellBlock &addCell(std::function<void(Cell &)> newCellSetUpCallback)
-		{
-			if (!BuildWasCalled)
-			{
-				preAddedCellsSetUpCallbacks.push_back(newCellSetUpCallback);
-				sizeOfPreAddedCells = preAddedCellsSetUpCallbacks.size();
-			}
-			else
-			{
-				auto &new_cell = cells.emplace_back()
-									 .setContext(this)
-									 .setIndex(cells.size() - 1);
-				new_cell.adaptiveVsync = &CellsAdaptiveVsync;
-				newCellSetUpCallback(new_cell);
-				if (maxCells < cells.size())
-					maxCells = cells.size();
-				if (new_cell.bounds.y <= margin.h)
+				if ((float)(numVerticalGrids)-fLostGrids >= 1.f)
 				{
-					visibleCells.push_back(&cells.back());
-				}
-				SIMPLE_RE_DRAW = true;
-				update_top_and_bottom_cells();
-			}
-			return *this;
-		}
-
-		/*
-		 * instead of going through all visible cell to get the
-		 * lowest and highest bound cell, calculate them on the fly and cache them as cells get added.
-		 * this approach is not only faster but fixes the bug introduced by adding cells manually
-		 * on a non empty block
-		 */
-		CellBlock &setCellRect(Cell &_cell, uint32_t numVertGrids, const float h, const float margin_x = 0.f, const float margin_y = 0.f)
-		{
-			[[unlikely]] if (_cell.isHeader)
-			{
-				numVertGrids = numVerticalGrids;
-			}
-			numVertGrids = std::clamp(numVertGrids, uint32_t(0), numVerticalGrids);
-			if (numVertGrids == numVerticalGrids)
-				isFlexible = false;
-			_cell.num_vert_grids = numVertGrids;
-			_cell.org_mx = margin_x;
-			_cell.org_my = margin_y;
-			_cell.mx = margin_x;
-			_cell.my = margin_y;
-			if (getMaxVerticalGrids() - consumedCells < numVertGrids)
-				lineCount++, _cell.bounds.y += margin_y;
-			SDL_FRect lbc;
-			if (not _cell.isHeader)
-				lbc = getLowestBoundCell().bounds;
-			else
-				lbc = header_cell.bounds;
-			if (cells.size() > 1)
-			{
-				const auto &bck = cells[cells.size() - 2].bounds;
-				if (lbc.y + lbc.h < bck.y + bck.h)
-					lbc = bck;
-			}
-
-			_cell.bounds.y += lbc.y;
-			if (lineCount != prevLineCount)
-				consumedCells = 0, _cell.bounds.y += lbc.h + CellSpacingY;
-			_cell.bounds.x += CellSpacingX;
-			_cell.bounds.x += (consumedCells * (getCellWidth() + CellSpacingX)) + margin_x;
-			_cell.bounds.w = static_cast<float>(numVertGrids) * getCellWidth();
-			_cell.bounds.w -= margin_x * 2.f;
-			_cell.bounds.h = h - (margin_y * 2.f);
-			prevLineCount = lineCount;
-			consumedCells += numVertGrids;
-			[[unlikely]] if (_cell.isHeader)
-			{
-				_cell.bounds.x += bounds.x;
-				_cell.bounds.y += bounds.y;
-			}
-			return *this;
-		}
-
-		float sumGainedGrids = 0.f;
-
-		void handleFlexResize(float dw)
-		{
-			if (dw == 0.f)
-				return;
-			if (max_vert_grids <= 1)
-			{
-				cellWidth = margin.w / static_cast<float>(numVerticalGrids);
-				allCellsHandleEvent();
-				return;
-			}
-
-			// check if we lost or gained width
-			if (dw < 0.f)
-			{
-				// handle lost grids
-				const float lostGrids = std::fabs(dw) / cellWidth;
-				const float fLostGrids = std::floor(lostGrids);
-				std::cout << "LostGrids:" << lostGrids << "\n";
-				std::cout << "PrevCellSpacingX:" << CellSpacingX << "\n";
-				if (lostGrids >= 1.0f)
-				{
-					if ((float)(numVerticalGrids)-fLostGrids >= 1.f)
+					numVerticalGrids -= (uint32_t)fLostGrids;
+					CellSpacingX += std::fabs(fLostGrids * cellWidth) / (float)(numVerticalGrids + 1);
+					if (lostGrids > fLostGrids)
 					{
-						numVerticalGrids -= (uint32_t)fLostGrids;
-						CellSpacingX += std::fabs(fLostGrids * cellWidth) / (float)(numVerticalGrids + 1);
-						if (lostGrids > fLostGrids)
+						const float dx = ((lostGrids - fLostGrids) * cellWidth) / (floor)(numVerticalGrids + 1);
+						if (CellSpacingX - dx >= 0.0)
 						{
-							const float dx = ((lostGrids - fLostGrids) * cellWidth) / (floor)(numVerticalGrids + 1);
-							if (CellSpacingX - dx >= 0.0)
+							CellSpacingX += dx;
+						}
+						else
+						{
+							if (numVerticalGrids - 1.f >= 1.f)
 							{
-								CellSpacingX += dx;
-							}
-							else
-							{
-								if (numVerticalGrids - 1.f >= 1.f)
-								{
-									--numVerticalGrids;
-									CellSpacingX += cellWidth / (float)(numVerticalGrids + 1);
-								}
+								--numVerticalGrids;
+								CellSpacingX += cellWidth / (float)(numVerticalGrids + 1);
 							}
 						}
-					}
-					else
-					{
-						return;
 					}
 				}
 				else
 				{
-					const float dx = (lostGrids * cellWidth) / (floor)(numVerticalGrids + 1);
-					if (CellSpacingX - dx >= 0.0f)
+					return;
+				}
+			}
+			else
+			{
+				const float dx = (lostGrids * cellWidth) / (floor)(numVerticalGrids + 1);
+				if (CellSpacingX - dx >= 0.0f)
+				{
+					CellSpacingX -= dx;
+				}
+				else
+				{
+					if (numVerticalGrids - 1 >= 1)
 					{
+						--numVerticalGrids;
+						CellSpacingX += cellWidth / (float)(numVerticalGrids + 1);
 						CellSpacingX -= dx;
 					}
 					else
 					{
-						if (numVerticalGrids - 1 >= 1)
-						{
-							--numVerticalGrids;
-							CellSpacingX += cellWidth / (float)(numVerticalGrids + 1);
-							CellSpacingX -= dx;
-						}
-						else
-						{
-							std::cout << "can't shrink grids any more\n";
-							return;
-						}
+						std::cout << "can't shrink grids any more\n";
+						return;
 					}
 				}
 			}
-			else if (dw > 0.f)
-			{
-				bool reg = false;
+		}
+		else if (dw > 0.f)
+		{
+			bool reg = false;
 
-				// redo_gained:
-				const float gainedGrids = dw / cellWidth;
-				const float fGainedGrids = std::floor(gainedGrids);
-				sumGainedGrids += gainedGrids;
-				std::cout << "ReGained:" << reg << "\n";
-				std::cout << "GainedGrids:" << gainedGrids << "\n";
-				std::cout << "PrevCellSpacingX:" << CellSpacingX << "\n";
-				std::cout << "sumGainedGrids:" << sumGainedGrids << "\n";
-				if (sumGainedGrids >= 1.f)
+			// redo_gained:
+			const float gainedGrids = dw / cellWidth;
+			const float fGainedGrids = std::floor(gainedGrids);
+			sumGainedGrids += gainedGrids;
+			std::cout << "ReGained:" << reg << "\n";
+			std::cout << "GainedGrids:" << gainedGrids << "\n";
+			std::cout << "PrevCellSpacingX:" << CellSpacingX << "\n";
+			std::cout << "sumGainedGrids:" << sumGainedGrids << "\n";
+			if (sumGainedGrids >= 1.f)
+			{
+				numVerticalGrids += (uint32_t)std::floor(sumGainedGrids);
+				CellSpacingX = OrgCellSpacingX;
+				if (sumGainedGrids > std::floor(sumGainedGrids))
 				{
-					numVerticalGrids += (uint32_t)std::floor(sumGainedGrids);
-					CellSpacingX = OrgCellSpacingX;
-					if (sumGainedGrids > std::floor(sumGainedGrids))
-					{
-						const float dx = ((sumGainedGrids - std::floor(sumGainedGrids)) * cellWidth) / (floor)(numVerticalGrids + 1);
-						CellSpacingX += dx;
-					}
-					sumGainedGrids = 0.f;
-				}
-				else
-				{
-					const float dx = dw / (floor)(numVerticalGrids + 1);
+					const float dx = ((sumGainedGrids - std::floor(sumGainedGrids)) * cellWidth) / (floor)(numVerticalGrids + 1);
 					CellSpacingX += dx;
 				}
+				sumGainedGrids = 0.f;
+			}
+			else
+			{
+				const float dx = dw / (floor)(numVerticalGrids + 1);
+				CellSpacingX += dx;
+			}
 
-				/*if (gainedGrids >= 1.0f) {
+			/*if (gainedGrids >= 1.0f) {
 					numVerticalGrids += (uint32_t)fGainedGrids;
 					if (gainedGrids > fGainedGrids) {
 						const float dx = ((gainedGrids - fGainedGrids) * cellWidth) / (floor)(numVerticalGrids + 1);
@@ -7957,219 +8688,244 @@ namespace Volt
 						CellSpacingX += dw / (floor)(numVerticalGrids+1);
 					}
 				}*/
-			}
-			std::cout << "CellSpacingX:" << CellSpacingX << "\n";
-			clearAndReset();
+		}
+		std::cout << "CellSpacingX:" << CellSpacingX << "\n";
+		clearAndReset();
 
-			/*
-			 * std::for_each(cells.begin(), cells.end(), [this](Cell& cell) { setCellRect(cell, cell.num_vert_grids, cell.bounds.h, CellSpacingX); });
-			 */
+		/*
+		 * std::for_each(cells.begin(), cells.end(), [this](Cell& cell) { setCellRect(cell, cell.num_vert_grids, cell.bounds.h, CellSpacingX); });
+		 */
+	}
+
+	void resetTexture()
+	{
+		CacheRenderTarget crt_(renderer);
+		texture.reset();
+		texture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
+									  SDL_TEXTUREACCESS_TARGET, (int)margin.w, (int)margin.h);
+		SDL_SetTextureBlendMode(texture.get(), SDL_BLENDMODE_BLEND);
+		SDL_SetRenderTarget(renderer, texture.get());
+		RenderClear(renderer, 0, 0, 0, 0);
+		// fillRoundedRectF(renderer, { 0.f,0.f,rect.w,rect.h }, cornerRadius, bgColor);
+		crt_.release(renderer);
+	}
+
+	///  todo: build from view
+	virtual void attachRelativeView(IView *_prev_view, float _margin = 0.f) override
+	{
+		bounds.y = _prev_view->bounds.y + _prev_view->bounds.h + _margin;
+		margin.y += _prev_view->bounds.y + _prev_view->bounds.h + _margin;
+	}
+
+	CellBlock &Build(Context *context_, const int &maxCells_, const int &_numVerticalGrids, const CellBlockProps &_blockProps, const ScrollDirection &scroll_direction = ScrollDirection::VERTICAL)
+	{
+		Context::setContext(context_);
+		Context::setView(this);
+		adaptiveVsyncHD.setAdaptiveVsync(adaptiveVsync);
+		pv = this;
+		bounds = _blockProps.rect;
+		margin = {
+			bounds.x + DisplayInfo::Get().to_cust(_blockProps.margin.left, bounds.w),
+			bounds.y + DisplayInfo::Get().to_cust(_blockProps.margin.top, bounds.h),
+			DisplayInfo::Get().to_cust(100.f - (_blockProps.margin.left + _blockProps.margin.right), bounds.w),
+			DisplayInfo::Get().to_cust(100.f - (_blockProps.margin.top + _blockProps.margin.bottom), bounds.h)};
+		bgColor = _blockProps.bgColor;
+		cornerRadius = _blockProps.cornerRadius;
+		maxCells = maxCells_;
+		numVerticalGrids = _numVerticalGrids;
+		max_vert_grids = _numVerticalGrids;
+		CellSpacingX = _blockProps.cellSpacingX;
+		OrgCellSpacingX = _blockProps.cellSpacingX;
+		CellSpacingY = _blockProps.cellSpacingY;
+		cellWidth = ((margin.w - (_blockProps.cellSpacingX * (_numVerticalGrids - 1))) / static_cast<float>(_numVerticalGrids));
+
+		if (fillNewCellDataCallbackHeader)
+		{
+			update_top_and_bottom_cells();
+			header_cell = Cell{};
+			header_cell.isHeader = true;
+			header_cell.cellblock_parent = true;
+			header_cell.setContext(this)
+				.setIndex(0);
+			header_cell.pv = this;
+			header_cell.adaptiveVsync = adaptiveVsync;
+			fillNewCellDataCallbackHeader(header_cell);
+			header_h = header_cell.bounds.h;
+			margin.y += header_h + 2.f;
+			margin.h -= header_h + 2.f;
+			// GLogger.Log(Logger::Level::Info, "CellBlock::addHeaderCell() Success Index:" + std::to_string(header_cell.index));
 		}
 
-		void resetTexture()
+		if (texture != nullptr)
 		{
-			CacheRenderTarget crt_(renderer);
 			texture.reset();
-			texture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
-										  SDL_TEXTUREACCESS_TARGET, (int)margin.w, (int)margin.h);
-			SDL_SetTextureBlendMode(texture.get(), SDL_BLENDMODE_BLEND);
-			SDL_SetRenderTarget(renderer, texture.get());
-			renderClear(renderer, 0, 0, 0, 0);
-			// fillRoundedRectF(renderer, { 0.f,0.f,rect.w,rect.h }, cornerRadius, bgColor);
-			crt_.release(renderer);
+			texture = nullptr;
+		}
+		CacheRenderTarget crt_(renderer);
+		texture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
+									  SDL_TEXTUREACCESS_TARGET, (int)margin.w, (int)margin.h);
+		SDL_SetTextureBlendMode(texture.get(), SDL_BLENDMODE_BLEND);
+		SDL_SetRenderTarget(renderer, texture.get());
+		// RenderClear(renderer, 0, 0, 0, 0);
+		RenderClear(renderer, bgColor.r, bgColor.g, bgColor.b, bgColor.a);
+		//		fillRoundedRectF(renderer, { 0.f,0.f,rect.w,rect.h }, 0.f, bgColor);
+		// fillRoundedRectF(renderer, {0.f, 0.f, bounds.w, bounds.h}, 0.f, bgColor);
+
+		crt_.release(renderer);
+
+		const int originalMaxCells = maxCells;
+		for (auto preAddedCellSetUpCallback : preAddedCellsSetUpCallbacks)
+		{
+			update_top_and_bottom_cells();
+			cells.emplace_back()
+				.setContext(this)
+				.setIndex(cells.size() - 1)
+				.adaptiveVsync = adaptiveVsync;
+			cells.back().cellblock_parent = true;
+			preAddedCellSetUpCallback(cells.back());
+			maxCells++;
+			visibleCells.push_back(&cells.back());
+			++backIndex;
+			update_top_and_bottom_cells();
 		}
 
-		///  todo: build from view
-
-		CellBlock &Build(Context *context_, const int &maxCells_, const int &_numVerticalGrids, const CellBlockProps &_blockProps, const ScrollDirection &scroll_direction = ScrollDirection::VERTICAL)
+		if (originalMaxCells > 0)
 		{
-			Context::setContext(context_);
-			Context::setView(this);
-			adaptiveVsyncHD.setAdaptiveVsync(adaptiveVsync);
-			pv = this;
-			bounds = _blockProps.rect;
-			margin = {
-				bounds.x + DisplayInfo::Get().to_cust(_blockProps.margin.left, bounds.w),
-				bounds.y + DisplayInfo::Get().to_cust(_blockProps.margin.top, bounds.h),
-				DisplayInfo::Get().to_cust(100.f - (_blockProps.margin.left + _blockProps.margin.right), bounds.w),
-				DisplayInfo::Get().to_cust(100.f - (_blockProps.margin.top + _blockProps.margin.bottom), bounds.h)};
-			bgColor = _blockProps.bgColor;
-			cornerRadius = _blockProps.cornerRadius;
-			maxCells = maxCells_;
-			numVerticalGrids = _numVerticalGrids;
-			max_vert_grids = _numVerticalGrids;
-			CellSpacingX = _blockProps.cellSpacingX;
-			OrgCellSpacingX = _blockProps.cellSpacingX;
-			CellSpacingY = _blockProps.cellSpacingY;
-			cellWidth = ((margin.w - (_blockProps.cellSpacingX * (_numVerticalGrids - 1))) / static_cast<float>(_numVerticalGrids));
+			cells.emplace_back()
+				.setContext(this)
+				.setIndex(cells.size() - 1)
+				.bg_color = cell_bg_color;
+			cells.back().pv = this;
+			cells.back().getView()->rel_x = bounds.x;
+			cells.back().getView()->rel_y = bounds.y;
+			cells.back().adaptiveVsync = adaptiveVsync;
+			cells.back().cellblock_parent;
+			fillNewCellDataCallback(cells.back());
+			visibleCells.emplace_back(&cells.back());
 
-			if (fillNewCellDataCallbackHeader)
+			while (visibleCells.back()->bounds.y < margin.h and
+				   visibleCells.back()->index < (maxCells - 1))
 			{
 				update_top_and_bottom_cells();
-				header_cell = Cell{};
-				header_cell.isHeader = true;
-				header_cell.setContext(this)
-					.setIndex(0);
-				header_cell.pv = this;
-				header_cell.adaptiveVsync = adaptiveVsync;
-				fillNewCellDataCallbackHeader(header_cell);
-				header_h = header_cell.bounds.h;
-				margin.y += header_h + 2.f;
-				margin.h -= header_h + 2.f;
-				GLogger.Log(Logger::Level::Info, "CellBlock::addHeaderCell() Success Index:" + std::to_string(header_cell.index));
-			}
-
-			if (texture.get() != nullptr)
-				texture.reset();
-			CacheRenderTarget crt_(renderer);
-			texture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
-										  SDL_TEXTUREACCESS_TARGET, (int)margin.w, (int)margin.h);
-			SDL_SetTextureBlendMode(texture.get(), SDL_BLENDMODE_BLEND);
-			SDL_SetRenderTarget(renderer, texture.get());
-			renderClear(renderer, 0, 0, 0, 0);
-			// fillRoundedRectF(renderer, { 0.f,0.f,rect.w,rect.h }, cornerRadius, bgColor);
-			crt_.release(renderer);
-
-			const int originalMaxCells = maxCells;
-			for (auto preAddedCellSetUpCallback : preAddedCellsSetUpCallbacks)
-			{
-				update_top_and_bottom_cells();
-				cells.emplace_back()
-					.setContext(this)
-					.setIndex(cells.size() - 1)
-					.adaptiveVsync = adaptiveVsync;
-				preAddedCellSetUpCallback(cells.back());
-				maxCells++;
-				visibleCells.push_back(&cells.back());
+				if (FIRST_LOAD and (cells.back().index == visibleCells.back()->index) and cells.back().index < (maxCells - 1))
+				{
+					cells.emplace_back();
+					cells.back().setContext(this).setIndex(cells[cells.size() - 2].index + 1).bg_color = cell_bg_color;
+					cells.back().adaptiveVsync = &CellsAdaptiveVsync;
+					cells.back().pv = this;
+					cells.back().getView()->rel_x = bounds.x;
+					cells.back().getView()->rel_y = bounds.y;
+					cells.back().cellblock_parent = true;
+					fillNewCellDataCallback(cells.back());
+				}
 				++backIndex;
-				update_top_and_bottom_cells();
+				visibleCells.push_back(&cells[backIndex]);
 			}
+			while (visibleCells[0]->bounds.y + visibleCells[0]->bounds.h < 0.f)
+				visibleCells.pop_front(), frontIndex = visibleCells.front()->index;
 
-			if (originalMaxCells > 0)
-			{
-				cells.emplace_back()
-					.setContext(this)
-					.setIndex(cells.size() - 1)
-					.bg_color = cell_bg_color;
-				cells.back().pv = this;
-				cells.back().adaptiveVsync = adaptiveVsync;
-				fillNewCellDataCallback(cells.back());
-				visibleCells.emplace_back(&cells.back());
-
-				while (visibleCells.back()->bounds.y < margin.h and
-					   visibleCells.back()->index < (maxCells - 1))
-				{
-					update_top_and_bottom_cells();
-					if (FIRST_LOAD and (cells.back().index == visibleCells.back()->index) and cells.back().index < (maxCells - 1))
-					{
-						cells.emplace_back();
-						cells.back().setContext(this).setIndex(cells[cells.size() - 2].index + 1).bg_color = cell_bg_color;
-						cells.back().adaptiveVsync = &CellsAdaptiveVsync;
-						cells.back().pv = this;
-						fillNewCellDataCallback(cells.back());
-					}
-					++backIndex;
-					visibleCells.push_back(&cells[backIndex]);
-				}
-				while (visibleCells[0]->bounds.y + visibleCells[0]->bounds.h < 0.f)
-					visibleCells.pop_front(), frontIndex = visibleCells.front()->index;
-
-				scrlAction = ScrollAction::Up;
-			}
-			else
-			{
-				SDL_Log("empty cellblock");
-			}
-			BuildWasCalled = true;
-			return *this;
+			scrlAction = ScrollAction::Up;
 		}
-
-		[[nodiscard]] bool isPosInbound(const float &valX, const float &valY) const noexcept
+		else
 		{
-			if (valX > bounds.x && valX < bounds.x + bounds.w && valY > bounds.y &&
-				valY < bounds.y + bounds.h)
-				return true;
+			SDL_Log("empty cellblock");
+		}
+		transformToRoundedTexture(renderer, texture.get(), cornerRadius);
+
+		BuildWasCalled = true;
+		return *this;
+	}
+
+	[[nodiscard]] bool isPosInbound(const float &valX, const float &valY) const noexcept
+	{
+		if (valX > bounds.x && valX < bounds.x + bounds.w && valY > bounds.y &&
+			valY < bounds.y + bounds.h)
+			return true;
+		return false;
+	}
+
+	[[nodiscard]] bool isBlockScrollable() const
+	{
+		if (cells.empty())
 			return false;
-		}
+		if (cells.back().bounds.y + cells.back().bounds.h > margin.h && cells.front().bounds.y < 0.f)
+			return true;
+		return false;
+	}
 
-		[[nodiscard]] bool isBlockScrollable() const
+	bool handleEvent() override
+	{
+		bool result = false;
+		if (not enabled or hidden)
 		{
-			if (cells.empty())
-				return false;
-			if (cells.back().bounds.y + cells.back().bounds.h > margin.h && cells.front().bounds.y < 0.f)
+			return result;
+		}
+		for (auto child : childViews)
+		{
+			if (child->handleEvent())
+			{
+				updateHighlightedCell(-1);
+				SIMPLE_RE_DRAW = true;
 				return true;
-			return false;
+			}
 		}
-
-		bool handleEvent() override
+		if (event->type == EVT_RENDER_TARGETS_RESET)
 		{
-			bool result = false;
-			if (not enabled or hidden)
-			{
-				return result;
-			}
-			for (auto child : childViews)
-			{
-				if (child->handleEvent())
+			SDL_Log("targets reset. must recreate textures");
+			allCellsHandleEvent();
+			SIMPLE_RE_DRAW = true;
+		}
+		else if (event->type == EVT_WPSC)
+		{
+			float dw = bounds.w;
+			bounds =
 				{
-					updateHighlightedCell(-1);
-					SIMPLE_RE_DRAW = true;
-					return true;
-				}
-			}
-			if (event->type == SDL_EVENT_RENDER_TARGETS_RESET)
-			{
-				SDL_Log("targets reset. must recreate textures");
-				allCellsHandleEvent();
-				SIMPLE_RE_DRAW = true;
-			}
-			else if (event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
-			{
-				float dw = bounds.w;
-				bounds =
-					{
-						DisplayInfo::Get().toUpdatedWidth(bounds.x),
-						DisplayInfo::Get().toUpdatedHeight(bounds.y),
-						DisplayInfo::Get().toUpdatedWidth(bounds.w),
-						DisplayInfo::Get().toUpdatedHeight(bounds.h),
-					};
-				dw = bounds.w - dw;
-				margin =
-					{
-						DisplayInfo::Get().toUpdatedWidth(margin.x),
-						DisplayInfo::Get().toUpdatedHeight(margin.y),
-						DisplayInfo::Get().toUpdatedWidth(margin.w),
-						DisplayInfo::Get().toUpdatedHeight(margin.h),
-					};
-				resetTexture();
-				// handleFlexResize(dw);
-				allCellsHandleEvent();
-				SIMPLE_RE_DRAW = true;
-			}
-			else if (event->type == SDL_EVENT_FINGER_DOWN)
-			{
-				pf = cf = {event->tfinger.x * DisplayInfo::Get().RenderW,
-						   event->tfinger.y * DisplayInfo::Get().RenderH};
-				if (isPosInbound(cf.x, cf.y))
+					DisplayInfo::Get().toUpdatedWidth(bounds.x),
+					DisplayInfo::Get().toUpdatedHeight(bounds.y),
+					DisplayInfo::Get().toUpdatedWidth(bounds.w),
+					DisplayInfo::Get().toUpdatedHeight(bounds.h),
+				};
+			dw = bounds.w - dw;
+			margin =
 				{
-					for (auto child : childViews)
+					DisplayInfo::Get().toUpdatedWidth(margin.x),
+					DisplayInfo::Get().toUpdatedHeight(margin.y),
+					DisplayInfo::Get().toUpdatedWidth(margin.w),
+					DisplayInfo::Get().toUpdatedHeight(margin.h),
+				};
+			resetTexture();
+			// handleFlexResize(dw);
+			allCellsHandleEvent();
+			SIMPLE_RE_DRAW = true;
+		}
+		else if (event->type == EVT_FINGER_DOWN)
+		{
+			pf = cf = {event->tfinger.x * DisplayInfo::Get().RenderW,
+					   event->tfinger.y * DisplayInfo::Get().RenderH};
+			if (isPosInbound(cf.x, cf.y))
+			{
+				dy = 0.f;
+				dc = 0.f;
+				//	SDL_Log("wa");
+				for (auto child : childViews)
+				{
+					if (not child->hidden)
 					{
-						if (not child->hidden)
-						{
-							child->hide();
-							result = true;
-						}
+						child->hide();
+						result = true;
+						// SDL_Log("a");
 					}
-					if (result)
-						return result;
-					SIMPLE_RE_DRAW = true;
-					KEYDOWN = true, scrollAnimInterpolator.setIsAnimating(false);
-					visibleCellsHandleEvent();
-					result or_eq true;
 				}
-				FingerMotion_TM = SDL_GetTicks();
+				if (result)
+					return result;
+				SIMPLE_RE_DRAW = true;
+				KEYDOWN = true, interpolated.stop();
+				visibleCellsHandleEvent();
+				result or_eq true;
 			}
-			else if (event->type == SDL_EVENT_MOUSE_WHEEL)
+			FingerMotion_TM = SDL_GetTicks();
+		}
+		/*else if (event->type == SDL_MOUSEWHEEL)
 			{
 				MOTION_OCCURED = true;
 				visibleCellsHandleEvent();
@@ -8186,824 +8942,975 @@ namespace Volt
 					return true;
 				}
 				FingerUP_TM = SDL_GetTicks();
-			}
-			else if (event->type == SDL_EVENT_FINGER_MOTION)
+			}*/
+		else if (event->type == EVT_FINGER_MOTION)
+		{
+			MOTION_OCCURED = true;
+			// visibleCellsHandleEvent();
+			if (KEYDOWN and maxCells > 0)
 			{
-				MOTION_OCCURED = true;
-				visibleCellsHandleEvent();
-				if (KEYDOWN and maxCells > 0)
+				cf = {event->tfinger.x * DisplayInfo::Get().RenderW,
+					  event->tfinger.y * DisplayInfo::Get().RenderH};
+				/*dc += event->tfinger.dy  * DisplayInfo::Get().RenderH;
+				if (std::fabs(dc) < 4.f)
 				{
-					cf = {event->tfinger.x * DisplayInfo::Get().RenderW,
-						  event->tfinger.y * DisplayInfo::Get().RenderH};
-					movedDistance += {event->tfinger.dx * DisplayInfo::Get().RenderW, event->tfinger.dy * DisplayInfo::Get().RenderH};
-					internal_handle_motion();
-					updateHighlightedCell(-1);
-					FingerUP_TM = SDL_GetTicks();
+					skipFrame = true;
 					return true;
 				}
-				FingerUP_TM = SDL_GetTicks();
-			}
-			else if (event->type == SDL_EVENT_MOUSE_MOTION)
-			{
-				if (not KEYDOWN)
+				dc = 0.f;*/
+				internal_handle_motion();
+				updateHighlightedCell(-1);
+				movedDistance += {0.f, dy};
+				if (SDL_fabsf(dy) < 2.f)
 				{
-					// current finger
-					cf = {(float)event->motion.x, (float)event->motion.y};
-					// current finger transformed
-					const v2d_generic<float> cf_trans = {cf.x - margin.x, cf.y - margin.y};
-					bool cellFound = false;
-					if (isPosInbound(event->motion.x, event->motion.y))
-					{
-						result = true;
-						auto fc = std::find_if(visibleCells.begin(), visibleCells.end(),
-											   [this, &cf_trans, &cellFound](Cell *cell)
+					scrlAction = ScrollAction::None;
+				}
+				else
+					FingerUP_TM = SDL_GetTicks();
+				return true;
+			}
+			FingerUP_TM = SDL_GetTicks();
+		} 
+		else if (event->type == EVT_MOUSE_MOTION)
+		{
+#ifdef _MSC_VER
+			if (not KEYDOWN)
+			{
+				// current finger
+				cf = {(float)event->motion.x, (float)event->motion.y};
+				// current finger transformed
+				const v2d_generic<float> cf_trans = {cf.x - margin.x, cf.y - margin.y};
+				bool cellFound = false;
+				if (isPosInbound(event->motion.x, event->motion.y))
+				{
+					result = true;
+					auto fc = std::find_if(visibleCells.begin(), visibleCells.end(),
+										   [this, &cf_trans, &cellFound](Cell *cell) {
+											   if (cf_trans.y >= cell->bounds.y and
+												   cf_trans.y <= cell->bounds.y + cell->bounds.h and
+												   cf_trans.x >= cell->bounds.x and
+												   cf_trans.x <= cell->bounds.x + cell->bounds.w)
 											   {
-												   if (cf_trans.y >= cell->bounds.y and
-													   cf_trans.y <= cell->bounds.y + cell->bounds.h and
-													   cf_trans.x >= cell->bounds.x and
-													   cf_trans.x <= cell->bounds.x + cell->bounds.w)
-												   {
-													   cell->handleEvent();
-													   updateHighlightedCell(cell->index);
-													   SIMPLE_RE_DRAW = true;
-													   cellFound = true;
-													   return true;
-												   }
-												   return false;
-											   });
-						if (not cellFound)
-						{
-							if (HIGHLIGHTED_CELL >= 0)
-								SIMPLE_RE_DRAW = true;
-							updateHighlightedCell(-1);
-						}
-					}
-					else
+												   cell->handleEvent();
+												   updateHighlightedCell(cell->index);
+												   SIMPLE_RE_DRAW = true;
+												   cellFound = true;
+												   return true;
+											   }
+											   return false;
+										   });
+					if (not cellFound)
 					{
 						if (HIGHLIGHTED_CELL >= 0)
 							SIMPLE_RE_DRAW = true;
 						updateHighlightedCell(-1);
 					}
 				}
-			}
-			else if (event->type == SDL_EVENT_FINGER_UP)
-			{
-				const auto finger_up_dt = (SDL_GetTicks() - FingerUP_TM);
-				scrollAnimInterpolator.setIsAnimating(false);
-				if (KEYDOWN and not MOTION_OCCURED)
+				else
 				{
-					cf = {event->tfinger.x * DisplayInfo::Get().RenderW,
-						  event->tfinger.y * DisplayInfo::Get().RenderH};
-					const v2d_generic<float> cf_trans = {cf.x - margin.x, cf.y - margin.y};
-					if (isPosInbound(cf.x, cf.y))
-					{
-						result = true;
-						auto fc = std::find_if(visibleCells.begin(), visibleCells.end(),
-											   [this, &cf_trans](Cell *cell)
-											   {
-												   if (cf_trans.y >= cell->bounds.y and
-													   cf_trans.y <= cell->bounds.y + cell->bounds.h and
-													   cf_trans.x >= cell->bounds.x and
-													   cf_trans.x <= cell->bounds.x + cell->bounds.w)
-												   {
-													   updateSelectedCell(cell->index);
-													   if (not cell->handleEvent())
-													   {
-														   CELL_PRESSED = true;
-														   pressed_cell_index = cell->index;
-														   updateHighlightedCell(-1);
-													   }
-													   return true;
-												   }
-												   return false;
-											   });
-					}
+					if (HIGHLIGHTED_CELL >= 0)
+						SIMPLE_RE_DRAW = true;
+					updateHighlightedCell(-1);
 				}
-
-				if (MOTION_OCCURED and isPosInbound(cf.x, cf.y) and isBlockScrollable())
+			}
+#endif // _MSC_VER
+		}
+		else if (event->type == EVT_FINGER_UP)
+		{
+			////to do: should not use the time processed by the application
+			// to measure the time between events instead use event.time
+			const auto finger_up_dt = (SDL_GetTicks() - FingerUP_TM);
+			interpolated.stop();
+			dc = 0.f;
+			// SDL_Log("f∆");
+			if (KEYDOWN and not MOTION_OCCURED)
+			{
+				cf = {event->tfinger.x * DisplayInfo::Get().RenderW,
+					  event->tfinger.y * DisplayInfo::Get().RenderH};
+				// const v2d_generic<float> cf_trans = {cf.x - margin.x, cf.y - margin.y};
+				//	SDL_Log("s1");
+				if (isPosInbound(cf.x, cf.y))
 				{
 					result = true;
-					// SDL_Log("FU_TM: %d", finger_up_dt);
-					float dt = static_cast<float>(SDL_GetTicks() - FingerMotion_TM);
-					if (finger_up_dt > 45)
-						dt = 5000.f, movedDistance.y = 0.1f;
-					if (dt == 0.f)
-						dt = 0.0001f;
-					auto speed = (SDL_fabsf(movedDistance.y) / dt) * 10.f;
-					// SDL_Log("Speed: %f", speed);
-					if (finger_up_dt > 45)
-						speed /= 10.f;
-					// SDL_Log("DS_MOVED: %f REL_TM: %d INIT_VEL: %f", fabs(moved_distance.y), dt, speed);
-					if (movedDistance.y >= 0.f)
-						ANIM_ACTION_DN = true;
-					else
-						ANIM_ACTION_UP = true;
-					scrollAnimInterpolator.start(speed);
-					movedDistance = {0.f, 0.f};
+					// SDL_Log("s2");
+					auto fc = std::find_if(visibleCells.begin(), visibleCells.end(),
+										   [this](Cell *cell)
+										   {
+											   // SDL_Log("s3:%f,%f,%f,%f",cell->bounds.x,cell->bounds.y,cell->bounds.w,cell->bounds.h);
+											   if (/*cf_trans.y >= cell->bounds.y and
+												   cf_trans.y <= cell->bounds.y + cell->bounds.h and
+												   cf_trans.x >= cell->bounds.x and
+												   cf_trans.x <= cell->bounds.x + cell->bounds.w*/
+												   cell->isPointInBound(cf.x, cf.y))
+											   {
+												   // SDL_Log("z");
+												   updateSelectedCell(cell->index);
+												   if (not cell->handleEvent())
+												   {
+													   CELL_PRESSED = true;
+													   pressed_cell_index = cell->index;
+													   // SDL_Log("CLKD_CELL: %d", pressed_cell_index);
+													   updateHighlightedCell(-1);
+													   // cell->redraw = true;
+												   }
+												   return true;
+											   }
+											   return false;
+										   });
 				}
-
-				KEYDOWN = false;
-				MOTION_OCCURED = false;
 			}
-			/*else if (event->type == SDL_WINDOWEVENT) {
+
+			if (MOTION_OCCURED and isPosInbound(cf.x, cf.y) and isBlockScrollable())
+			{
+				result = true;
+				// SDL_Log("FU_TM: %d", finger_up_dt);
+				float dt = static_cast<float>((FingerUP_TM - FingerMotion_TM));
+
+				if (finger_up_dt > 100)
+					dt = 30000.f, movedDistance.y = 0.01f;
+
+				if (dt <= 0.f)
+					dt = 0.000001f;
+				auto speed = ((SDL_fabsf(movedDistance.y) / dt) * 30.f);
+				if (speed <= 0.f)
+					speed = 0.000001f;
+				// SDL_Log("Speed: %f", speed);
+				/*if (finger_up_dt > 45)
+					speed *= 10.f;*/
+				// SDL_Log("moved distance: %f DT: %f  speed: %f", fabs(movedDistance.y), dt, speed);
+				if (movedDistance.y >= 0.f)
+					ANIM_ACTION_DN = true;
+				else
+					ANIM_ACTION_UP = true;
+				/*
+				if (speed > 0)
+					scroll_step = (float)speed / 4.f;
+				else
+					scroll_step = 10.f;*/
+				interpolated.setTransitionFunction(TransitionFunction::EaseOutQuad);
+				interpolated.setValue(speed);
+				interpolated.setDuration(speed / 8.f);
+				movedDistance = {0.f, 0.f};
+			}
+
+			KEYDOWN = false;
+			MOTION_OCCURED = false;
+		}
+		/*else if (event->type == SDL_WINDOWEVENT) {
 				//if (event.window.type == SDL_WINDOWEVENT) {
 				//	//SDL_GetWindowPosition(window, NULL, NULL);
 				//	//SDL_Log("WARN: WINDOW_EVENT");
 				//}
 			}*/
-			else
-			{
-				visibleCellsHandleEvent();
-			}
-
-			if (CELL_PRESSED or SIMPLE_RE_DRAW or scrollAnimInterpolator.isAnimating() or CellsAdaptiveVsync.hasRequests())
-			{
-				adaptiveVsyncHD.startRedrawSession();
-			}
-
-			if (not toBeErasedCells.empty())
-				SIMPLE_RE_DRAW = false;
-			return result; // *this;
+		else
+		{
+			visibleCellsHandleEvent();
 		}
 
-		void scroll(float distance)
+		if (CELL_PRESSED or SIMPLE_RE_DRAW or !interpolated.isDone() or CellsAdaptiveVsync.hasRequests())
 		{
-			if (distance >= 0.f)
-				ANIM_ACTION_DN = true;
-			else
-				ANIM_ACTION_UP = true;
-			SIMPLE_RE_DRAW = false;
-			scrollAnimInterpolator.startWithDistance(distance);
 			adaptiveVsyncHD.startRedrawSession();
+			dy = 0.f;
 		}
 
-		// BUG: infinite recursion if you invoke this func inside a cell pressed callback
-		void Draw() override
+		if (not toBeErasedCells.empty())
+			SIMPLE_RE_DRAW = false;
+		return result;
+	}
+
+	void onUpdate() override
+	{
+		for (auto &cell : visibleCells)
 		{
-			if (not enabled or isHidden())
-				return;
-			update_cells_with_async_images();
-			if (SIMPLE_RE_DRAW)
-			{
-				SIMPLE_RE_DRAW = false;
-				goto simple_rdraw;
-				// simpleDraw();
-			}
-			if (scrlAction == ScrollAction::None and not ANIM_ACTION_DN and not ANIM_ACTION_UP and not CELL_PRESSED and not adaptiveVsyncHD.shouldReDrawFrame())
-			{
-				fillRoundedRectF(renderer, {bounds.x, bounds.y, bounds.w, bounds.h}, cornerRadius, bgColor);
-				if (fillNewCellDataCallbackHeader)
-					header_cell.Draw();
-				SDL_RenderTexture(renderer, texture.get(), nullptr, &margin);
-				if (not childViews.empty())
-				{
-					for (auto child : childViews)
-						child->Draw();
-				}
-				adaptiveVsyncHD.stopRedrawSession();
-				return;
-			}
-
-			if (scrollAnimInterpolator.isAnimating())
-			{
-				scrollAnimInterpolator.update();
-				if (ANIM_ACTION_DN)
-				{
-					dy = scrollAnimInterpolator.getValue();
-					scrlAction = ScrollAction::Down;
-					if (cells.front().bounds.y + dy > 0.f)
-					{
-						if (cells.front().bounds.y > 0.f)
-							dy = 0.f - (cells.front().bounds.y);
-						else
-							dy = std::fabs(cells.front().bounds.y);
-						scrollAnimInterpolator.setIsAnimating(false);
-					}
-				}
-				else if (ANIM_ACTION_UP)
-				{
-					dy = 0.f - scrollAnimInterpolator.getValue();
-					scrlAction = ScrollAction::Up;
-					if (cells.back().bounds.y + cells.back().bounds.h + dy < margin.h and
-						cells.back().index >= (maxCells - 1))
-					{
-						if (cells.back().bounds.y + cells.back().bounds.h < margin.h)
-							dy = margin.h - cells.back().bounds.y - cells.back().bounds.h;
-						else
-							dy = cells.back().bounds.y + cells.back().bounds.h - margin.h, std::cout << "mh:" << margin.h << " " << "cy:" << cells.back().bounds.y + cells.back().bounds.h << "dy:" << dy << ", ";
-						scrollAnimInterpolator.setIsAnimating(false);
-					}
-				}
-			}
-			else
-				ANIM_ACTION_DN = ANIM_ACTION_UP = false;
-
-			if (not cells.empty())
-			{
-				if (dy not_eq 0.f)
-				{
-					movedDistanceSinceStart.y += dy;
-					// std::for_each(cells.begin(), cells.end(), [this](Cell<CustomCellData>& cell) {Async::GThreadPool.enqueue(&Cell<CustomCellData>::updatePosBy, &cell,0.f, dy); });
-					std::for_each(cells.begin(), cells.end(), [this](Cell &cell)
-								  { cell.updatePosBy(0.f, dy); });
-				}
-				if (CELL_PRESSED)
-				{
-					CELL_PRESSED = false;
-					if (onCellClickedCallback)
-						onCellClickedCallback(cells[pressed_cell_index]);
-					pressed_cell_index = 0;
-				}
-
-				if (cells.back().index >= maxCells - 1)
-					FIRST_LOAD = false;
-
-				switch (scrlAction)
-				{
-				case ScrollAction::Up:
-				{
-					// auto beg = std::chrono::steady_clock::now();
-					scrollUp();
-					break;
-				}
-				case ScrollAction::Down:
-				{
-					// auto beg = std::chrono::steady_clock::now();
-					scrollDown();
-					break;
-				}
-				case ScrollAction::None:
-					break;
-				}
-
-				dy = 0.f;
-				scrlAction = ScrollAction::None;
-			}
-		simple_rdraw:
-			simpleDraw();
-
-			if (not toBeErasedCells.empty())
-			{
-				for (auto i : toBeErasedCells)
-				{
-					cells.erase(cells.begin() + i);
-				}
-				updateHighlightedCell(-1);
-				updateSelectedCell(0);
-				maxCells -= toBeErasedCells.size();
-				toBeErasedCells.clear();
-			}
+			cell->onUpdate();
+			// SDL_Log("s9:%f,%f,%f,%f",cell->bounds.x,cell->bounds.y,cell->bounds.w,cell->bounds.h);
 		}
+	}
 
-	protected:
-		void simpleDraw()
+	void scroll(float distance)
+	{
+		if (distance >= 0.f)
+			ANIM_ACTION_DN = true;
+		else
+			ANIM_ACTION_UP = true;
+		SIMPLE_RE_DRAW = false;
+		// scrollAnimInterpolator.startWithDistance(distance);
+		// adaptiveVsyncHD.startRedrawSession();
+	}
+
+	// BUG: infinite recursion if you invoke this func inside a cell pressed callback
+	void draw() override
+	{
+		if (not enabled or isHidden())
+			return;
+		//	update_cells_with_async_images();
+		if (SIMPLE_RE_DRAW)
 		{
-			fillRoundedRectF(renderer, {bounds.x, bounds.y, bounds.w, bounds.h}, cornerRadius, bgColor);
+			SIMPLE_RE_DRAW = false;
+			goto simple_rdraw;
+			// simpleDraw();
+		}
+		if (scrlAction == ScrollAction::None and not ANIM_ACTION_DN and not ANIM_ACTION_UP and not CELL_PRESSED and not adaptiveVsyncHD.shouldReDrawFrame())
+		{
+			// fillRoundedRectF(renderer, {bounds.x, bounds.y, bounds.w, bounds.h}, cornerRadius, bgColor);
 			if (fillNewCellDataCallbackHeader)
-				header_cell.Draw();
-			CacheRenderTarget crt_(renderer);
-			SDL_SetRenderTarget(renderer, texture.get());
-			renderClear(renderer, 0, 0, 0, 0);
-			for (auto &cell : visibleCells)
-			{
-				cell->Draw();
-			}
-			crt_.release(renderer);
-			SDL_RenderTexture(renderer, texture.get(), nullptr, &margin);
+				header_cell.draw();
+			// transformToRoundedTexture(renderer, texture.get(), cornerRadius);
+			RenderTexture(renderer, texture.get(), nullptr, &margin);
 			if (not childViews.empty())
 			{
 				for (auto child : childViews)
-					child->Draw();
+					child->draw();
 			}
 			adaptiveVsyncHD.stopRedrawSession();
-			if (CellsAdaptiveVsync.hasRequests() or scrollAnimInterpolator.isAnimating())
-			{
-				adaptiveVsyncHD.startRedrawSession();
-			}
+			return;
 		}
 
-		void scrollUp()
+		if (!interpolated.isDone())
 		{
-			while (visibleCells.back()->bounds.y < margin.h and
-				   visibleCells.back()->index < (maxCells - 1))
+			if (ANIM_ACTION_DN)
 			{
-				update_top_and_bottom_cells();
-				if (FIRST_LOAD and (cells.back().index == visibleCells.back()->index) and cells.back().index < (maxCells - 1))
+				dy = interpolated.getValue();
+				dy *= scroll_step;
+				scrlAction = ScrollAction::Down;
+				if (cells.front().bounds.y + dy > 0.f)
 				{
-					cells.emplace_back();
-					cells.back().setContext(this).setIndex(cells[cells.size() - 2].index + 1).bg_color = cell_bg_color;
-					cells.back().adaptiveVsync = &CellsAdaptiveVsync;
-					cells.back().pv = this;
-					fillNewCellDataCallback(cells.back());
+					if (cells.front().bounds.y > 0.f)
+						dy = 0.f - (cells.front().bounds.y);
+					else
+						dy = std::fabs(cells.front().bounds.y);
+					interpolated.stop();
 				}
-				++backIndex;
-				visibleCells.push_back(&cells[backIndex]);
 			}
-			while (visibleCells[0]->bounds.y + visibleCells[0]->bounds.h < 0.f)
-				visibleCells.pop_front(), frontIndex = visibleCells.front()->index;
-		}
-
-		void scrollDown()
-		{
-			while (visibleCells[0]->index > cells.front().index and visibleCells[0]->bounds.y + visibleCells[0]->bounds.h > 0.f)
+			else if (ANIM_ACTION_UP)
 			{
-				--frontIndex;
-				visibleCells.push_front(&cells[frontIndex]);
-				update_top_and_bottom_cells();
-			}
-			while (visibleCells.back()->bounds.y > margin.h)
-				visibleCells.pop_back(), backIndex = visibleCells.back()->index, update_top_and_bottom_cells(); /*, SDL_Log("back pop rs: %d", cells_tmp.size())*/
-		}
-
-		void update_cells_with_async_images()
-		{
-			if (cellsWithAsyncImages.empty())
-				return;
-			std::erase_if(cellsWithAsyncImages, [&](ImageButton *_imgBtn)
-						  {
-					if (_imgBtn->isAsyncLoadComplete()) { _imgBtn->Draw(); return true; }
-					return false; });
-		}
-
-		void update_top_and_bottom_cells() noexcept
-		{
-			float smallest = 0.f, tmp_smallest = 0.f;
-			std::size_t tmp_top_cell = 0;
-			float largest = 0.f, tmp_largest = 0.f;
-			std::size_t tmp_bottom_cell = 0;
-			std::for_each(visibleCells.begin(), visibleCells.end(),
-						  [&smallest, &tmp_smallest, &tmp_top_cell, &largest, &tmp_largest, &tmp_bottom_cell](const Cell *cell)
-						  {
-							  tmp_smallest = cell->bounds.y;
-							  tmp_largest = cell->bounds.y + cell->bounds.h;
-							  if (tmp_smallest < smallest)
-								  smallest = tmp_smallest, tmp_top_cell = cell->index;
-							  if (tmp_largest >= largest)
-								  largest = tmp_largest, tmp_bottom_cell = cell->index;
-							  tmp_smallest = 0.f;
-							  tmp_largest = 0.f;
-						  });
-			topCell = tmp_top_cell;
-			bottomCell = tmp_bottom_cell;
-			// SDL_Log("NBT_CELL: %d", bottomCell);
-			// SDL_Log("NTP_CELL: %d", topCell);
-		}
-
-		void updateSelectedCell(int64_t _selectedCell)
-		{
-			PREV_SELECTED_CELL = SELECTED_CELL;
-			SELECTED_CELL = _selectedCell;
-			if (PREV_SELECTED_CELL >= 0)
-				cells[PREV_SELECTED_CELL].selected = false;
-			cells[SELECTED_CELL].selected = true;
-		}
-
-		void updateHighlightedCell(int64_t _highlightedCell)
-		{
-			// clear the prev highlighted cell
-			if (HIGHLIGHTED_CELL >= 0)
-				if (HIGHLIGHTED_CELL < cells.size())
-					cells[HIGHLIGHTED_CELL].isHighlighted = false;
-			// PREV_HIGHLIGHTED_CELL = HIGHLIGHTED_CELL;
-			HIGHLIGHTED_CELL = _highlightedCell;
-			// if (PREV_HIGHLIGHTED_CELL >= 0)cells[PREV_HIGHLIGHTED_CELL].isHighlighted = false;
-			if (HIGHLIGHTED_CELL >= 0)
-				cells[HIGHLIGHTED_CELL].isHighlighted = true;
-		}
-
-		bool visibleCellsHandleEvent()
-		{
-			bool result = false;
-			for (auto &_cell : visibleCells)
-			{
-				_cell->handleEvent();
-			}
-			return result;
-		}
-
-		bool allCellsHandleEvent()
-		{
-			bool result = false;
-			if (fillNewCellDataCallbackHeader)
-				header_cell.handleEvent();
-			for (auto &_cell : cells)
-			{
-				_cell.handleEvent();
-			}
-			return result;
-		}
-
-	private:
-		void internal_handle_motion()
-		{
-			// ACTION_UP
-			if (cf.y < pf.y)
-			{
-				if (cells.back().bounds.y + cells.back().bounds.h - (pf.y - cf.y) <
-						margin.h &&
-					cells.back().index == maxCells - 1)
+				dy = 0.f - interpolated.getValue();
+				dy *= scroll_step;
+				scrlAction = ScrollAction::Up;
+				if (cells.back().bounds.y + cells.back().bounds.h + dy < margin.h and
+					cells.back().index >= (maxCells - 1))
 				{
-					dy += 0.f;
-				}
-				else if (cf.y > margin.y + margin.h || cf.y < margin.y)
-				{
-					dy += 0.f;
-				}
-				else
-				{
-					dy -= (pf.y - cf.y);
-					if (cells.back().bounds.y + cells.back().bounds.h + dy < margin.h &&
-						cells.back().index >= (maxCells - 1))
+					if (cells.back().bounds.y + cells.back().bounds.h < margin.h)
+					{
 						dy = margin.h - cells.back().bounds.y - cells.back().bounds.h;
-					scrlAction = ScrollAction::Up;
-				}
-			}
-			// ACTION_DOWN
-			else if (pf.y < cf.y)
-			{
-				if ((cells[0].bounds.y + (cf.y - pf.y) > 0.f && cells[0].index < 1) ||
-					(cf.y > margin.y + margin.h) || cf.y < margin.y)
-				{
-					dy += 0.f;
-				}
-				else
-				{
-					dy += (cf.y - pf.y);
-					if (cells.front().bounds.y + dy > 0 && cells.front().index <= 0)
-						dy = SDL_fabsf(cells.front().bounds.y);
-					scrlAction = ScrollAction::Down;
-				}
-			}
-			pf = cf;
-		}
-
-	private:
-		enum class ScrollAction
-		{
-			None,
-			Up,
-			Down,
-			Left,
-			Right
-		};
-		ScrollAction scrlAction;
-
-	private:
-		std::function<void(Cell &)> onCellClickedCallback = nullptr;
-		std::function<void(Cell &)> fillNewCellDataCallback = nullptr;
-		std::function<void(Cell &)> fillNewCellDataCallbackHeader = nullptr;
-		std::deque<Cell> cells;
-		std::deque<Cell *> visibleCells;
-		std::deque<ImageButton *> cellsWithAsyncImages;
-		std::deque<std::function<void(Cell &)>> preAddedCellsSetUpCallbacks;
-		std::vector<std::size_t> toBeErasedCells;
-		Cell header_cell, footer_cell;
-		AdaptiveVsyncHandler adaptiveVsyncHD;
-		AdaptiveVsync CellsAdaptiveVsync;
-		SDL_FRect margin;
-		SharedTexture texture;
-		SDL_Color cell_bg_color = {0x00, 0x00, 0x00, 0x00};
-		uint64_t maxCells = 0;
-		// SDL_FRect dest;
-		float cellWidth = 0.f, CellSpacing = 0.f, CellSpacingX = 0.f, OrgCellSpacingX = 0.f, CellSpacingY = 0.f;
-		float dy = 0.f;
-		float cornerRadius = 0.f;
-		float header_h = 0.f;
-		/*current finger*/
-		v2d_generic<float> cf = {0.f, 0.f};
-		/*previous finger*/
-		v2d_generic<float> pf = {0.f, 0.f};
-		v2d_generic<float> movedDistance = {0.f, 0.f};
-		v2d_generic<float> movedDistanceSinceStart = {0.f, 0.f};
-		uint32_t numVerticalGrids = 0;
-		uint32_t FingerMotion_TM = 0;
-		uint32_t FingerUP_TM = 0;
-		uint32_t max_vert_grids = 1;
-		SDL_Color bgColor = {0, 0, 0, 0xff};
-		std::size_t backIndex = 0, frontIndex = 0;
-		std::size_t topCell = 0, bottomCell = 0;
-		bool enabled = true, CELL_PRESSED = false, CELL_HIGHLIGHTED = false, KEYDOWN = false;
-		bool MOTION_OCCURED = false, ANIM_ACTION_UP = false, ANIM_ACTION_DN = false, FIRST_LOAD = true;
-		bool SIMPLE_RE_DRAW = false;
-		bool BuildWasCalled = false;
-		bool isFlexible = true;
-		int64_t SELECTED_CELL = 0 - 1, PREV_SELECTED_CELL = 0 - 1;
-		int64_t HIGHLIGHTED_CELL = 0 - 1, PREV_HIGHLIGHTED_CELL = 0 - 1;
-		std::size_t sizeOfPreAddedCells = 0;
-		std::size_t pressed_cell_index = 0;
-		Interpolator scrollAnimInterpolator;
-	};
-
-	class Select : Context
-	{
-	public:
-		struct Props
-		{
-			SDL_FRect rect{0.f, 0.f, 0.f, 0.f};
-			SDL_FRect inner_block_rect{0.f, 0.f, 0.f, 0.f};
-			SDL_FRect text_margin{0.f, 0.f, 0.f, 0.f};
-			SDL_Color text_color{0x00, 0x00, 0x00, 0xff};
-			SDL_Color bg_color{0xff, 0xff, 0xff, 0xff};
-			SDL_Color on_hover_color{};
-			float border_size = 1.f;
-			float corner_radius = 1.f;
-			int maxValues = 1;
-			bool show_all_on_hover = false;
-		};
-
-	public:
-		struct Value
-		{
-			std::size_t id = 0;
-			std::string value = "";
-			std::string img = "";
-		};
-
-	public:
-		CellBlock *getInnerBlock() { return &valuesBlock; }
-		Cell *getInnerCell() { return &viewValue; }
-
-		IView *getView()
-		{
-			return viewValue.getView();
-		}
-
-		IView *show()
-		{
-			return viewValue.show();
-		}
-
-		IView *hide()
-		{
-			return viewValue.hide();
-		}
-
-	public:
-		Select &Build(Context *_context, Select::Props _props, std::vector<Value> _values, std::size_t _default = 0)
-		{
-			Context::setContext(_context);
-			// if any of _values contains img then add img padding to all value cells
-			const auto bounds = _props.rect;
-			_props.inner_block_rect.x = bounds.x;
-			_props.inner_block_rect.y = bounds.y + bounds.h + 2.f;
-			values_ = _values;
-			defaultVal = _default;
-			std::size_t _max_values = _values.size();
-			// if all values rect dimensions arent set we defaut
-			if (_props.inner_block_rect.w <= 0.f or _props.inner_block_rect.w <= 0.f)
-			{
-				float tmpH = _max_values >= 4 ? 4.f : static_cast<float>(_max_values);
-				_props.inner_block_rect = {bounds.x, bounds.y + bounds.h + 1.f, bounds.w, bounds.h * tmpH};
-			}
-
-			viewValue.setContext(_context);
-			viewValue.bg_color = _props.bg_color;
-			viewValue.corner_radius = _props.corner_radius;
-			viewValue.bounds = bounds;
-			if (_values.size())
-			{
-				viewValue.addTextBox(
-					{//.mem_font = Font::OpenSansSemiBold,
-					 .rect = {5.f, 5.f, 90.f, 90.f},
-					 .textAttributes = {values_[_default].value, {0, 0, 0, 0xff}, {0, 0, 0, 0}},
-					 .gravity = Gravity::Left});
-			}
-
-			viewValue.prevent_default_behaviour = true;
-			viewValue.registerCustomEventHandlerCallback([this](Cell &_cell) -> bool
-														 {
-				if (viewValue.childViews[0]->handleEvent()) {
-						return true;
-					}
-				if (event->type == SDL_EVENT_FINGER_DOWN){
-					//mouse point
-					auto mp = SDL_FPoint{ event->tfinger.x * DisplayInfo::Get().RenderW,
-							   event->tfinger.y * DisplayInfo::Get().RenderH };
-					if (SDL_PointInRectFloat(&mp, &_cell.bounds)/* or p2*/) {
-						viewValue.childViews[0]->toggleView();
-						return true;
 					}
 					else
 					{
-						if (not valuesBlock.isHidden()) {
-							valuesBlock.hide();
-							return true;
-						}
-						valuesBlock.hide();
+						dy = cells.back().bounds.y + cells.back().bounds.h - margin.h;
+						// std::cout << "mh:" << margin.h << " "<< "cy:" << cells.back().bounds.y + cells.back().bounds.h << "dy:" << dy << ", ";
 					}
+					interpolated.stop();
 				}
-				return false; });
-
-			valuesBlock.setOnFillNewCellData(
-				[this, bounds](Cell &_cell)
-				{
-					valuesBlock.setCellRect(_cell, 1, bounds.h, 0.f, 1.f);
-					_cell.bg_color = viewValue.bg_color;
-					_cell.onHoverBgColor = {180, 180, 180, 0xff};
-					_cell.highlightOnHover = true;
-					_cell.addTextBox(
-						{//.mem_font = Font::OpenSansSemiBold,
-						 .rect = {5.f, 2.5f, 90.f, 95.f},
-						 .textAttributes = {values_[_cell.index].value, {0, 0, 0, 0xff}, {0, 0, 0, 0}},
-						 .gravity = Gravity::Left});
-
-					_cell.textBox[0].addOnclickedCallback([this, &_cell](TextBox *_textbox)
-														  {
-						viewValue.textBox.pop_back();
-						selectedVal = _cell.index;
-						viewValue.addTextBox(
-							{
-								//.mem_font = Font::OpenSansSemiBold,
-								.rect = {5.f,5.f,90.f,90.f},
-								.textAttributes = { values_[selectedVal].value, {0,0,0,0xff}, {0, 0, 0, 0} },
-								.gravity = Gravity::Left
-							}
-						);
-						valuesBlock.hide(); });
-				});
-			valuesBlock.Build(_context, _max_values, 1,
-							  {.rect = _props.inner_block_rect,
-							   .cornerRadius = _props.corner_radius,
-							   .bgColor = _props.bg_color});
-			viewValue.addChildView(valuesBlock.getView()->hide());
-
-			return *this;
-		}
-
-		Select &Build(Context *_context, SelectProps _props, int _max_values, const int &_numVerticalGrid, std::function<void(Cell &)> _valueCellOnCreateCallback)
-		{
-			Context::setContext(_context);
-			auto bounds = _props.rect;
-			// if all values rect dimensions arent set we defaut
-			if (_props.inner_block_rect.w <= 0.f or _props.inner_block_rect.w)
-			{
-				float tmpH = _max_values >= 4 ? 4.f : static_cast<float>(_max_values);
-				_props.inner_block_rect = {bounds.x, bounds.y + bounds.h, bounds.w, bounds.h * tmpH};
-			}
-
-			viewValue.setContext(_context);
-			viewValue.bg_color = _props.bg_color;
-			viewValue.corner_radius = _props.corner_radius;
-			viewValue.bounds = bounds;
-
-			valuesBlock.setOnFillNewCellData(_valueCellOnCreateCallback);
-			valuesBlock.Build(_context, _max_values, _numVerticalGrid,
-							  {.rect = _props.inner_block_rect,
-							   .bgColor = _props.bg_color});
-
-			return *this;
-		}
-
-		// void addValueFront(Value newVal) { }
-
-		void addValue(Value newVal)
-		{
-			if (values_.empty())
-			{
-				viewValue.addTextBox(
-					{//.mem_font = Font::OpenSansSemiBold,
-					 .rect = {5.f, 5.f, 90.f, 90.f},
-					 .textAttributes = {newVal.value, {0, 0, 0, 0xff}, {0, 0, 0, 0}},
-					 .gravity = Gravity::Left});
-			}
-			values_.emplace_back(newVal);
-			valuesBlock.updateNoMaxCells(values_.size());
-			valuesBlock.clearAndReset();
-		}
-
-		void removeValue(std::size_t val_index)
-		{
-			if (not values_.empty())
-			{
-				values_.erase(values_.begin() + val_index);
-			}
-			valuesBlock.updateNoMaxCells(values_.size());
-			valuesBlock.clearAndReset();
-
-			// update viewValue
-			if (val_index == selectedVal and not values_.empty())
-			{
-				viewValue.textBox.pop_back();
-				viewValue.addTextBox(
-					{//.mem_font = Font::OpenSansSemiBold,
-					 .rect = {5.f, 5.f, 90.f, 90.f},
-					 .textAttributes = {values_[defaultVal].value, {0, 0, 0, 0xff}, {0, 0, 0, 0}},
-					 .gravity = Gravity::Left});
 			}
 		}
+		else
+			ANIM_ACTION_DN = ANIM_ACTION_UP = false;
 
-		Value &getSelectedValue()
+		if (not cells.empty())
 		{
-			return values_[selectedVal];
-		}
-
-		std::size_t getSelectedValueIndex()
-		{
-			return selectedVal;
-		}
-
-		std::vector<Value> getAllValues() { return values_; }
-
-		bool hasValues() { return not values_.empty(); }
-
-		void reset() { values_ = {}; }
-
-		bool handleEvent()
-		{
-			switch (event->type)
+			if (dy not_eq 0.f and SDL_fabsf(dy) > 1.5f)
 			{
+				movedDistanceSinceStart.y += dy;
+				// std::for_each(cells.begin(), cells.end(), [this](Cell<CustomCellData>& cell) {Async::GThreadPool.enqueue(&Cell<CustomCellData>::updatePosBy, &cell,0.f, dy); });
+				std::for_each(cells.begin(), cells.end(), [this](Cell &cell)
+							  { cell.updatePosBy(0.f, dy); });
 			}
-			return viewValue.handleEvent();
-		}
+			if (CELL_PRESSED)
+			{
+				// SDL_Log("CLKD_CELL: %d", pressed_cell_index);
+				CELL_PRESSED = false;
+				if (onCellClickedCallback)
+					onCellClickedCallback(cells[pressed_cell_index]);
+				pressed_cell_index = 0;
+			}
 
-		void Draw()
+			if (cells.back().index >= maxCells - 1)
+				FIRST_LOAD = false;
+
+			switch (scrlAction)
+			{
+			case ScrollAction::Up:
+			{
+				// auto beg = std::chrono::steady_clock::now();
+				scrollUp();
+				break;
+			}
+			case ScrollAction::Down:
+			{
+				// auto beg = std::chrono::steady_clock::now();
+				scrollDown();
+				break;
+			}
+			case ScrollAction::None:
+				break;
+			}
+
+			dy = 0.f;
+			scrlAction = ScrollAction::None;
+		}
+	simple_rdraw:
+		simpleDraw();
+		//		transformToRoundedTexture(renderer, texture.get(), cornerRadius);
+
+		if (not toBeErasedCells.empty())
 		{
-			viewValue.Draw();
+			// SDL_Log("@");
+			for (auto i : toBeErasedCells)
+			{
+				cells.erase(cells.begin() + i);
+			}
+			updateHighlightedCell(-1);
+			updateSelectedCell(0);
+			maxCells -= toBeErasedCells.size();
+			toBeErasedCells.clear();
 		}
+	}
 
-	private:
-		Cell viewValue;
-		CellBlock valuesBlock;
-		std::vector<Value> values_;
-		std::size_t selectedVal = 0;
-		std::size_t defaultVal = 0;
-		/// @todo implemment the show on over funtionality
+protected:
+	void simpleDraw()
+	{
+		// fillRoundedRectF(renderer, {bounds.x, bounds.y, bounds.w, bounds.h}, cornerRadius, bgColor);
+		if (fillNewCellDataCallbackHeader)
+			header_cell.draw();
+		CacheRenderTarget crt_(renderer);
+		SDL_SetRenderTarget(renderer, texture.get());
+		RenderClear(renderer, bgColor.r, bgColor.g, bgColor.b, bgColor.a);
+		// fillRoundedRectF(renderer, {0.f, 0.f, bounds.w, bounds.h}, 0.f, bgColor);
+		for (auto &cell : visibleCells)
+		{
+			cell->draw();
+			// SDL_Log("s9:%f,%f,%f,%f",cell->bounds.x,cell->bounds.y,cell->bounds.w,cell->bounds.h);
+		}
+		crt_.release(renderer);
+		transformToRoundedTexture(renderer, texture.get(), cornerRadius);
+		RenderTexture(renderer, texture.get(), nullptr, &margin);
+		if (not childViews.empty())
+		{
+			for (auto child : childViews)
+				child->draw();
+		}
+		adaptiveVsyncHD.stopRedrawSession();
+		if (CellsAdaptiveVsync.hasRequests() or !interpolated.isDone())
+		{
+			adaptiveVsyncHD.startRedrawSession();
+		}
+	}
+
+	void scrollUp()
+	{
+		while (visibleCells.back()->bounds.y < margin.h and
+			   visibleCells.back()->index < (maxCells - 1))
+		{
+			update_top_and_bottom_cells();
+			if (FIRST_LOAD and (cells.back().index == visibleCells.back()->index) and cells.back().index < (maxCells - 1))
+			{
+				cells.emplace_back();
+				cells.back().setContext(this).setIndex(cells[cells.size() - 2].index + 1).bg_color = cell_bg_color;
+				cells.back().adaptiveVsync = &CellsAdaptiveVsync;
+				cells.back().pv = this;
+				cells.back().getView()->rel_x = bounds.x;
+				cells.back().getView()->rel_y = bounds.y;
+				fillNewCellDataCallback(cells.back());
+			}
+			++backIndex;
+			visibleCells.push_back(&cells[backIndex]);
+		}
+		while (visibleCells[0]->bounds.y + visibleCells[0]->bounds.h < 0.f)
+			visibleCells.pop_front(), frontIndex = visibleCells.front()->index;
+	}
+
+	void scrollDown()
+	{
+		while (visibleCells[0]->index > cells.front().index and visibleCells[0]->bounds.y + visibleCells[0]->bounds.h > 0.f)
+		{
+			--frontIndex;
+			visibleCells.push_front(&cells[frontIndex]);
+			update_top_and_bottom_cells();
+		}
+		while (visibleCells.back()->bounds.y > margin.h)
+			visibleCells.pop_back(), backIndex = visibleCells.back()->index, update_top_and_bottom_cells(); /*, SDL_Log("back pop rs: %d", cells_tmp.size())*/
+	}
+
+	void update_cells_with_async_images()
+	{
+		if (cellsWithAsyncImages.empty())
+			return;
+		std::erase_if(cellsWithAsyncImages, [&](ImageButton *_imgBtn)
+					  {
+					if (_imgBtn->isAsyncLoadComplete()) { _imgBtn->draw(); return true; }
+					return false; });
+	}
+
+	void update_top_and_bottom_cells() noexcept
+	{
+		float smallest = 0.f, tmp_smallest = 0.f;
+		std::size_t tmp_top_cell = 0;
+		float largest = 0.f, tmp_largest = 0.f;
+		std::size_t tmp_bottom_cell = 0;
+		std::for_each(visibleCells.begin(), visibleCells.end(),
+					  [&smallest, &tmp_smallest, &tmp_top_cell, &largest, &tmp_largest, &tmp_bottom_cell](const Cell *cell)
+					  {
+						  tmp_smallest = cell->bounds.y;
+						  tmp_largest = cell->bounds.y + cell->bounds.h;
+						  if (tmp_smallest < smallest)
+							  smallest = tmp_smallest, tmp_top_cell = cell->index;
+						  if (tmp_largest >= largest)
+							  largest = tmp_largest, tmp_bottom_cell = cell->index;
+						  tmp_smallest = 0.f;
+						  tmp_largest = 0.f;
+					  });
+		topCell = tmp_top_cell;
+		bottomCell = tmp_bottom_cell;
+		// SDL_Log("NBT_CELL: %d", bottomCell);
+		// SDL_Log("NTP_CELL: %d", topCell);
+	}
+
+	void updateSelectedCell(int64_t _selectedCell)
+	{
+		PREV_SELECTED_CELL = SELECTED_CELL;
+		SELECTED_CELL = _selectedCell;
+		if (PREV_SELECTED_CELL >= 0)
+		{
+			cells[PREV_SELECTED_CELL].selected = false;
+			cells[PREV_SELECTED_CELL].redraw = true;
+		}
+		cells[SELECTED_CELL].selected = true;
+		cells[SELECTED_CELL].redraw = true;
+	}
+
+	void updateHighlightedCell(int64_t _highlightedCell)
+	{
+		// clear the prev highlighted cell
+		if (HIGHLIGHTED_CELL >= 0)
+		{
+			if (HIGHLIGHTED_CELL < cells.size())
+			{
+				cells[HIGHLIGHTED_CELL].isHighlighted = false;
+				cells[HIGHLIGHTED_CELL].redraw = true;
+			}
+		}
+		// PREV_HIGHLIGHTED_CELL = HIGHLIGHTED_CELL;
+		HIGHLIGHTED_CELL = _highlightedCell;
+		// if (PREV_HIGHLIGHTED_CELL >= 0)cells[PREV_HIGHLIGHTED_CELL].isHighlighted = false;
+		if (HIGHLIGHTED_CELL >= 0)
+		{
+			cells[HIGHLIGHTED_CELL].isHighlighted = true;
+			cells[HIGHLIGHTED_CELL].redraw = true;
+		}
+	}
+
+	bool visibleCellsHandleEvent()
+	{
+		bool result = false;
+		// SDL_Log("alsaa");
+		for (auto &cell : visibleCells)
+		{
+			// SDL_Log("sm0:%f,%f,%f,%f",cell->bounds.x,cell->bounds.y,cell->bounds.w,cell->bounds.h);
+			cell->handleEvent();
+			// SDL_Log("sm1:%f,%f,%f,%f",cell->bounds.x,cell->bounds.y,cell->bounds.w,cell->bounds.h);
+		}
+		return result;
+	}
+
+	bool allCellsHandleEvent()
+	{
+		bool result = false;
+		if (fillNewCellDataCallbackHeader)
+			header_cell.handleEvent();
+		for (auto &_cell : cells)
+		{
+			_cell.handleEvent();
+		}
+		return result;
+	}
+
+private:
+	void internal_handle_motion()
+	{
+		// ACTION_UP
+		if (cf.y < pf.y)
+		{
+			if (cells.back().bounds.y + cells.back().bounds.h - (pf.y - cf.y) <
+					margin.h &&
+				cells.back().index == maxCells - 1)
+			{
+				dy += 0.f;
+			}
+			else if (cf.y > margin.y + margin.h || cf.y < margin.y)
+			{
+				dy += 0.f;
+			}
+			else
+			{
+				dy -= (pf.y - cf.y);
+				if (cells.back().bounds.y + cells.back().bounds.h + dy < margin.h &&
+					cells.back().index >= (maxCells - 1))
+					dy = margin.h - cells.back().bounds.y - cells.back().bounds.h;
+				scrlAction = ScrollAction::Up;
+			}
+		}
+		// ACTION_DOWN
+		else if (pf.y < cf.y)
+		{
+			if ((cells[0].bounds.y + (cf.y - pf.y) > 0.f && cells[0].index < 1) ||
+				(cf.y > margin.y + margin.h) || cf.y < margin.y)
+			{
+				dy += 0.f;
+			}
+			else
+			{
+				dy += (cf.y - pf.y);
+				if (cells.front().bounds.y + dy > 0 && cells.front().index <= 0)
+					dy = SDL_fabsf(cells.front().bounds.y);
+				scrlAction = ScrollAction::Down;
+			}
+		}
+		pf = cf;
+		// dy *= 2.f;
+	}
+
+private:
+	enum class ScrollAction
+	{
+		None,
+		Up,
+		Down,
+		Left,
+		Right
+	};
+	ScrollAction scrlAction;
+
+private:
+	std::function<void(Cell &)> onCellClickedCallback = nullptr;
+	std::function<void(Cell &)> fillNewCellDataCallback = nullptr;
+	std::function<void(Cell &)> fillNewCellDataCallbackHeader = nullptr;
+	std::deque<Cell> cells;
+	std::deque<Cell *> visibleCells;
+	std::deque<ImageButton *> cellsWithAsyncImages;
+	std::deque<std::function<void(Cell &)>> preAddedCellsSetUpCallbacks;
+	std::vector<std::size_t> toBeErasedCells;
+	Cell header_cell, footer_cell;
+	AdaptiveVsyncHandler adaptiveVsyncHD;
+	AdaptiveVsync CellsAdaptiveVsync;
+	SDL_FRect margin;
+	SharedTexture texture = nullptr;
+	SDL_Color cell_bg_color = {0x00, 0x00, 0x00, 0x00};
+	uint64_t maxCells = 0;
+	// SDL_FRect dest;
+	float cellWidth = 0.f, CellSpacing = 0.f, CellSpacingX = 1.f, OrgCellSpacingX = 0.f, CellSpacingY = 0.f;
+	float dy = 0.f, dc = 0.f, scroll_step = 2.f;
+	float cornerRadius = 0.f;
+	float header_h = 0.f;
+	/*current finger*/
+	v2d_generic<float> cf = {0.f, 0.f};
+	/*previous finger*/
+	v2d_generic<float> pf = {0.f, 0.f};
+	v2d_generic<float> movedDistance = {0.f, 0.f};
+	v2d_generic<float> movedDistanceSinceStart = {0.f, 0.f};
+	uint32_t numVerticalGrids = 0;
+	uint32_t FingerMotion_TM = 0;
+	uint32_t FingerUP_TM = 0;
+	uint32_t max_vert_grids = 1;
+	SDL_Color bgColor = {0, 0, 0, 0xff};
+	std::size_t backIndex = 0, frontIndex = 0;
+	std::size_t topCell = 0, bottomCell = 0;
+	bool enabled = true, CELL_PRESSED = false, CELL_HIGHLIGHTED = false, KEYDOWN = false;
+	bool MOTION_OCCURED = false, ANIM_ACTION_UP = false, ANIM_ACTION_DN = false, FIRST_LOAD = true;
+	bool SIMPLE_RE_DRAW = false;
+	bool BuildWasCalled = false;
+	bool isFlexible = true;
+	int64_t SELECTED_CELL = 0 - 1, PREV_SELECTED_CELL = 0 - 1;
+	int64_t HIGHLIGHTED_CELL = 0 - 1, PREV_HIGHLIGHTED_CELL = 0 - 1;
+	std::size_t sizeOfPreAddedCells = 0;
+	std::size_t pressed_cell_index = 0;
+	Interpolated<float> interpolated;
+};
+
+
+class Select : public Context
+{
+public:
+	struct Props
+	{
+		SDL_FRect rect{0.f, 0.f, 0.f, 0.f};
+		SDL_FRect inner_block_rect{0.f, 0.f, 0.f, 0.f};
+		SDL_FRect text_margin{0.f, 0.f, 0.f, 0.f};
+		SDL_Color text_color{0x00, 0x00, 0x00, 0xff};
+		SDL_Color bg_color{0xff, 0xff, 0xff, 0xff};
+		SDL_Color inner_block_bg_color{0xff, 0xff, 0xff, 0xff};
+		SDL_Color on_hover_color{0x00,0x00,0x00,0x00};
+		float border_size = 1.f;
+		float corner_radius = 1.f;
+		int maxValues = 1;
 		bool show_all_on_hover = false;
 	};
 
-	using MenuProps = CellBlockProps;
-
-	class Menu : Context, IView
+public:
+	struct Value
 	{
-	public:
-		using IView::getView;
-		using IView::hide;
-		using IView::isHidden;
-		using IView::show;
-
-	public:
-		Menu &Build(Context *_context, const int &NumVerticalModules, const MenuProps &_menuProps)
-		{
-			setContext(_context);
-			pv = this;
-			bounds = _menuProps.rect;
-
-			menu_block.Build(_context, 0, NumVerticalModules, _menuProps);
-
-			build_successful = true;
-			return *this;
-		}
-
-		Menu &addItem(std::function<void(Cell &)> newCellSetUpCallback)
-		{
-			menu_block.addCell(std::move(newCellSetUpCallback));
-			return *this;
-		}
-
-		Menu &setCellRect(Cell &_cell, const uint32_t &numVerticalModules, const float &h)
-		{
-			menu_block.setCellRect(_cell, numVerticalModules, h);
-			return *this;
-		}
-
-		Menu &setSelectedItem(const int64_t &selectedItem)
-		{
-			menu_block.setSelectedItem(selectedItem);
-			return *this;
-		}
-
-		Menu &registerOnClickedCallback(std::function<void(Cell &)> on_cell_clicked_callback)
-		{
-			menu_block.setOnCellClickedCallback(std::move(on_cell_clicked_callback));
-			return *this;
-		}
-
-		bool handleEvent() override
-		{
-			return menu_block.handleEvent();
-		}
-
-		void Draw() override
-		{
-			menu_block.Draw();
-		}
-
-		Menu &setCornerRadius(const float &cornerRad)
-		{
-			// menu_block.setCornerRadius(cornerRad);
-			return *this;
-		}
-
-		CellBlock &getCellBlock()
-		{
-			return menu_block;
-		}
-
-	private:
-		CellBlock menu_block;
-		bool build_successful = false;
+		std::size_t id = 0;
+		std::string value = "";
+		std::string img = "";
+		std::any user_data;
 	};
 
-} // namespace MYLIB
+public:
+	CellBlock *getInnerBlock() { return &valuesBlock; }
+	Cell *getInnerCell() { return &viewValue; }
 
-// #endif //VOLT_H
+	IView *getView()
+	{
+		return viewValue.getView();
+	}
+
+	IView *show()
+	{
+		return viewValue.show();
+	}
+
+	IView *hide()
+	{
+		return viewValue.hide();
+	}
+
+public:
+	Select &Build(Context *_context, Select::Props _props, std::vector<Value> _values, std::size_t _default = 0)
+	{
+		Context::setContext(_context);
+		Context::setView(viewValue.getView());
+		props = _props;
+		// if any of _values contains img then add img padding to all value cells
+		const auto bounds = _props.rect;
+		/*_props.inner_block_rect.x = bounds.x;
+		_props.inner_block_rect.y = bounds.y + bounds.h + 2.f;*/
+		values_ = _values;
+		defaultVal = _default;
+		std::size_t _max_values = _values.size();
+		_props.inner_block_rect.x = bounds.x + _props.inner_block_rect.x;
+		_props.inner_block_rect.y = bounds.y + bounds.h + 1.f;
+		
+		// if all values rect dimensions arent set we defaut
+		if (_props.inner_block_rect.w <= 0.f)
+		{
+			// float tmpH = _max_values >= 4 ? 4.f : static_cast<float>(_max_values);
+			_props.inner_block_rect.w = bounds.w;
+		}
+		if (_props.inner_block_rect.h <= 0.f)
+		{
+			float tmpH = _values.size() > 0 ? (float)_values.size() : static_cast<float>(_max_values) * bounds.w;
+			// tmpH = std::clamp();
+			_props.inner_block_rect.h = bounds.h * tmpH;
+		}
+
+		viewValue.setContext(_context);
+		viewValue.bg_color = _props.bg_color;
+		viewValue.corner_radius = _props.corner_radius;
+		viewValue.bounds = bounds;
+		if (_values.size())
+		{
+			viewValue.addTextBox(
+				{//.mem_font = Font::OpenSansSemiBold,
+				 .rect = {2.f, 5.f, 96.f, 90.f},
+				 .textAttributes = {values_[_default].value, props.text_color, {0, 0, 0, 0}},
+				 .gravity = Gravity::Left});
+		}
+
+		viewValue.registerCustomEventHandlerCallback([this](Cell &_cell) -> bool
+													 {
+			viewValue.prevent_default_behaviour = true;
+			if (valuesBlock.handleEvent())
+			{
+				return true;
+			}
+			if (event->type == SDL_KEYDOWN)
+			{
+				if (event->key.keysym.scancode == SDL_SCANCODE_AC_BACK && not valuesBlock.isHidden())
+				{
+					valuesBlock.hide();
+					return true;
+				}
+			}
+			if (event->type == EVT_FINGER_DOWN)
+			{
+				//mouse point
+				auto mp = SDL_FPoint{event->tfinger.x * DisplayInfo::Get().RenderW,
+									 event->tfinger.y * DisplayInfo::Get().RenderH};
+				//SDL_Log("d:%f,%f", mp.x, mp.y);
+				//SDL_Log("s:%f,%f,%f,%f", _cell.bounds.x, _cell.bounds.y, _cell.bounds.w, _cell.bounds.h);
+				if (_cell.isPointInBound(mp.x, mp.y) /* or p2*/)
+				{
+					viewValue.childViews[0]->toggleView();
+					return true;
+				}
+				else
+				{
+					if (not valuesBlock.isHidden())
+					{
+						valuesBlock.hide();
+						return true;
+					}
+					valuesBlock.hide();
+				}
+			}
+			return false; });
+
+		valuesBlock.setOnFillNewCellData(
+			[this, bounds, on_hover_col=_props.on_hover_color](Cell &_cell)
+			{
+				valuesBlock.setCellRect(_cell, 1, bounds.h, 0.f, 1.f);
+				_cell.bg_color = viewValue.bg_color;
+				_cell.onHoverBgColor = on_hover_col;
+				_cell.highlightOnHover = true;
+				_cell.addTextBox(
+					{//.mem_font = Font::OpenSansSemiBold,
+					 .rect = {2.f, 5.f, 96.f, 90.f},
+					 .textAttributes = {values_[_cell.index].value, props.text_color, {0, 0, 0, 0}},
+					 .gravity = Gravity::Left});
+				// GLogger.Log(Logger::Level::Info, "trx:" + std::to_string(_cell.textBox[0].getRealPosX()) + "  try:" + std::to_string(_cell.textBox[0].getRealPosY()));
+				_cell.textBox[0].onClick([this, &_cell](TextBox *_textbox)
+										 {
+					viewValue.textBox.pop_back();
+					selectedVal = _cell.index;
+					viewValue.addTextBox(
+						{//.mem_font = Font::OpenSansSemiBold,
+						 .rect = {2.f, 5.f, 96.f, 90.f},
+						 .textAttributes = {values_[selectedVal].value, props.text_color, {0, 0, 0, 0}},
+						 .gravity = Gravity::Left});
+					valuesBlock.hide();
+					if (onSelectCB != nullptr)
+					{
+						onSelectCB(values_[selectedVal]);
+					}
+					return true;
+					});
+			});
+		valuesBlock.Build(_context, _max_values, 1,
+						  {.rect = _props.inner_block_rect,
+						   .cornerRadius = _props.corner_radius,
+						   .bgColor = _props.inner_block_bg_color});
+		valuesBlock.auto_hide = true;
+		/*
+		valuesBlock.getView()->rel_x=bounds.x;
+		valuesBlock.getView()->rel_y=bounds.y;*/
+		viewValue.addChildView(valuesBlock.getView()->hide());
+
+		return *this;
+	}
+
+	Select &
+	Build(Context *_context, Select::Props _props, int _max_values, const int &_numVerticalGrid, std::function<void(Cell &)> _valueCellOnCreateCallback)
+	{
+		Context::setContext(_context);
+		Context::setView(viewValue.getView());
+		auto bounds = _props.rect;
+		// if all values rect dimensions arent set we defaut
+		if (_props.inner_block_rect.w <= 0.f or _props.inner_block_rect.w)
+		{
+			float tmpH = _max_values >= 4 ? 4.f : static_cast<float>(_max_values);
+			_props.inner_block_rect = {bounds.x, bounds.y + bounds.h, bounds.w, bounds.h * tmpH};
+		}
+
+		viewValue.setContext(_context);
+		viewValue.bg_color = _props.bg_color;
+		viewValue.corner_radius = _props.corner_radius;
+		viewValue.bounds = bounds;
+
+		valuesBlock.setOnFillNewCellData(_valueCellOnCreateCallback);
+		valuesBlock.Build(_context, _max_values, _numVerticalGrid,
+						  {.rect = _props.inner_block_rect,
+						   .bgColor = _props.bg_color});
+
+		return *this;
+	}
+
+	auto onSelect(std::function<void(Value &)> onselect)
+	{
+		onSelectCB = onselect;
+	}
+
+	// void addValueFront(Value newVal) { }
+
+	void addValue(Value newVal)
+	{
+		if (values_.empty())
+		{
+			viewValue.addTextBox(
+				{//.mem_font = Font::OpenSansSemiBold,
+				 .rect = {2.f, 5.f, 96.f, 90.f},
+				 .textAttributes = {newVal.value, {0, 0, 0, 0xff}, {0, 0, 0, 0}},
+				 .gravity = Gravity::Left});
+		}
+		values_.emplace_back(newVal);
+		valuesBlock.updateNoMaxCells(values_.size());
+		valuesBlock.clearAndReset();
+	}
+
+	void removeValue(std::size_t val_index)
+	{
+		if (not values_.empty())
+		{
+			values_.erase(values_.begin() + val_index);
+		}
+		valuesBlock.updateNoMaxCells(values_.size());
+		valuesBlock.clearAndReset();
+
+		// update viewValue
+		if (val_index == selectedVal and not values_.empty())
+		{
+			viewValue.textBox.pop_back();
+			viewValue.addTextBox(
+				{//.mem_font = Font::OpenSansSemiBold,
+				 .rect = {2.f, 5.f, 96.f, 90.f},
+				 .textAttributes = {values_[defaultVal].value, {0, 0, 0, 0xff}, {0, 0, 0, 0}},
+				 .gravity = Gravity::Left});
+		}
+	}
+
+	Value &getSelectedValue()
+	{
+		return values_[selectedVal];
+	}
+
+	std::size_t getSelectedValueIndex()
+	{
+		return selectedVal;
+	}
+
+	std::vector<Value> getAllValues() { return values_; }
+
+	bool hasValues() { return not values_.empty(); }
+
+	void reset() { values_ = {}; }
+
+	bool handleEvent()
+	{
+		/*
+		switch (event->type)
+		{
+		}*/
+		return viewValue.handleEvent();
+	}
+
+	void draw()
+	{
+		viewValue.draw();
+	}
+
+private:
+	Cell viewValue{};
+	CellBlock valuesBlock{};
+	Props props;
+	std::vector<Value> values_;
+	std::size_t selectedVal = 0;
+	std::size_t defaultVal = 0;
+	/// @todo implemment the show on over funtionality
+	bool show_all_on_hover = false;
+	std::function<void(Value &)> onSelectCB = nullptr;
+};
+
+using MenuProps = CellBlockProps;
+
+class Menu : Context, public IView
+{
+public:
+	Menu &Build(Context *_context, const int &NumVerticalModules, const MenuProps &_menuProps)
+	{
+		setContext(_context);
+		pv = this;
+		bounds = _menuProps.rect;
+
+		menu_block.Build(_context, 0, NumVerticalModules, _menuProps);
+
+		build_successful = true;
+		return *this;
+	}
+
+	Menu &addItem(std::function<void(Cell &)> newCellSetUpCallback)
+	{
+		menu_block.addCell(std::move(newCellSetUpCallback));
+		return *this;
+	}
+
+	Menu &setCellRect(Cell &_cell, const uint32_t &numVerticalModules, const float &h)
+	{
+		menu_block.setCellRect(_cell, numVerticalModules, h);
+		return *this;
+	}
+
+	Menu &setSelectedItem(const int64_t &selectedItem)
+	{
+		menu_block.setSelectedItem(selectedItem);
+		return *this;
+	}
+
+	Menu &onClick(std::function<void(Cell &)> on_cell_clicked_callback)
+	{
+		menu_block.onClick(std::move(on_cell_clicked_callback));
+		return *this;
+	}
+
+	bool handleEvent() override
+	{
+		return menu_block.handleEvent();
+	}
+
+	void draw() override
+	{
+		menu_block.draw();
+	}
+
+	Menu &setCornerRadius(const float &cornerRad)
+	{
+		// menu_block.setCornerRadius(cornerRad);
+		return *this;
+	}
+
+	CellBlock &getCellBlock()
+	{
+		return menu_block;
+	}
+
+private:
+	CellBlock menu_block;
+	bool build_successful = false;
+};
+
+void drawArcAntiAliased(SDL_Renderer *renderer, int centerX, int centerY, int radius, float startAngle, float endAngle, const SDL_Color &color)
+{
+	if (radius <= 0)
+	{
+		return; // Nothing to draw
+	}
+
+	const float angleStep = 0.5f; // Adjust for anti-aliasing quality vs. performance
+	const float angleDiff = endAngle - startAngle;
+	if (angleDiff == 0.0f)
+		return;
+
+	for (float angle = 0; angle <= angleDiff; angle += angleStep)
+	{
+		float rad = (startAngle + angle) * M_PI / 180.0f;
+		float x = centerX + radius * cosf(rad);
+		float y = centerY + radius * sinf(rad);
+
+		// Simple anti-aliasing: blend with nearby pixels
+		/*for (int dx = -1; dx <= 1; ++dx) {
+			for (int dy = -1; dy <= 1; ++dy) {
+				float dist = sqrtf(dx * dx + dy * dy);
+				float weight = std::max(0.0f, 1.0f - dist / 1.5f); // Adjust for blending effect
+				if (weight > 0) {
+					SDL_Color blendedColor = {
+						color.r,
+						color.g,
+						color.b,
+						static_cast<Uint8>(color.a * weight),
+					};
+					SDL_SetRenderDrawColor(renderer, blendedColor.r, blendedColor.g, blendedColor.b, blendedColor.a);
+					SDL_RenderDrawPointF(renderer, x + dx, y + dy);
+				}
+			}
+		}*/
+		SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+		SDL_RenderDrawPointF(renderer, x, y);
+	}
+}
