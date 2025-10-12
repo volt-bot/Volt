@@ -455,21 +455,28 @@ constexpr inline void concat_rng(TargetContainer &target, InputIt first, InputIt
 // get current date YYYY-MM-DD
 std::string getDateStr()
 {
-	/*const std::chrono::time_point<std::chrono::system_clock> now{std::chrono::system_clock::now()};
-    // Get the year, month, and day
-    const std::chrono::year_month_day ymd{std::chrono::floor<std::chrono::days>(now)};
-    std::stringstream dateTimeAdded;
-    dateTimeAdded << ymd;
-    return dateTimeAdded.str();*/
-	return "";
+	const std::chrono::time_point<std::chrono::system_clock> now{ std::chrono::system_clock::now() };
+	// Get the time
+	std::time_t tt = std::chrono::system_clock::to_time_t(now);
+#ifdef _MSC_VER
+	//std::tm* tm = nullptr;
+	//localtime_s(tm,&tt);
+	std::tm* tm = std::localtime(&tt);
+#else
+	std::tm* tm = std::localtime(&tt);
+#endif
+	std::stringstream timeAdded;
+	timeAdded
+		<< std::setfill('0') << std::setw(4) << tm->tm_year + 1900 << "-"
+		<< std::setfill('0') << std::setw(2) << tm->tm_mon + 1 << "-"
+		<< std::setfill('0') << std::setw(2) << tm->tm_mday;
+	return timeAdded.str();
 }
 
 // get current date YYYY-MM-DD HH:MM:SS
 inline std::string getDateAndTimeStr()
 {
 	const std::chrono::time_point<std::chrono::system_clock> now{std::chrono::system_clock::now()};
-	// Get the year, month, and day
-	const std::chrono::year_month_day ymd{std::chrono::floor<std::chrono::days>(now)};
 
 	// Get the time
 	std::time_t tt = std::chrono::system_clock::to_time_t(now);
@@ -503,26 +510,6 @@ inline std::chrono::year_month_day stringToYmd(const std::string &dateTimeStr)
 	std::chrono::system_clock::time_point tp = std::chrono::system_clock::from_time_t(std::mktime(&tm));
 	return std::chrono::year_month_day{std::chrono::floor<std::chrono::days>(tp)};
 }
-
-// the number of characters in a multibyte string is the sum of mblen()'s
-// note: the simpler approach is std::mbstowcs(nullptr, s.c_str(), s.size())
-
-/*std::size_t strlen_mb(const std::string_view s)
-{
-    std::size_t result = 0;
-    const char* ptr = s.data();
-    const char* end = ptr + s.size();
-    std::mblen(nullptr, 0); // reset the conversion state
-    while (ptr < end) {
-        int next = std::mblen(ptr, end - ptr);
-        if (next == -1) {
-            throw std::runtime_error("strlen_mb(): conversion error");
-        }
-        ptr += next;
-        ++result;
-    }
-    return result;
-}*/
 
 template <typename T>
 inline std::string toString(const T &v, const uint8_t decimals = 2)
@@ -571,6 +558,7 @@ inline std::string replaceStringAll(std::string str, const std::string &replace,
 	return str;
 }
 
+// get text from file
 std::string getTextFromFile(const std::string &filename)
 {
 	std::ifstream file(filename, std::ios::binary); // Open in binary to preserve exact content
@@ -1897,503 +1885,8 @@ std::vector<std::string> wrapText1(const std::string &text, size_t maxLineLength
 	return lines;
 }
 
-namespace FileSystem
-{
-class FileStore
-{
-  public:
-	std::function<bool(const std::filesystem::path &)> filter = nullptr;
 
-  public:
-	FileStore() { dir_count = scanned_files = 0; }
 
-	FileStore(const std::filesystem::path &root_path)
-	{
-		this->setRootPath(root_path);
-	}
-
-	FileStore &addExtensionFilter(const std::string &extension_filter_)
-	{
-		std::scoped_lock lock(m_file_sys_mux);
-		this->extension_filter.insert({extension_filter_, 0});
-		return *this;
-	}
-
-	std::string getFilePath(const uint64_t &index)
-	{
-		std::scoped_lock lock(m_file_sys_mux);
-		if (index > m_files_store.size())
-			return "";
-		try
-		{
-			return {m_files_store[index].generic_string()};
-		}
-		catch (const std::exception &e)
-		{
-			return "";
-		}
-	}
-
-	std::wstring getFileWPath(const unsigned int &index)
-	{
-		std::scoped_lock lock(m_file_sys_mux);
-		if (index > m_files_store.size())
-			return L"";
-		try
-		{
-			return {m_files_store[index].generic_wstring()};
-		}
-		catch (const std::exception &e)
-		{
-			return L"";
-		}
-	}
-
-	std::string getFileName(const size_t &index)
-	{
-		std::scoped_lock lock(m_file_sys_mux);
-		try
-		{
-			return {m_files_store[index].stem().generic_string()};
-		}
-		catch (const std::exception &e)
-		{
-			std::cout << e.what() << std::endl;
-			return "";
-		}
-	}
-
-#ifdef _MSC_VER
-	std::u8string getU8FilePath(const unsigned int &index)
-	{
-		std::scoped_lock lock(m_file_sys_mux);
-		if (index > m_files_store.size())
-			return u8"";
-		try
-		{
-			return {m_files_store[index].generic_u8string()};
-		}
-		catch (const std::exception &e)
-		{
-			return u8"";
-		}
-	}
-
-	std::u8string getU8FileName(const size_t &index)
-	{
-		std::scoped_lock lock(m_file_sys_mux);
-		try
-		{
-			return m_files_store[index].stem().generic_u8string();
-		}
-		catch (const std::exception &e)
-		{
-			std::cout << e.what() << std::endl;
-			return u8"";
-		}
-	}
-
-#endif // _MSC_VER
-
-	std::string getFileExtension(const int &index)
-	{
-		std::scoped_lock lock(m_file_sys_mux);
-		try
-		{
-			return {m_files_store[index].extension().generic_string()};
-		}
-		catch (const std::exception &e)
-		{
-			return "";
-		}
-	}
-
-	inline std::deque<std::filesystem::path> *getFileStore() noexcept
-	{
-		return &m_files_store;
-	}
-
-	inline FileStore &setRootPath(const std::filesystem::path &root_path) noexcept
-	{
-		this->m_root_path = root_path;
-		return *this;
-	}
-
-	FileStore &scanFiles(std::size_t _recursion_depth = 1000000)
-	{
-		recursion_depth = _recursion_depth;
-		std::scoped_lock lock(m_file_sys_mux);
-		nWorkerComplete = 0;
-		auto start = std::chrono::high_resolution_clock::now();
-#if defined(__linux__)
-		internalScanFilesLinux(m_root_path.string(), 0);
-		/*;futures.emplace_back(
-			//std::async(std::launch::async, &FileStore::internalScanFilesLinux, this, path, itter_depth + 1)
-			Async::GThreadPool.enqueue(&FileStore::internalScanFilesLinux, this, m_root_path.string(), 0));*/
-#else
-		// internalScanFiles(m_root_path);
-		//internalScanFilesThreadPool(m_root_path, 0);
-		// for (const auto& fts : futures_)fts.wait();
-		// futures_.clear();
-		/*while (nWorkerComplete > 0)
-		{
-			SDL_Delay(1);
-		}*/
-#endif
-		/*while (nWorkerComplete > 0) { SDL_Delay(50); }
-		for (auto &ft : futures){
-			ft.wait();
-			//auto res=ft.get();
-			addToFileStore(ft.get());
-		}*/
-
-		std::chrono::duration<double> dt = (std::chrono::high_resolution_clock::now() - start);
-		SDL_Log("Dir scan finished: %f secs", dt.count());
-		SDL_Log("No Scanned Files: %u", m_files_store.size());
-		return *this;
-	}
-
-	inline FileStore &sort()
-	{
-		//std::scoped_lock lock(m_file_sys_mux);
-		const auto start = std::chrono::high_resolution_clock::now();
-		std::sort(m_files_store.begin(), m_files_store.end(),
-				  [](const std::filesystem::path &a, const std::filesystem::path &b) {
-					  const std::string aa = a.stem().string();
-					  const std::string bb = b.stem().string();
-					  return std::lexicographical_compare(aa.begin(), aa.end(), bb.begin(),
-														  bb.end(),
-														  [](const char &c1, const char &c2) {
-															  return std::toupper(c1) < std::toupper(c2);
-														  });
-				  });
-		const std::chrono::duration<double> dt = (std::chrono::high_resolution_clock::now() - start);
-		SDL_Log("Dir Sort finished: %f secs", dt.count());
-		return *this;
-	}
-
-	inline FileStore &sortByTime()
-	{
-		//std::scoped_lock lock(m_file_sys_mux);
-		const auto start = std::chrono::high_resolution_clock::now();
-		std::sort(m_files_store.begin(), m_files_store.end(),
-				  [](std::filesystem::path &a, std::filesystem::path &b) {
-					  return std::filesystem::last_write_time(a) >
-							 std::filesystem::last_write_time(b);
-				  });
-		const std::chrono::duration<double> dt = (std::chrono::high_resolution_clock::now() - start);
-		SDL_Log("Dir Sort finished: %f secs", dt.count());
-		return *this;
-	}
-
-	/*
-         * returns vector of a string & int pair where the string is the name of the file extension
-         * and the int is the count of the files with that extension from the previous scanFiles() call
-         * */
-	inline std::unordered_map<std::string, int> *getExtensions()
-	{
-		std::scoped_lock lock(m_file_sys_mux);
-		return &extension_filter;
-	}
-
-	inline size_t size() noexcept
-	{
-		std::scoped_lock lock(m_file_sys_mux);
-		return this->m_files_store.size();
-	}
-
-	inline bool empty() noexcept
-	{
-		std::scoped_lock lock(m_file_sys_mux);
-		return m_files_store.empty();
-	}
-
-	inline void clear()
-	{
-		std::scoped_lock lock(m_file_sys_mux);
-		m_files_store.clear();
-		dir_count = scanned_files = 0;
-	}
-
-	inline int getDirCount() noexcept
-	{
-		std::scoped_lock lock(m_file_sys_mux);
-		return dir_count;
-	}
-
-	inline int getScannedFilesCount() noexcept
-	{
-		std::scoped_lock lock(m_file_sys_mux);
-		return scanned_files;
-	}
-
-	FileStore &clearAndReset()
-	{
-		m_root_path.clear();
-		m_files_store.clear();
-		extension_filter.clear();
-		dir_count = scanned_files = 0;
-		return *this;
-	}
-
-	/*bool compare_nocase(const std::string &a, const std::string &b) {
-            unsigned int i = 0;
-            while ((i < a.length()) && (i < b.length())) {
-                if (tolower(a[i]) < tolower(b[i]))
-                    return true;
-                else if (tolower(a[i]) > tolower(b[i]))
-                    return false;
-                ++i;
-            }
-            return (a.length() < b.length());
-        }*/
-
-  private:
-	/*std::function<void(const std::filesystem::path&)> addToFileStore = [&](const std::filesystem::path& path_) {
-            std::lock_guard<std::mutex> lock(filestore_mutex);
-            m_files_store.emplace_back(path_);
-        };*/
-
-	inline void addToFileStore(const std::filesystem::path &path_)
-	{
-		//std::scoped_lock lock(filestore_mutex);
-		// using namespace std::chrono_literals;
-		// std::this_thread::sleep_for(25ms);
-
-		if (filter != nullptr)
-		{
-			if (!filter(path_))
-				return;
-		}
-		m_files_store.emplace_back(path_);
-	}
-
-	inline void addToFileStore(const std::deque<std::filesystem::path> &local_files)
-	{
-		if (not local_files.empty())
-		{
-			//std::scoped_lock lock(filestore_mutex);
-			// using namespace std::chrono_literals;
-			// std::this_thread::sleep_for(25ms);
-
-			for (auto &file_ : local_files)
-			{
-				if (filter != nullptr)
-				{
-					if (!filter(file_))
-						return;
-				}
-				m_files_store.emplace_back(file_);
-			}
-			/*
-		m_files_store.insert(m_files_store.end(),
-							 std::make_move_iterator(local_files.begin()),
-							 std::make_move_iterator(local_files.end()));*/
-		}
-	}
-
-	/*
-		void addToFileStoreBatch(std::deque<std::filesystem::path> &local_files)
-	{
-		if (local_files.empty())
-			return;
-
-		std::scoped_lock lock(m_mutex);
-		m_files_store.insert(m_files_store.end(),
-							 std::make_move_iterator(local_files.begin()),
-							 std::make_move_iterator(local_files.end()));
-		for (const auto &pair : local_extensions)
-		{
-			if (extension_filter.count(pair.first))
-			{
-				extension_filter[pair.first] += pair.second;
-			}
-		}
-		local_files.clear();
-		local_extensions.clear();
-	}
-*/
-
-	void internalScanFiles(const std::filesystem::path path_, std::size_t itter_depth)
-	{
-		//std::vector<std::future<void>> futures;
-		// std::deque<std::filesystem::path> files_;
-		try
-		{
-			// std::filesystem::path d_path_;
-			for (const auto &dir_ent : std::filesystem::directory_iterator(path_, std::filesystem::directory_options::skip_permission_denied))
-			{
-				const auto &d_path_ = dir_ent.path();
-				if (std::filesystem::is_directory(d_path_))
-					if (itter_depth < recursion_depth)
-					{
-						//futures.emplace_back(
-						/*Async::GThreadPool.enqueue(&FileStore::internalScanFilesThreadPool, this, d_path_)*/
-						//std::async(std::launch::async, &FileStore::internalScanFiles, this, d_path_, itter_depth + 1));
-					}
-					else
-					{
-						if (extension_filter.empty())
-							addToFileStore(d_path_);
-						else
-						{
-							const auto f_extn = d_path_.extension().string();
-							addToFileStore(d_path_);
-							if (extension_filter.contains(f_extn))
-								extension_filter[f_extn] += 1;
-							/*for (auto& [extension_name, extension_count] : extension_filter) {
-                                if (extension_name == f_extn) {
-                                    addToFileStore(d_path_);
-                                    std::scoped_lock lock(extension_filter_mux);
-                                    ++extension_count;
-                                    break;
-                                }
-                            }*/
-						}
-					}
-			}
-		}
-		catch (std::exception e)
-		{
-			std::cout << e.what() << "\n";
-		}
-		/*for (const auto &fts : futures)
-			fts.wait();*/
-	}
-
-	void internalScanFilesThreadPool(const std::filesystem::path path_)
-	{
-		nWorkerComplete += 1;
-		std::vector<std::future<void>> futures;
-		// std::deque<std::filesystem::path> files_;
-		try
-		{
-			for (const auto &dir_ent : std::filesystem::directory_iterator(path_, std::filesystem::directory_options::skip_permission_denied))
-			{
-				const auto& d_path_ = dir_ent.path();
-				if (std::filesystem::is_directory(d_path_))
-					futures.emplace_back(Async::GThreadPool.enqueue(&FileStore::internalScanFilesThreadPool, this, d_path_));
-				else
-				{
-					if (extension_filter.empty())
-						addToFileStore(d_path_);
-					else
-					{
-						const auto f_extn = d_path_.extension().string();
-						std::scoped_lock lock(extension_filter_mux);
-						if (extension_filter.contains(f_extn))
-						{
-							addToFileStore(d_path_);
-							// files_.emplace_back(d_path_);
-							extension_filter[f_extn] += 1;
-						}
-						// for (auto& [extension_name, extension_count] : extension_filter) {
-						//     if (extension_name == f_extn) {
-						//         addToFileStore(d_path_);
-						//         //files_.emplace_back(d_path_);
-						//         std::scoped_lock lock(extension_filter_mux);
-						//         ++extension_count;
-						//         break;
-						//     }
-						// }
-					}
-				}
-			}
-			// addToFileStore(std::move(files_));
-		}
-		catch (std::exception e)
-		{
-			std::cout << e.what() << "\n";
-		}
-		nWorkerComplete -= 1;
-	}
-
-#ifdef __ANDROID__
-	void internalScanFilesLinux(std::string dir_name, std::size_t itter_depth)
-	{
-		//nWorkerComplete += 1;
-		DIR *dir;			  // pointer to directory
-		struct dirent *entry; // all stuff in the directory
-		struct stat info;	  // info about each entry
-
-		dir = opendir(dir_name.c_str());
-		std::vector<std::future<void>> futures;
-		std::deque<std::filesystem::path> local_files;
-
-		if (!dir)
-		{
-			SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Error while opening Dir: %s \n%s", dir_name.c_str(), strerror(errno));
-			return;
-		}
-
-		while ((entry = readdir(dir)) != nullptr)
-		{
-			//if (entry->d_name[0] != '.')
-			{
-				std::string path = dir_name + "/" + std::string(entry->d_name);
-				stat(path.c_str(), &info);
-				if (S_ISDIR(info.st_mode))
-				{
-					if (itter_depth < recursion_depth)
-						futures.emplace_back(
-							//std::async(std::launch::async, &FileStore::internalScanFilesLinux, this, path, itter_depth + 1)
-							Async::GThreadPool.enqueue(&FileStore::internalScanFilesLinux, this, path, itter_depth + 1));
-				}
-				else
-				{
-					if (extension_filter.empty())
-						local_files.emplace_back(std::move(path));
-					else
-					{
-						// const auto extension_pos=path.find_last_of('.');
-						const char *extracted_extension_ = strrchr(path.c_str(), '.');
-						std::scoped_lock lock(extension_filter_mux);
-						if (extracted_extension_ && extension_filter.contains(extracted_extension_))
-						{
-							local_files.emplace_back(std::move(path));
-							//std::scoped_lock lock(extension_filter_mux);
-							extension_filter[extracted_extension_] += 1;
-						}
-					}
-				}
-			}
-		}
-		closedir(dir);
-		addToFileStore(local_files);
-		for (const auto &ft : futures)
-			ft.wait();
-		//nWorkerComplete -= 1;
-		//return local_files;
-	}
-#endif //__ANDROID__
-
-	std::mutex filestore_mutex;
-	std::shared_mutex extension_filter_mux;
-	std::deque<std::filesystem::path> m_files_store;
-	//std::deque<std::deque<std::filesystem::path>> m_files_store_all;
-	std::unordered_map<std::string, int> extension_filter;
-	//std::vector<std::future<std::deque<std::filesystem::path>>> futures;
-	std::filesystem::path m_root_path;
-	std::atomic_int_fast32_t dir_count, scanned_files;
-	std::shared_mutex m_file_sys_mux;
-	// std::vector<std::future<void>> futures_;
-	std::atomic_int_fast32_t nWorkerComplete;
-	std::size_t recursion_depth = 1000000;
-};
-} // namespace FileSystem
-
-#include <iostream>
-#include <filesystem>
-#include <functional>
-#include <vector>
-#include <string>
-#include <deque>
-#include <unordered_map>
-#include <mutex>
-#include <thread>
-#include <chrono>
-#include <algorithm>
-#include <atomic>
 #include <condition_variable>
 
 #ifdef __ANDROID__
@@ -2412,13 +1905,13 @@ class FileStore
 template <typename T>
 class ConcurrentQueue
 {
-  private:
+private:
 	std::deque<T> queue_;
 	std::mutex mutex_;
 	std::condition_variable cv_;
 	std::atomic_bool finished_ = false;
 
-  public:
+public:
 	void push(T item)
 	{
 		{
@@ -2428,7 +1921,7 @@ class ConcurrentQueue
 		cv_.notify_one();
 	}
 
-	bool pop(T &item)
+	bool pop(T& item)
 	{
 		std::unique_lock lock(mutex_);
 		cv_.wait(lock, [this] { return !queue_.empty() || finished_.load(); });
@@ -2465,7 +1958,8 @@ class ConcurrentQueue
 	}
 };
 
-namespace FileSystem3
+
+namespace FileSystem
 {
 using PathTask = std::pair<std::filesystem::path, size_t>;
 
@@ -2489,19 +1983,22 @@ class FileStore
 	}
 
 	std::string getFilePath(const size_t &index)
-	{ /* ... keep old implementation ... */
+	{
 		std::scoped_lock lock(m_mutex);
 		return (index < m_files_store.size()) ? m_files_store[index].generic_string() : "";
 	}
+
 	std::wstring getFileWPath(const size_t &index)
-	{ /* ... keep old implementation ... */
+	{
 		std::scoped_lock lock(m_mutex);
 		return (index < m_files_store.size()) ? m_files_store[index].generic_wstring() : L"";
 	}
+
 	std::string getFileName(const size_t &index)
 	{
 		return (index < m_files_store.size()) ? m_files_store[index].stem().generic_string() : "";
 	}
+
 	std::string getFileExtension(const size_t &index)
 	{
 		return (index < m_files_store.size()) ? m_files_store[index].extension().generic_string() : "";
@@ -2513,13 +2010,16 @@ class FileStore
 	}
 
 	inline const std::deque<std::filesystem::path> *getFileStore() const noexcept { return &m_files_store; }
+	
 	inline FileStore &setRootPath(const std::filesystem::path &root_path) noexcept
 	{
 		std::scoped_lock lock(m_mutex);
 		this->m_root_path = root_path;
 		return *this;
 	}
+
 	inline const std::unordered_map<std::string, int> *getExtensions() const { return &extension_filter; }
+	
 	inline size_t size() noexcept
 	{
 		std::scoped_lock lock(m_mutex);
@@ -2538,8 +2038,11 @@ class FileStore
 		for (auto &pair : extension_filter)
 			pair.second = 0;
 	}
+	
 	inline int getDirCount() noexcept { return dir_count.load(); }
+	
 	inline int getScannedFilesCount() noexcept { return scanned_files.load(); }
+	
 	FileStore &clearAndReset()
 	{
 		std::scoped_lock lock(m_mutex);
@@ -2550,8 +2053,9 @@ class FileStore
 		dir_queue.reset();
 		return *this;
 	}
+
 	FileStore &sort()
-	{ /* ... keep old implementation ... */
+	{
 		std::scoped_lock lock(m_mutex);
 		const auto start = std::chrono::high_resolution_clock::now();
 		std::sort(m_files_store.begin(), m_files_store.end(), [](const std::filesystem::path &a, const std::filesystem::path &b) { const std::string aa = a.stem().string(); const std::string bb = b.stem().string(); return std::lexicographical_compare(aa.begin(), aa.end(), bb.begin(), bb.end(), [](const char &c1, const char &c2) { return std::tolower(c1) < std::tolower(c2); }); });
@@ -2562,7 +2066,6 @@ class FileStore
 
 	inline FileStore &sortByTime2()
 	{
-		//std::scoped_lock lock(m_file_sys_mux);
 		const auto start = std::chrono::high_resolution_clock::now();
 		std::sort(m_files_store.begin(), m_files_store.end(),
 				  [](std::filesystem::path &a, std::filesystem::path &b) {
@@ -2715,7 +2218,6 @@ class FileStore
 	}
 
   private:
-	// --- Keep helper methods (addToFileStoreBatch, checkExtension, checkExtensionLinux) ---
 	inline void addToFileStoreBatch(std::deque<std::filesystem::path> &local_files, std::unordered_map<std::string, int> &local_extensions)
 	{
 		if (local_files.empty())
@@ -2732,16 +2234,18 @@ class FileStore
 		local_files.clear();
 		local_extensions.clear();
 	}
+
 	inline bool checkExtension(const std::filesystem::path &path, std::string &out_ext)
-	{ /* ... keep old implementation ... */
+	{ 
 		if (!path.has_extension())
 			return false;
 		out_ext = path.extension().string();
 		return extension_filter.empty() || extension_filter.count(out_ext);
 	}
+
 #ifdef __ANDROID__
 	inline bool checkExtensionLinux(const char *filename, std::string &out_ext)
-	{ /* ... keep old implementation ... */
+	{
 		const char *dot = strrchr(filename, '.');
 		if (!dot || dot == filename)
 			return false;
@@ -2750,7 +2254,6 @@ class FileStore
 	}
 #endif
 
-	// --- Worker Tasks (Updated) ---
 #ifdef __ANDROID__
 	void worker_task_linux()
 	{
@@ -2848,6 +2351,7 @@ class FileStore
 		}
 		addToFileStoreBatch(local_files, local_extensions);
 	}
+
 #else
 	void worker_task_filesystem()
 	{
@@ -2942,4 +2446,4 @@ class FileStore
 	ConcurrentQueue<PathTask> dir_queue;
 	std::atomic_int tasks_pending = 0;
 };
-} // namespace FileSystem3
+} // namespace FileSystem
