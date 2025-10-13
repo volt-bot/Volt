@@ -26,7 +26,6 @@
 #include <map>
 #include <filesystem>
 #include <functional>
-#include <atomic>
 #include <mutex>
 #include <shared_mutex>
 #include <unordered_set>
