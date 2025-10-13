@@ -4,9 +4,9 @@
 #include <SDL_image.h>
 #include <SDL_ttf.h>
 #else
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_image.h>
-#include <SDL2/SDL_ttf.h>
+#include <SDL.h>
+#include <SDL_image.h>
+#include <SDL_ttf.h>
 #endif
 
 #include <iostream>
@@ -44,7 +44,7 @@
 
 #include "volt_util.h"
 #include "volt_fonts.h"
-#include "mp.h"
+//#include "mp.h"
 #include "interpolators.h"
 #include "interpolated.hpp"
 //#include "text_editor.hpp"
@@ -172,7 +172,7 @@ public:
 			return SDL_WaitEvent(_event);
 	}
 
-	auto hasRequests()
+	auto hasRequests()const
 	{
 		if (!no_sleep_requests)
 			return false;
@@ -216,7 +216,7 @@ public:
 		}
 	}
 
-	bool shouldReDrawFrame()
+	bool shouldReDrawFrame()const
 	{
 		return redrawRequested;
 	}
@@ -248,7 +248,7 @@ public:
 	}
 
 private:
-	SDL_Texture *targetCache;
+	SDL_Texture* targetCache;
 };
 
 SDL_Color CACHE_COLOR;
@@ -566,11 +566,11 @@ public:
 		return bounds;
 	}
 
-	float getRealX() { return rel_x + bounds.x; }
+	float getRealX()const { return rel_x + bounds.x; }
 
-	float getRealY() { return rel_y + bounds.y; }
+	float getRealY()const { return rel_y + bounds.y; }
 
-	SDL_FPoint getRealPos() { return {rel_x + bounds.x, rel_y + bounds.y}; }
+	SDL_FPoint getRealPos()const { return {rel_x + bounds.x, rel_y + bounds.y}; }
 
 	void setBoundsBox(const SDL_FRect &_bounds, const SDL_FRect &_min_bounds = {0.f})
 	{
@@ -627,7 +627,7 @@ public:
 		return this;
 	}
 
-	bool isHidden() { return hidden; }
+	bool isHidden() const { return hidden; }
 
 	IView *show()
 	{
@@ -650,7 +650,7 @@ public:
 		return this;
 	}
 
-	bool isDisabled() { return disabled; }
+	bool isDisabled()const { return disabled; }
 
 	virtual bool handleEvent() = 0;
 
@@ -912,7 +912,7 @@ public:
 		return instance;
 	}
 
-	DeviceDisplayType GetDeviceDisplayType()
+	DeviceDisplayType GetDeviceDisplayType()const
 	{
 		return display_type;
 	}
@@ -1216,7 +1216,7 @@ public:
 
 	void draw() override = 0;
 
-	auto getFPS()
+	auto getFPS() const
 	{
 		return fps;
 	}
@@ -3997,7 +3997,7 @@ MemFont RobotoBold{
 	.font_size = 255,
 	.font_name = "roboto-bold"};
 
-[[maybeunused]] std::unordered_map<Font, MemFont *> Fonts{
+std::unordered_map<Font, MemFont *> Fonts{
 	//{Font::ConsolasBold, &ConsolasBold},
 	//{Font::OpenSansRegular, &OpenSansRegular},
 	//{{Font::OpenSansSemiBold, &OpenSansSemiBold},
@@ -4856,7 +4856,7 @@ public:
 		return result;
 	}
 
-	bool isAnimating() { return is_running; }
+	bool isAnimating() const { return is_running; }
 
 	void updatePosBy(float _dx, float _dy) override
 	{
@@ -5015,7 +5015,7 @@ public:
 		return *this;
 	}
 
-	SDL_FRect getRect()
+	SDL_FRect getRect() const
 	{
 		return this->m_rect;
 	}
@@ -6643,7 +6643,7 @@ public:
 		return onFocusView;
 	}
 
-	bool isActive()
+	bool isActive() const
 	{
 		return hasFocus;
 	}
@@ -7252,7 +7252,7 @@ public:
 		draw_filled_circle(renderer, dotx, doty,dotr , state == BtnState::OFF ? attr.dot_color : attr.dot_on_color);
 	}
 
-	BtnState getState() {
+	BtnState getState() const {
 		return state;
 	}
 
@@ -7388,17 +7388,17 @@ public:
 		return *this;
 	}
 
-	auto getCurrentValue()
+	auto getCurrentValue() const
 	{
 		if (Orientation::VERTICAL == orientation)
 			return max_val - (current_val - min_pad);
 		return current_val - min_pad;
 	}
 
-	auto getMinValue() { return min_val - min_pad; }
-	auto getMaxValue() { return max_val - max_pad; }
-	auto isKeyDown() noexcept { return key_down; }
-	auto getLevelLength()
+	auto getMinValue()const { return min_val - min_pad; }
+	auto getMaxValue()const { return max_val - max_pad; }
+	auto isKeyDown()const noexcept { return key_down; }
+	auto getLevelLength() const
 	{
 		if (Orientation::HORIZONTAL == orientation)
 			return lvl_rect.w;
@@ -7707,7 +7707,7 @@ public:
 		return *this;
 	}
 
-	Cell& addFooter(SDL_FRect pbounds,SDL_Color bg={0,0,0,0}, float _corner_radius = 0.f)
+	Cell& addHeaderOrFooter(SDL_FRect pbounds,SDL_Color bg={0,0,0,0}, float _corner_radius = 0.f)
 	{
 		header_footer.push_back({});
 		auto& cell = header_footer.back();
@@ -8302,7 +8302,7 @@ public:
 		return cells[SELECTED_CELL];
 	}
 
-	auto getSelectedCellIndex()
+	auto getSelectedCellIndex() const
 	{
 		return SELECTED_CELL;
 	}
@@ -8392,7 +8392,7 @@ public:
 		return *this;
 	}
 
-	std::size_t getSizeOfPreAddedCells()
+	std::size_t getSizeOfPreAddedCells() const
 	{
 		return sizeOfPreAddedCells;
 	}
@@ -9771,7 +9771,7 @@ public:
 		return values_[selectedVal];
 	}
 
-	std::size_t getSelectedValueIndex()
+	std::size_t getSelectedValueIndex() const
 	{
 		return selectedVal;
 	}
