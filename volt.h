@@ -148,7 +148,7 @@ static int SDLCALL myEventFilter(void *userdata, SDL_Event *event)
 #endif
 }
 
-void WakeGui()
+inline void WakeGui()
 {
 	SDL_Event RedrawTriggeredEvent;
 	RedrawTriggeredEvent.type = SDL_RegisterEvents(1);
@@ -687,6 +687,74 @@ public:
 private:
 };
 
+
+
+class MonoViewGroup :public IView{
+public:
+	auto addView(const std::string& label, IView* iview)
+	{
+		return views[label]=iview;
+	}
+
+	/*auto removeView(const std::string& label)
+	{
+		if (views.contains(label))
+		{
+			views.erase(views.begin() + indexer[label]);
+		}
+	}*/
+
+	IView* setActiveView(const std::string& label) {
+		active_vw = views.at(label);
+		return active_vw;
+	}
+
+	IView* getActiveView() {
+		return active_vw;
+	}
+
+	bool isEmpty()
+	{
+		return views.empty();
+	}
+
+	bool handleEvent()override final
+	{
+		if (not hidden and not (nullptr == active_vw))
+		{
+			return active_vw->handleEvent();
+		}
+		return false;
+	}
+
+	void onUpdate()override final
+	{
+		if (not hidden and not (nullptr == active_vw))
+		{
+			active_vw->onUpdate();
+		}
+	};
+
+	void forceDrawAll()
+	{
+		for (auto& [label,view] : views)
+			view->draw();
+	}
+
+	void draw()override final
+	{
+		if (not hidden and not (nullptr == active_vw))
+		{
+			active_vw->draw();
+		}
+	}
+private:
+	IView* active_vw=nullptr;
+	std::unordered_map<std::string, IView*> views;
+};
+
+
+
 class ViewTree
 {
 public:
@@ -1027,6 +1095,7 @@ public:
 		bool init_img = true;
 		bool init_everyting = true;
 		bool mouse_touch_events = true;
+		std::string logs_dir = "";
 	};
 
 public:
@@ -1063,7 +1132,7 @@ public:
 	short create(Application::Config config)
 	{
 		cfg = config;
-		file.open(config.title + "_logs.txt", std::ios::out | std::ios::app);
+		file.open(config.logs_dir+config.title + "_logs.txt", std::ios::out | std::ios::app);
 		if (file.is_open())
 		{
 			file << "\n\n\n\n----------NEW LOGGING SESSION----------\n";
@@ -1223,6 +1292,7 @@ public:
 
 	~Application()
 	{
+        file.close();
 		SDL_DestroyRenderer(renderer);
 		SDL_DestroyWindow(window);
 		renderer = nullptr;
@@ -4578,7 +4648,7 @@ public:
 		return result;
 	}
 
-	void updatePosBy(float _dx, float _dy)
+	void updatePosBy(float _dx, float _dy) override
 	{
 		IView::updatePosBy(_dx, _dy);
 		// return *this;
@@ -5924,7 +5994,7 @@ public:
 				wrapped_text_.back() = wrapped_text_.back().replace(wrapped_text_.back().begin()+ (wrapped_text_.back().size()-3), wrapped_text_.back().end(),"...");
 			}*/
 		max_displayable_lines_ = std::clamp(static_cast<uint32_t>(std::floorf(bounds.h / text_rect_.h)), (uint32_t)1, (uint32_t)1000000);
-		capture_src_ = {0.f, 0.f, text_rect_.w, text_rect_.h * std::clamp((float)wrapped_text_.size(), 1.f, (float)max_displayable_lines_)};
+		capture_src_ = {0.f, 0.f, text_rect_.w, (text_rect_.h) * std::clamp((float)wrapped_text_.size(), 1.f, (float)max_displayable_lines_)};
 		dest_src_ = text_rect_;
 		dest_src_.h = capture_src_.h;
 		dest_src_.x += bounds.x;
@@ -7284,6 +7354,699 @@ private:
 };
 
 
+/*
+* Breathe. I inspected the active file. You already started integrating ScrollView earlier; to make kinetic scrolling and the scrollbar thumb drive the same state we need two-way synchronization:
+•	when existing kinetic scroll code moves content, update the ScrollView offset.
+•	when ScrollView moves (thumb/track/wheel), update the content position / internal scroll state.
+•	unify clamping and units (pixels). Always use the same contentLength and viewportLength for both.
+Below are minimal, safe changes you can paste into ..\..\Desktop\GM's\volt m win\voltm.hpp. They:
+1.	add members to Cell to hold the ScrollView and sync state,
+2.	provide helper sync methods (syncScrollToView() and syncScrollFromView()),
+3.	replace the event/scroll handling to keep both in sync (wheel, drag, kinetic fling).
+Make the edits in the Cell implementation area (place with other members / methods for Cell). If your Cell class is named differently, adapt the identifier accordingly.
+Note: I assume ScrollView provides:
+•	bool handleEvent(const SDL_Event&, const SDL_FRect &parentBounds) — true when offset changed,
+•	float getScrollOffset() const,
+•	void setScrollOffset(float),
+•	void setContentLength(float),
+•	void setViewportLength(float),
+•	void setBounds(const SDL_FRect&),
+•	void draw(SDL_Renderer*) or draw(renderer).
+If method names differ adjust accordingly.
+
+// Add into the Cell class members (near other private members)
+private:
+	// integrated ScrollView instance
+	ScrollView scrollView{};
+	bool useScrollView = false;           // whether we created and use the scroll view
+	float scrollViewPrevOffset = 0.f;     // last known ScrollView offset
+	// The cell keeps its own "content scroll" state (existing kinetic code likely updates this)
+	float contentScrollY = 0.f;           // pixels scrolled (0 .. max_scroll)
+	float max_scroll = 0.f;               // existing maximum scroll value for content
+
+	// Helper: clamp offset to valid range
+	static inline float clampScroll(float v, float minV, float maxV) {
+		return std::min(std::max(v, minV), maxV);
+	}
+
+	// Call when the content layout changes (e.g. updateMaxScroll). Ensures ScrollView sizes match.
+	void ensureScrollViewSetup() {
+		if (!useScrollView) return;
+		float contentLength = std::max(bounds.h, bounds.h + max_scroll); // total content height
+		scrollView.setContentLength(contentLength);
+		scrollView.setViewportLength(bounds.h);
+		// ensure scrollView offset and contentScrollY are in-range and consistent
+		contentScrollY = clampScroll(contentScrollY, 0.f, std::max(0.f, contentLength - bounds.h));
+		scrollView.setScrollOffset(contentScrollY);
+		scrollViewPrevOffset = contentScrollY;
+	}
+
+	// Sync content -> ScrollView (call from your kinetic scroll code)
+	void syncScrollToView() {
+		if (!useScrollView) return;
+		// Keep ScrollView thumb in sync with contentScrollY
+		float contentLength = std::max(bounds.h, bounds.h + max_scroll);
+		scrollView.setContentLength(contentLength);
+		scrollView.setViewportLength(bounds.h);
+		float clamped = clampScroll(contentScrollY, 0.f, std::max(0.f, contentLength - bounds.h));
+		scrollView.setScrollOffset(clamped);
+		scrollViewPrevOffset = clamped;
+	}
+
+	// Sync ScrollView -> content (call after ScrollView reports changes)
+	void syncScrollFromView() {
+		if (!useScrollView) return;
+		float newOffset = scrollView.getScrollOffset();
+		newOffset = clampScroll(newOffset, 0.f, std::max(0.f, std::max(bounds.h, bounds.h + max_scroll) - bounds.h));
+		float delta = newOffset - scrollViewPrevOffset;
+		if (delta != 0.f) {
+			// when ScrollView moves down (offset increases), we need to move children up => negative
+			updatePosByInternal(0.f, -delta); // reuse your existing function that shifts children
+			contentScrollY = newOffset;
+			scrollViewPrevOffset = newOffset;
+			redraw = true; // ensure redraw (use your existing redraw flag)
+		}
+	}
+
+
+	Replace/augment event handling in the Cell (where you previously forwarded events to the scroll or handled finger/mouse drag/wheel) with the snippet below. This ensures:
+•	events handled by the ScrollView update content via syncScrollFromView(),
+•	wheel/kinetic updates to contentScrollY call syncScrollToView().
+
+
+
+// In Cell::handleEvent(...) where you process events for scrolling:
+if (useScrollView) {
+	// First, let ScrollView handle pointer / thumb / wheel events.
+	// If it handled and changed offset, reflect that into content.
+	if (scrollView.handleEvent(*event, bounds)) {
+		syncScrollFromView();
+		return true; // event consumed by scrollbar
+	}
+}
+
+// --- Existing kinetic / manual scroll code branch ---
+// Wherever your code updates contentScrollY (dragging, fling, wheel handling outside ScrollView),
+// after you mutate contentScrollY, call:
+{
+	// Example after contentScrollY += dy;
+	// clamp contentScrollY to [0, max]
+	float contentLength = std::max(bounds.h, bounds.h + max_scroll);
+	contentScrollY = clampScroll(contentScrollY, 0.f, std::max(0.f, contentLength - bounds.h));
+	// move children visually (existing behavior)
+	updatePosByInternal(0.f, - (contentScrollY - previousContentScrollY));
+	// now update the ScrollView to match the manual move
+	syncScrollToView();
+	previousContentScrollY = contentScrollY; // keep your existing state
+}
+
+
+Also ensure you call ensureScrollViewSetup() whenever bounds.h or max_scroll changes (for example inside updateMaxScroll(...) or layout code). Example:
+// where you compute max_scroll or adjust bounds.h
+max_scroll = std::max(max_scroll, computed_content_height - bounds.h);
+if (!useScrollView && computed_content_height > bounds.h) {
+	// initialize ScrollView bounds (right edge) once
+	SDL_FRect svBounds = {
+		bounds.x + bounds.w - to_cust(4.f, bounds.w),
+		bounds.y,
+		to_cust(4.f, bounds.w),
+		bounds.h
+	};
+	scrollView.setBounds(svBounds);
+	useScrollView = true;
+	// set sizes & offset
+	float contentLength = std::max(bounds.h, computed_content_height);
+	scrollView.setContentLength(contentLength);
+	scrollView.setViewportLength(bounds.h);
+	scrollView.setScrollOffset(contentScrollY);
+	scrollViewPrevOffset = contentScrollY;
+	has_scroll_bar = true; // keep your existing flag if needed
+} else if (useScrollView) {
+	// keep sizes in sync
+	ensureScrollViewSetup();
+}
+
+Finally, in your draw path draw the ScrollView after drawing children so the thumb appears above content:
+
+// In Cell::draw() after drawing content:
+if (useScrollView) {
+	scrollView.draw(renderer);
+}
+
+
+
+Why this solves the problem
+•	Two-way sync: any code that moves content updates the scrollView via syncScrollToView(). Any user interaction with the scrollView updates the content via syncScrollFromView().
+•	Clamping and contentLength/viewportLength are set in one place to avoid drift.
+•	Wheel, drag, fling—wherever you update contentScrollY—must call syncScrollToView() afterwards.
+Checklist for you
+•	Confirm the ScrollView API names match — adjust getScrollOffset / setScrollOffset / handleEvent names if different.
+•	Replace updatePosByInternal usage if your function is named differently (I used the name from earlier messages).
+•	Make sure previousContentScrollY (or equivalent) exists in your kinetic code to compute deltas.
+•	Call ensureScrollViewSetup() on resize and after content layout passes.
+If you want I can:
+•	produce an exact in-file patch replacing specific functions (I can open locations if you point to the Cell class start or the functions that currently implement kinetic scrolling: names/line numbers),
+•	or search for your kinetic scroll symbols (contentScrollY, scroll_y, updatePosByInternal, previousContentScrollY) and prepare a single automated edit.
+Which do you prefer — a full patch applied to voltm.hpp or help me locate the exact kinetic-scroll functions to patch automatically?
+
+*/
+
+
+/*
+ ---------- ScrollView ----------
+ Usage notes:
+  - Create a ScrollView, call setBounds(), setContentSize() inside the view that needs scrolling, then use
+  - Forward pointer/mouse/touch events to ScrollView::handleEvent(...).
+  - handleEvent(&event, parent_bounds) and draw(renderer).
+  - Query getScrollOffset() to translate content when drawing content.
+  - When the scroll offset changes, translate children drawing by the offset (apply delta via updatePosByInternal or temporarily shift child positions while drawing).
+Notes and tips
+•	The ScrollView stores a pixel offset (0..contentLength - viewport). We applied that offset by calling updatePosByInternal(0, -delta) to move child views in the opposite direction of the scrollbar thumb motion. That keeps the child bounds in sync with the visual position.
+•	If you prefer non-mutating rendering (safer): instead of mutating child bounds, temporarily translate before draw and restore after:
+•	Save children positions (or maintain a function to draw children at an offset).
+•	Draw at y - scrollView.getScrollOffset() and then restore state.
+•	Event forwarding:
+•	When forwarding events to ScrollView::handleEvent(...) pass the same parent bounds you used to set the ScrollView bounds.
+•	The scrollView expects screen coordinates, so make sure you forward raw event coordinates (no extra translate).
+•	Accessibility with touch/wheel:
+•	ScrollView::handleEvent supports mouse wheel, drag, clicking the track; it will automatically synthesize thumb movement. Keep the existing finger/drag logic if you still want kinetic scrolling; otherwise you can centralize all scrolling through ScrollView.
+•	To find the methods quickly in Visual Studio: use Edit > Find and Replace or the Solution Explorer to jump to Cell and updateMaxScroll. (Or open the active file: the active document is voltm.hpp.)
+If you want, I can:
+•	Convert existing kinetic scroll behavior to drive the new ScrollView (so thumb and fling integrate automatically).
+Which would you prefer — a full in-file patch, or the small snippets above for you to paste?
+ */
+class ScrollView
+{
+public:
+	// Visual configuration
+	struct Style
+	{
+		SDL_Color trackColor = { 0x20, 0x20, 0x20, 0xFF };
+		SDL_Color thumbColor = { 0xA0, 0xA0, 0xA0, 0xFF };
+		float trackThickness = 8.0f;   // px (for vertical scroll this is width)
+		float thumbMinLength = 20.0f;  // px
+		bool vertical = true;          // vertical (true) or horizontal (false)
+	};
+
+	ScrollView() = default;
+
+	ScrollView(const SDL_FRect& bounds, float contentLen, const Style& style = Style())
+		: bounds_(bounds), style_(style)
+	{
+		setContentLength(contentLen);
+	}
+
+	ScrollView& Build(const SDL_FRect& bounds, float contentLen, const Style& style = Style()) {
+		bounds_ = bounds;
+		style_ = style;
+		setContentLength(contentLen);
+		return *this;
+	}
+
+	// Set / update the widget bounds (in parent coordinate space)
+	void setBounds(const SDL_FRect& b)
+	{
+		bounds_ = b;
+		computeThumbRect();
+	}
+
+	// Set total content length (height for vertical, width for horizontal)
+	void setContentLength(float contentLength)
+	{
+		contentLength_ = std::max(0.0f, contentLength);
+		computeThumbRect();
+	}
+
+	// Set viewport length (visible area length). Useful if viewport changes.
+	void setViewportLength(float viewportLength)
+	{
+		viewportLength_ = std::max(0.0f, viewportLength);
+		computeThumbRect();
+	}
+
+	// Set scroll offset (0..max). Clamp internally.
+	void setScrollOffset(float offset)
+	{
+		float maxOff = maxScrollOffset();
+		if (maxOff <= 0.0f)
+		{
+			scrollOffset_ = 0.0f;
+		}
+		else
+		{
+			scrollOffset_ = std::clamp(offset, 0.0f, maxOff);
+		}
+		computeThumbRect();
+	}
+
+	// Increment scroll offset by delta (positive scrolls down/right)
+	inline void scrollBy(float delta)
+	{
+		setScrollOffset(scrollOffset_ + delta);
+	}
+
+	// Scroll by a page (positive = forward)
+	inline void pageScroll(int pages = 1)
+	{
+		setScrollOffset(scrollOffset_ + pages * viewportLength_);
+	}
+
+	// Get current scroll offset
+	inline float getScrollOffset() const { return scrollOffset_; }
+
+	// Get scroll fraction (0..1)
+	inline float getScrollFraction() const
+	{
+		float maxOff = maxScrollOffset();
+		return maxOff <= 0.0f ? 0.0f : (scrollOffset_ / maxOff);
+	}
+
+	// Handle SDL events. Returns true if event was consumed.
+	// parentBounds is used to convert mouse coords if necessary (pass same as setBounds if already in global coords).
+	bool handleEvent(const SDL_Event& ev, const SDL_FRect& parentBounds)
+	{
+		// Convert mouse coords for float rect check
+		auto isPointInBounds = [&p=parentBounds](float px, float py, const SDL_FRect& r) -> bool {
+			return ((px >= p.x+r.x) && (px < (p.x+r.x + r.w)) && (py >= p.y+r.y) && (py < (p.y+r.y + r.h)));
+			};
+
+		auto isPointInRect = [](float px, float py, const SDL_FRect& r) -> bool {
+			return ((px >= r.x) && (px < (r.x + r.w)) && (py >= r.y) && (py < (r.y + r.h)));
+			};
+
+		switch (ev.type)
+		{
+		case SDL_MOUSEWHEEL:
+			// Mouse wheel: vertical scroll uses y, horizontal uses x
+			if (isPointInRect(ev.wheel.x * wheelStep(), ev.wheel.y * wheelStep(), parentBounds)) {
+				if (style_.vertical)
+					scrollBy(-ev.wheel.y * wheelStep());
+				else
+					scrollBy(-ev.wheel.x * wheelStep());
+				return true;
+			}
+			else {
+				return false;
+			}
+		case SDL_MOUSEBUTTONDOWN:
+		{
+			float mx = static_cast<float>(ev.button.x);
+			float my = static_cast<float>(ev.button.y);
+			if (!isPointInBounds(mx, my, bounds_)) return false;
+
+			// If click is on thumb -> start dragging
+			if (isPointInBounds(mx, my, thumbRect_))
+			{
+				dragging_ = true;
+				dragStartPos_ = style_.vertical ? my : mx;
+				dragStartOffset_ = scrollOffset_;
+				return true;
+			}
+
+			// If click on track above/before thumb -> page up
+			if (style_.vertical)
+			{
+				if (my < thumbRect_.y)
+					pageScroll(-1);
+				else if (my > (thumbRect_.y + thumbRect_.h))
+					pageScroll(1);
+			}
+			else
+			{
+				if (mx < thumbRect_.x)
+					pageScroll(-1);
+				else if (mx > (thumbRect_.x + thumbRect_.w))
+					pageScroll(1);
+			}
+			return true;
+		}
+		case SDL_MOUSEBUTTONUP:
+		{
+			if (dragging_)
+			{
+				dragging_ = false;
+				return true;
+			}
+			break;
+		}
+		case SDL_MOUSEMOTION:
+		{
+			if (!dragging_) return false;
+			float pos = style_.vertical ? static_cast<float>(ev.motion.y) : static_cast<float>(ev.motion.x);
+			float delta = pos - dragStartPos_;
+			// Translate delta in pixels on track to content offset change
+			float trackLen = trackLength();
+			if (trackLen <= 0.0f || thumbLengthPx() <= 0.0f) return true;
+			float movablePx = std::max(0.0f, trackLen - thumbLengthPx());
+			if (movablePx <= 0.0f) return true;
+			float ratio = delta / movablePx;
+			float contentDelta = ratio * std::max(0.0f, contentLength_ - viewportLength_);
+			setScrollOffset(dragStartOffset_ + contentDelta);
+			return true;
+		}
+		default:
+			break;
+		}
+
+		return false;
+	}
+
+	// Draw the track and thumb into renderer. Caller should set blend/color states as desired.
+	inline void draw(SDL_Renderer* renderer) const
+	{
+		// Track rect (float) and thumbRect_ are already float rectangles.
+		SDL_FRect track = trackRect();
+		// Draw track
+		SDL_SetRenderDrawColor(renderer, style_.trackColor.r, style_.trackColor.g, style_.trackColor.b, style_.trackColor.a);
+		SDL_RenderFillRectF(renderer, &track);
+		// Draw thumb
+		SDL_SetRenderDrawColor(renderer, style_.thumbColor.r, style_.thumbColor.g, style_.thumbColor.b, style_.thumbColor.a);
+		SDL_RenderFillRectF(renderer, &thumbRect_);
+	}
+
+	// Return internal bounds
+	inline SDL_FRect bounds() const { return bounds_; }
+
+	// Compute and return the thumb rectangle (for external use)
+	inline SDL_FRect thumbRect() const { return thumbRect_; }
+
+	// Orientation helpers
+	inline void setVertical(bool v) { style_.vertical = v; computeThumbRect(); }
+	inline bool isVertical() const { return style_.vertical; }
+
+	// Expose style (copy) for tweaks
+	inline void setStyle(const Style& s) { style_ = s; computeThumbRect(); }
+	inline Style style() const { return style_; }
+
+private:
+	// compute sizes and thumb rect. called whenever bounds, content length or viewport changes — this ensures thumbRect_.w/h/x/y are reliably and always set.
+	void computeThumbRect()
+	{
+		// Ensure viewport length is set; if not, infer from bounds
+		if (style_.vertical)
+		{
+			if (viewportLength_ <= 0.0f) viewportLength_ = bounds_.h;
+		}
+		else
+		{
+			if (viewportLength_ <= 0.0f) viewportLength_ = bounds_.w;
+		}
+
+		// Track rect
+		SDL_FRect tr = trackRect();
+
+		// Thumb length (in pixels) proportional to visible fraction
+		float visibleFrac = (contentLength_ <= 0.0f) ? 1.0f : (viewportLength_ / std::max(viewportLength_, contentLength_));
+		float thumbLen = visibleFrac * trackLength();
+		thumbLen = std::max(style_.thumbMinLength, thumbLen);
+
+		// Ensure thumb fits
+		thumbLen = std::min(thumbLen, trackLength());
+
+		// Thumb position: map scrollOffset (0..max) to track range
+		float maxOff = maxScrollOffset();
+		float thumbPosOnTrack = 0.0f;
+		if (maxOff <= 0.0f)
+		{
+			thumbPosOnTrack = 0.0f;
+		}
+		else
+		{
+			float movable = std::max(0.0f, trackLength() - thumbLen);
+			thumbPosOnTrack = (scrollOffset_ / maxOff) * movable;
+		}
+
+		// Set thumb rect (complete fields)
+		if (style_.vertical)
+		{
+			thumbRect_.x = tr.x;
+			thumbRect_.y = tr.y + thumbPosOnTrack;
+			thumbRect_.w = tr.w;
+			thumbRect_.h = thumbLen;
+		}
+		else
+		{
+			thumbRect_.x = tr.x + thumbPosOnTrack;
+			thumbRect_.y = tr.y;
+			thumbRect_.w = thumbLen;
+			thumbRect_.h = tr.h;
+		}
+	}
+
+	// Track rectangle (area where thumb moves)
+	inline SDL_FRect trackRect() const
+	{
+		if (style_.vertical)
+		{
+			// centered vertical track within bounds.x..bounds.x + trackThickness
+			float cx = bounds_.x + (bounds_.w - style_.trackThickness);
+			return SDL_FRect{ cx, bounds_.y, style_.trackThickness, bounds_.h };
+		}
+		else
+		{
+			float cy = bounds_.y + (bounds_.h - style_.trackThickness);
+			return SDL_FRect{ bounds_.x, cy, bounds_.w, style_.trackThickness };
+		}
+	}
+
+	// Length of track (pixels thumb can travel + thumb length)
+	inline float trackLength() const
+	{
+		SDL_FRect tr = trackRect();
+		return style_.vertical ? tr.h : tr.w;
+	}
+
+	// Thumb length in px (helper)
+	inline float thumbLengthPx() const
+	{
+		return style_.vertical ? thumbRect_.h : thumbRect_.w;
+	}
+
+	// Maximum scroll offset (contentLen - viewportLen)
+	inline float maxScrollOffset() const
+	{
+		return std::max(0.0f, contentLength_ - viewportLength_);
+	}
+
+	// Default wheel step equals 1/10 of viewport length
+	inline float wheelStep() const
+	{
+		return std::max(1.0f, viewportLength_ * 0.1f);
+	}
+
+private:
+	SDL_FRect bounds_{ 0, 0, 0, 0 };   // full widget bounds
+	SDL_FRect thumbRect_{ 0, 0, 0, 0 }; // previously lvl_rect -- now always fully set
+
+	float contentLength_ = 0.0f;  // total content length (height for vertical)
+	float viewportLength_ = 0.0f; // visible length (height)
+	float scrollOffset_ = 0.0f;   // current content offset (0..max)
+
+	// Dragging state
+	bool dragging_ = false;
+	float dragStartPos_ = 0.0f;
+	float dragStartOffset_ = 0.0f;
+
+	Style style_;
+};
+
+
+
+
+struct ScrollAttributes
+{
+    SDL_FRect rect = {};
+    float min_val = 0.f, max_val = 1.f, start_val = 0.f, corner_radius = 0.f;
+    SDL_Color bg_color = {50, 50, 50, 255};
+    SDL_Color level_bar_color = {255, 255, 255, 255};
+    Orientation orientation = Orientation::HORIZONTAL;
+};
+
+class Scroll : public Context, public IView
+{
+public:
+    Scroll &Build(Context *_context, ScrollAttributes _attr)
+    {
+        setContext(_context);
+        rect = _attr.rect;
+        lvl_rect = rect;
+        bg_color = _attr.bg_color;
+        lvl_bar_color = _attr.level_bar_color;
+        orientation = _attr.orientation;
+        corner_radius = _attr.corner_radius;
+        updateMinMaxValues(_attr.min_val, _attr.max_val, _attr.start_val);
+        return *this;
+    }
+
+    bool handleEvent() override final
+    {
+        bool result = false;
+        switch (event->type)
+        {
+            case EVT_MOUSE_BTN_DOWN:
+                if (pointInBound(event->motion.x, event->motion.y))
+                {
+                    key_down = true, result = true;
+                    if (Orientation::VERTICAL == orientation)
+                        updateValue(screenToWorld(event->motion.y - (pv->getRealY() + rect.y)));
+                    else if (Orientation::HORIZONTAL == orientation)
+                        updateValue(screenToWorld(event->motion.x - (pv->getRealX() + rect.x)));
+                }
+                break;
+            case EVT_MOUSE_MOTION:
+                if (key_down)
+                {
+                    result = true;
+                    if (Orientation::VERTICAL == orientation)
+                        updateValue(screenToWorld(event->motion.y - (pv->getRealY() + rect.y)));
+                    else if (Orientation::HORIZONTAL == orientation)
+                        updateValue(screenToWorld(event->motion.x - (pv->getRealX() + rect.x)));
+                }
+                break;
+            case EVT_MOUSE_BTN_UP:
+                key_down = false;
+                break;
+            default:
+                break;
+        }
+        return result;
+    }
+
+    inline void draw() final
+    {
+        if (Orientation::HORIZONTAL == orientation)
+        {
+            SDL_SetRenderDrawColor(renderer, bg_color.r, bg_color.g, bg_color.b, bg_color.a);
+            fillRoundedRectF(renderer, rect, corner_radius, bg_color);
+            SDL_SetRenderDrawColor(renderer, lvl_bar_color.r, lvl_bar_color.g, lvl_bar_color.b, lvl_bar_color.a);
+            fillRoundedRectF(renderer, lvl_rect, corner_radius, lvl_bar_color);
+        }
+        else if (Orientation::VERTICAL == orientation)
+        {
+            SDL_SetRenderDrawColor(renderer, lvl_bar_color.r, lvl_bar_color.g, lvl_bar_color.b, lvl_bar_color.a);
+            fillRoundedRectF(renderer, rect, corner_radius, lvl_bar_color);
+            SDL_SetRenderDrawColor(renderer, bg_color.r, bg_color.g, bg_color.b, bg_color.a);
+            fillRoundedRectF(renderer, lvl_rect, corner_radius, bg_color);
+        }
+    }
+
+    inline Scroll &registerOnValueUpdateCallback(std::function<void(Scroll &)> onValUpdateClbk)
+    {
+        onValUpdate = std::move(onValUpdateClbk);
+        return *this;
+    }
+
+    inline auto getCurrentValue() const
+    {
+        if (Orientation::VERTICAL == orientation)
+            return max_val - (current_val - min_pad);
+        return current_val - min_pad;
+    }
+
+    inline auto getMinValue()const { return min_val - min_pad; }
+    inline auto getMaxValue()const { return max_val - max_pad; }
+    inline auto isKeyDown()const noexcept { return key_down; }
+    inline float getLevelLength() const
+    {
+        if (Orientation::HORIZONTAL == orientation)
+            return lvl_rect.w;
+        else if (Orientation::VERTICAL == orientation)
+            return rect.h - lvl_rect.h;
+        else if (Orientation::ANGLED == orientation)
+            return 0.f;
+    }
+
+    inline Scroll &updateValue(float _val)
+    {
+        current_val = std::clamp(_val + min_pad, min_val, max_val);
+        const float cr = (current_val * ratio);
+        if (Orientation::HORIZONTAL == orientation)
+        {
+			//lvl_rect.w = cr;
+            lvl_rect.x = rect.x + cr - (lvl_rect.w / 2.f);
+        }
+        else if (Orientation::VERTICAL == orientation)
+        {
+			//lvl_rect.h = cr;
+            lvl_rect.y = rect.y + cr - (lvl_rect.h / 2.f);
+        }
+        if (onValUpdate)
+            onValUpdate(*this);
+        return *this;
+    }
+
+    inline Scroll &updateMinMaxValues(float _min_val, float _max_val, float _current_val)
+    {
+        min_val = _min_val;
+        max_val = _max_val;
+        // possible integer overflow bug if min/max val > INT_MAX/2
+        // should test & add a static assert
+        if (min_val < 0.f)
+            min_val = fabs(min_val), min_pad = min_val * 2.f;
+        if (max_val < 0.f)
+            max_val = fabs(max_val), max_pad = max_val * 2.f;
+        max_val += min_pad;
+        length = max_val - min_val;
+
+        if (Orientation::HORIZONTAL == orientation)
+            ratio = rect.w / length;
+        else if (Orientation::VERTICAL == orientation)
+            ratio = rect.h / length;
+        return updateValue(_current_val);
+    }
+
+    inline void updatePosBy(float dx, float dy) override final
+    {
+        rect.x += dx;
+        rect.y += dy;
+        lvl_rect.x += dx;
+        lvl_rect.y += dy;
+    }
+
+private:
+    inline bool pointInBound(const float &x, const float &y) const noexcept
+    {
+        if (Orientation::VERTICAL == orientation)
+        {
+            if ((y >= pv->getRealY() + rect.y) && (y < pv->getRealY() + rect.y + rect.h))
+                return true;
+        }
+        else if (Orientation::HORIZONTAL == orientation)
+        {
+            if ((x >= pv->getRealX() + rect.x) && (x < pv->getRealX() + rect.x + rect.w))
+                return true;
+        }
+        else if (Orientation::ANGLED == orientation)
+            return false;
+        return false;
+    }
+
+    [[nodiscard]] inline float screenToWorld(const float val) const
+    {
+        if (Orientation::HORIZONTAL == orientation)
+            return (val * length) / rect.w;
+        else if (Orientation::VERTICAL == orientation)
+            return (val * length) / rect.h;
+        else
+            return 0.f;
+    }
+
+private:
+    float min_val = 0.f, max_val = 0.f, current_val = 0.f, min_pad = 0.f, max_pad = 0.f;
+    SDL_Color bg_color = {50, 50, 50, 255};
+    SDL_Color lvl_bar_color = {255, 255, 255, 255};
+    Orientation orientation = Orientation::HORIZONTAL;
+    float corner_radius = 0.f;
+    SDL_FRect rect, lvl_rect;
+    bool key_down = false;
+    float ratio = 0.f;
+    float length = 0.f;
+    std::function<void(Scroll &)> onValUpdate = nullptr;
+};
+
+
+
+
 
 
 
@@ -7300,11 +8063,8 @@ struct SliderAttributes
 	Orientation orientation = Orientation::HORIZONTAL;
 };
 
-class Slider : public Context, IView
+class Slider : public Context, public IView
 {
-public:
-	using IView::getView;
-
 public:
 	Slider &Build(Context *_context, SliderAttributes _attr)
 	{
@@ -7564,7 +8324,7 @@ private:
 	ScrollAction scrlAction;
 	bool cellblock_parent = false;
 private:
-	void updatePosByInternal(float _dx, float _dy)
+	inline void updatePosByInternal(float _dx, float _dy)
 	{
 		for (auto &imgBtn : imageButton)
 			imgBtn.updatePosBy(_dx, _dy);
@@ -7630,14 +8390,17 @@ public:
 	std::deque<RunningText> runningText;
 	std::deque<Slider> sliders;
 	std::deque<ToggleButton> togButton;
-	std::deque<ImageButton> imageButton;
+    std::deque<ImageButton> imageButton;
+    std::deque<Scroll> scroll_bars;
 	std::deque<IView *> iViews;
 	// std::deque<std::shared_ptr<CellBlock>> blocks;
 	std::vector<CellBlock> blocks;
+	Scroll scroll{};
 	bool selected = false;
 	bool isHighlighted = false;
 	bool highlightOnHover = false;
 	bool ignoreTextEvents = true;
+    bool has_scroll_bar=false;
 
 	std::vector<Cell> header_footer{};
 	std::vector<Select> select;
@@ -7660,7 +8423,7 @@ public:
 		return *this;
 	}*/
 
-	Cell &clear()
+	inline Cell &clear()
 	{
 		scroll_y = 0.f, max_scroll = 0.f, dy = 0.f;
 		textBox.clear();
@@ -7671,19 +8434,19 @@ public:
 		return *this;
 	}
 
-	Cell &registerCustomDrawCallback(std::function<void(Cell &)> _customDrawCallback) noexcept
+	inline Cell &registerCustomDrawCallback(std::function<void(Cell &)> _customDrawCallback) noexcept
 	{
 		this->customDrawCallback = std::move(_customDrawCallback);
 		return *this;
 	}
 
-	Cell &registerCustomEventHandlerCallback(std::function<bool(Cell &)> _customEventHandlerCallback) noexcept
+	inline Cell &registerCustomEventHandlerCallback(std::function<bool(Cell &)> _customEventHandlerCallback) noexcept
 	{
 		this->customEventHandlerCallback = std::move(_customEventHandlerCallback);
 		return *this;
 	}
 
-	Cell &registerOnDataSetChangedCallback(std::function<void(Cell &, std::any _data)> _onDataSetChanged) noexcept
+	inline Cell &registerOnDataSetChangedCallback(std::function<void(Cell &, std::any _data)> _onDataSetChanged) noexcept
 	{
 		this->onDataSetChanged = std::move(_onDataSetChanged);
 		return *this;
@@ -7704,6 +8467,34 @@ public:
 	Cell &addView(IView *iview)
 	{
 		// iViews.emplace_back(iview);
+		return *this;
+	}
+
+	Cell& shrinkToFit() {
+		max_scroll = 0.f;
+		for (auto& txt : textBox) {
+			max_scroll = std::max(max_scroll, (txt.bounds.y + txt.bounds.h) - bounds.h);
+		}
+
+		for (auto& slider : sliders) {
+			max_scroll = std::max(max_scroll, (slider.bounds.y + slider.bounds.h) - bounds.h);
+		}
+
+		for (auto& edit : editBox) {
+			max_scroll = std::max(max_scroll, (edit.bounds.y + edit.bounds.h) - bounds.h);
+		}
+
+		for (auto& img : imageButton) {
+			max_scroll = std::max(max_scroll, (img.bounds.y + img.bounds.h) - bounds.h);
+		}
+
+		for (auto& rt : runningText) {
+			max_scroll = std::max(max_scroll, (rt.bounds.y + rt.bounds.h) - bounds.h);
+		}
+
+		for (auto& tb : togButton) {
+			max_scroll = std::max(max_scroll, (tb.bounds.y + tb.bounds.h) - bounds.h);
+		}
 		return *this;
 	}
 
@@ -7741,7 +8532,8 @@ public:
 			pv->to_cust(togBtnAttr.rect.h, bounds.h) };
 		togButton.emplace_back()
 			.Build(this, togBtnAttr);
-		max_scroll = std::max(max_scroll, (togBtnAttr.rect.y + togBtnAttr.rect.h) - bounds.h);
+		//max_scroll = std::max(max_scroll, (togBtnAttr.rect.y + togBtnAttr.rect.h) - bounds.h);
+		updateMaxScroll(togBtnAttr.rect.y + togBtnAttr.rect.h);
 		// if (is_form and _TextBoxAttr.type="submit"){
 		// textBox.back().setonsubmithandler }
 		redraw = true;
@@ -7756,7 +8548,8 @@ public:
 							 pv->to_cust(_TextBoxAttr.rect.h, bounds.h)};
 		textBox.emplace_back()
 			.Build(this, _TextBoxAttr);
-		max_scroll = std::max(max_scroll, (_TextBoxAttr.rect.y + _TextBoxAttr.rect.h) - bounds.h);
+		//max_scroll = std::max(max_scroll, (_TextBoxAttr.rect.y + _TextBoxAttr.rect.h) - bounds.h);
+		updateMaxScroll(_TextBoxAttr.rect.y + _TextBoxAttr.rect.h);
 		// if (is_form and _TextBoxAttr.type="submit"){
 		// textBox.back().setonsubmithandler }
 		redraw = true;
@@ -7808,11 +8601,13 @@ public:
 						   pv->to_cust(_RTextAttr.rect.h, bounds.h)};
 		runningText.emplace_back()
 			.Build(this, _RTextAttr);
-		max_scroll = std::max(max_scroll, (_RTextAttr.rect.y + _RTextAttr.rect.h) - bounds.h);
+		//max_scroll = std::max(max_scroll, (_RTextAttr.rect.y + _RTextAttr.rect.h) - bounds.h);
+		updateMaxScroll(_RTextAttr.rect.y + _RTextAttr.rect.h);
 		redraw = true;
 		return *this;
-	} /*
+	}
 
+    /*
 		Cell& addSlider(SliderAttributes _Attr) {
 			_RTextAttr.rect = { dest.x + pv->to_cust(_RTextAttr.rect.x, dest.w),
 					dest.y + pv->to_cust(_RTextAttr.rect.y, dest.h),
@@ -7834,7 +8629,8 @@ public:
 		//GLogger.Log(Logger::Level::Info,"Edit bounds rect{",_EditBoxAttr.rect.x,_EditBoxAttr.rect.y,_EditBoxAttr.rect.w,_EditBoxAttr.rect.h,"}");
 		editBox.emplace_back()
 			.Build(this, _EditBoxAttr);
-		max_scroll = std::max(max_scroll, (_EditBoxAttr.rect.y + _EditBoxAttr.rect.h) - bounds.h);
+		//max_scroll = std::max(max_scroll, (_EditBoxAttr.rect.y + _EditBoxAttr.rect.h) - bounds.h);
+		updateMaxScroll(_EditBoxAttr.rect.y + _EditBoxAttr.rect.h);
 		redraw = true;
 		return *this;
 	}
@@ -7900,7 +8696,8 @@ public:
 				pv->to_cust(imageButtonAttributes.rect.w, bounds.w),
 				pv->to_cust(imageButtonAttributes.rect.h, bounds.h)};
 			imageButton.back().Build(imageButtonAttributes);
-			max_scroll = std::max(max_scroll, (imageButtonAttributes.rect.y + imageButtonAttributes.rect.h) - bounds.h);
+			//max_scroll = std::max(max_scroll, (imageButtonAttributes.rect.y + imageButtonAttributes.rect.h) - bounds.h);
+			updateMaxScroll(imageButtonAttributes.rect.y + imageButtonAttributes.rect.h);
 		}
 		else
 		{
@@ -7934,18 +8731,33 @@ public:
 	Cell &addSlider(SliderAttributes sAttr)
 	{
 		sAttr.rect = {
-			/*bounds.x + */ pv->to_cust(sAttr.rect.x, bounds.w),
-			/*bounds.y + */ pv->to_cust(sAttr.rect.y, bounds.h),
+			pv->to_cust(sAttr.rect.x, bounds.w),
+			pv->to_cust(sAttr.rect.y, bounds.h),
 			pv->to_cust(sAttr.rect.w, bounds.w),
 			pv->to_cust(sAttr.rect.h, bounds.h),
 		};
 		sliders.emplace_back().Build(this, sAttr);
-		max_scroll = std::max(max_scroll, (sAttr.rect.y + sAttr.rect.h) - bounds.h);
+		//max_scroll = std::max(max_scroll, (sAttr.rect.y + sAttr.rect.h) - bounds.h);
+		updateMaxScroll(sAttr.rect.y + sAttr.rect.h);
 		redraw = true;
 		return *this;
 	}
 
-	const bool isPointInBound(float x, float y) const noexcept
+    Cell &addScrollBar(ScrollAttributes sAttr)
+    {
+        sAttr.rect = {
+                pv->to_cust(sAttr.rect.x, bounds.w),
+                pv->to_cust(sAttr.rect.y, bounds.h),
+                pv->to_cust(sAttr.rect.w, bounds.w),
+                pv->to_cust(sAttr.rect.h, bounds.h),
+        };
+        scroll_bars.emplace_back().Build(this, sAttr);
+        updateMaxScroll(sAttr.rect.y + sAttr.rect.h);
+        redraw = true;
+        return *this;
+    }
+
+	inline bool isPointInBound(float x, float y) const noexcept
 	{
 		if (x > pv->getRealX() + bounds.x && x < (pv->getRealX() + bounds.x + bounds.w) && y > pv->getRealY() + bounds.y && y < pv->getRealY() + bounds.y + bounds.h)
 			return true;
@@ -7953,17 +8765,17 @@ public:
 		return false;
 	}
 
-	void updatePosBy(float _dx, float _dy) override
+	inline void updatePosBy(float _dx, float _dy) override
 	{
 		bounds.x += _dx;
 		bounds.y += _dy;
 	}
 
-	void notifyDataSetChanged(std::any _dataSetChangedData)
+	inline void notifyDataSetChanged(std::any _dataSetChangedData)
 	{
 		// add a check for empty _dataSetChangedData before storing
 		// or even consider passing _dataSetChangedData directly to the onDataSetChanged() callback
-		dataSetChangedData = _dataSetChangedData;
+		dataSetChangedData = std::move(_dataSetChangedData);
 		if (onDataSetChanged != nullptr)
 			onDataSetChanged(*this, dataSetChangedData);
 	}
@@ -7994,6 +8806,31 @@ public:
 			}
 		}
 
+		if (useScrollView) {
+			if (scrollView.handleEvent(*event, bounds)) {
+				// map ScrollView offset -> cell scroll_y and translate children by the delta
+				float newOffset = scrollView.getScrollOffset();
+				float delta = newOffset - scrollViewPrevOffset;
+				if (delta != 0.f) {
+					// apply inverse delta to children so visual content moves up when offset increases
+					updatePosByInternal(0.f, -delta);
+					scrollViewPrevOffset = newOffset;
+					redraw = true;
+				}
+				return true;
+			}
+		}
+
+		// In Cell::handleEvent(...) where you process events for scrolling:
+		/*if (useScrollView) {
+			// First, let ScrollView handle pointer / thumb / wheel events.
+			// If it handled and changed offset, reflect that into content.
+			if (scrollView.handleEvent(*event, bounds)) {
+				syncScrollFromView();
+				return true; // event consumed by scrollbar
+			}
+		}*/
+
 		if (event->type == EVT_WPSC)
 		{
 			bounds =
@@ -8007,6 +8844,15 @@ public:
 		}
 		if (isHidden())
 			return result;
+		if (event->type == EVT_FINGER_DOWN || event->type == EVT_FINGER_UP)
+		{
+			pf = cf = { event->tfinger.x * DisplayInfo::Get().RenderW,
+					   event->tfinger.y * DisplayInfo::Get().RenderH };
+			if (not isPointInBound(cf.x, cf.y))
+			{
+				return false;
+			}
+		}
 
 		bool ft_handled = false;
 		for (auto& ft : header_footer) {
@@ -8069,6 +8915,20 @@ public:
 			if (finger_down and not result and max_scroll > 0.f)
 			{
 				internal_handle_motion();
+				// --- Existing kinetic / manual scroll code branch ---
+		// Wherever your code updates contentScrollY (dragging, fling, wheel handling outside ScrollView),
+		// after you mutate contentScrollY, call:
+				/*{
+					// Example after contentScrollY += dy;
+					// clamp contentScrollY to [0, max]
+					float contentLength = std::max(bounds.h, bounds.h + max_scroll);
+					contentScrollY = clampScroll(contentScrollY, 0.f, std::max(0.f, contentLength - bounds.h));
+					// move children visually (existing behavior)
+					updatePosByInternal(0.f, -(contentScrollY - previousContentScrollY));
+					// now update the ScrollView to match the manual move
+					syncScrollToView();
+					previousContentScrollY = contentScrollY; // keep your existing state
+				}*/
 				result or_eq true;
 				// movedDistance += {0.f, dy};
 				/*
@@ -8076,7 +8936,7 @@ public:
 				{
 					scrlAction = ScrollAction::None;
 				}*/
-				//GLogger.Log(Logger::Level::Debug, "internal handle motion");
+				// GLogger.Log(Logger::Level::Debug, "internal handle motion");
 			}
 		}
 		else if (event->type == EVT_MOUSE_MOTION)
@@ -8119,6 +8979,12 @@ public:
 
 	void onUpdate() override
 	{
+        for(auto* vw:childViews){
+            vw->onUpdate();
+        }
+
+        scroll.onUpdate();
+
 		for (auto& _editBox : editBox)
 		{
 			if (_editBox.isActive())
@@ -8193,6 +9059,10 @@ public:
 				// GLogger.Log(Logger::Level::Info,"cstd");
 				customDrawCallback(*this);
 			}
+
+			if (useScrollView) {
+				scrollView.draw(renderer);
+			}
 			redraw = false;
 			crt_.release(renderer);
 			transformToRoundedTexture(renderer, texture.get(), corner_radius);
@@ -8203,7 +9073,112 @@ public:
 		for (auto child : childViews)
 			child->draw();
 	}
+
+private:
+    inline void updateMaxScroll2(float val){
+        max_scroll = std::max(max_scroll, val - bounds.h);
+        if(not has_scroll_bar and val > bounds.h){
+            ScrollAttributes sAttr;
+            sAttr.rect={to_cust(97.f,bounds.w),0.f,to_cust(3.f,bounds.w), bounds.h};
+            sAttr.bg_color={100, 100, 100, 130};
+			sAttr.level_bar_color = { 200, 96, 33, 0xff };
+			sAttr.start_val = bounds.h;
+			sAttr.min_val = 0.f;
+			sAttr.max_val = bounds.h;
+			sAttr.orientation = Orientation::VERTICAL;
+            scroll.Build(this, sAttr);
+            has_scroll_bar=true;
+        }
+    }
+
+	ScrollView scrollView{};
+	bool useScrollView = false;
+	float scrollViewPrevOffset = 0.f;
+
+	// The cell keeps its own "content scroll" state (existing kinetic code likely updates this)
+	float contentScrollY = 0.f;           // pixels scrolled (0 .. max_scroll)
+	//float max_scroll = 0.f;               // existing maximum scroll value for content
+
+	// Helper: clamp offset to valid range
+	static inline float clampScroll(float v, float minV, float maxV) {
+		return std::min(std::max(v, minV), maxV);
+	}
+
+	// Call when the content layout changes (e.g. updateMaxScroll). Ensures ScrollView sizes match.
+	void ensureScrollViewSetup() {
+		if (!useScrollView) return;
+		float contentLength = std::max(bounds.h, bounds.h + max_scroll); // total content height
+		scrollView.setContentLength(contentLength);
+		scrollView.setViewportLength(bounds.h);
+		// ensure scrollView offset and contentScrollY are in-range and consistent
+		contentScrollY = clampScroll(contentScrollY, 0.f, std::max(0.f, contentLength - bounds.h));
+		scrollView.setScrollOffset(contentScrollY);
+		scrollViewPrevOffset = contentScrollY;
+	}
+
+	// Sync content -> ScrollView (call from your kinetic scroll code)
+	void syncScrollToView() {
+		if (!useScrollView) return;
+		// Keep ScrollView thumb in sync with contentScrollY
+		float contentLength = std::max(bounds.h, bounds.h + max_scroll);
+		scrollView.setContentLength(contentLength);
+		scrollView.setViewportLength(bounds.h);
+		float clamped = clampScroll(contentScrollY, 0.f, std::max(0.f, contentLength - bounds.h));
+		scrollView.setScrollOffset(clamped);
+		scrollViewPrevOffset = clamped;
+	}
+
+	// Sync ScrollView -> content (call after ScrollView reports changes)
+	void syncScrollFromView() {
+		if (!useScrollView) return;
+		float newOffset = scrollView.getScrollOffset();
+		newOffset = clampScroll(newOffset, 0.f, std::max(0.f, std::max(bounds.h, bounds.h + max_scroll) - bounds.h));
+		float delta = newOffset - scrollViewPrevOffset;
+		if (delta != 0.f) {
+			// when ScrollView moves down (offset increases), we need to move children up => negative
+			updatePosByInternal(0.f, -delta); // reuse your existing function that shifts children
+			contentScrollY = newOffset;
+			scrollViewPrevOffset = newOffset;
+			redraw = true; // ensure redraw (use your existing redraw flag)
+		}
+	}
+
+
+	// Replace the existing updateMaxScroll(...) implementation in Cell with this (or augment it)
+// This sets up a ScrollView when content exceeds the viewport.
+	inline void updateMaxScroll(float val) {
+		max_scroll = std::max(max_scroll, val - bounds.h);
+
+		// If content exceeds the cell height, create/use a ScrollView at the right edge
+		if (!useScrollView && val > bounds.h) {
+			// Build a ScrollView track on the right side (4% width) — tweak as needed
+			SDL_FRect svBounds = {
+				bounds.w - to_cust(2.f, bounds.w),
+				0.f,
+				to_cust(2.f, bounds.w),
+				bounds.h
+			};
+			scrollView.setBounds(svBounds);
+			// content length = total content height (visible area + max_scroll)
+			float contentLength = std::max(bounds.h, val);
+			scrollView.setContentLength(contentLength);
+			scrollView.setViewportLength(bounds.h);
+			useScrollView = true;
+			scrollViewPrevOffset = 0.f;
+			has_scroll_bar = true; // keep existing flag to indicate scrollbar presence
+		}
+		else if (useScrollView) {
+			// update ScrollView content size if needed
+			float contentLength = std::max(bounds.h, val);
+			scrollView.setContentLength(contentLength);
+			scrollView.setViewportLength(bounds.h);
+		}
+	}
+
 };
+
+
+
 
 struct CellBlockProps
 {
@@ -9071,7 +10046,7 @@ public:
 
 				if (dt <= 0.f)
 					dt = 0.000001f;
-				auto speed = ((SDL_fabsf(movedDistance.y) / dt) * 30.f);
+				auto speed = ((SDL_fabsf(movedDistance.y) / dt)*15);
 				if (speed <= 0.f)
 					speed = 0.000001f;
 				// SDL_Log("Speed: %f", speed);
@@ -9087,9 +10062,23 @@ public:
 					scroll_step = (float)speed / 4.f;
 				else
 					scroll_step = 10.f;*/
-				interpolated.setTransitionFunction(TransitionFunction::EaseOutQuad);
+				/*interpolated.setTransitionFunction(TransitionFunction::EaseOutQuad);
 				interpolated.setValue(speed);
-				interpolated.setDuration(speed / 8.f);
+				interpolated.setDuration(speed / 8.f);*/
+
+				// compute a sane fling magnitude
+				const float minFling = 1.f;
+				const float maxFling = 5000.f;
+				float fling = std::clamp(speed, minFling, maxFling);
+
+				// map fling magnitude to a reasonable duration (seconds) and clamp
+				// (higher fling -> slightly longer duration, but capped)
+				const float duration = std::clamp(fling / 100.0f, 0.05f, 4.0f);
+
+				interpolated.setTransitionFunction(TransitionFunction::EaseOutQuad);
+				interpolated.setValue(fling);
+				interpolated.setDuration(duration);
+
 				movedDistance = {0.f, 0.f};
 			}
 
@@ -9144,6 +10133,9 @@ public:
 		if (not enabled or isHidden())
 			return;
 		//	update_cells_with_async_images();
+		/*if (label == "inner cell block") {
+			GLogger.Log(Logger::Level::Info, "drawing [test inner-view shown] label:");
+		}*/
 		if (SIMPLE_RE_DRAW)
 		{
 			SIMPLE_RE_DRAW = false;
@@ -9527,18 +10519,20 @@ private:
 };
 
 
+
+
 class Select : public Context
 {
 public:
 	struct Props
 	{
-		SDL_FRect rect{0.f, 0.f, 0.f, 0.f};
-		SDL_FRect inner_block_rect{0.f, 0.f, 0.f, 0.f};
-		SDL_FRect text_margin{0.f, 0.f, 0.f, 0.f};
-		SDL_Color text_color{0x00, 0x00, 0x00, 0xff};
-		SDL_Color bg_color{0xff, 0xff, 0xff, 0xff};
-		SDL_Color inner_block_bg_color{0xff, 0xff, 0xff, 0xff};
-		SDL_Color on_hover_color{0x00,0x00,0x00,0x00};
+		SDL_FRect rect{ 0.f, 0.f, 0.f, 0.f };
+		SDL_FRect inner_block_rect{ 0.f, 0.f, 0.f, 0.f };
+		SDL_FRect text_margin{ 0.f, 0.f, 0.f, 0.f };
+		SDL_Color text_color{ 0x00, 0x00, 0x00, 0xff };
+		SDL_Color bg_color{ 0xff, 0xff, 0xff, 0xff };
+		SDL_Color inner_block_bg_color{ 0xff, 0xff, 0xff, 0xff };
+		SDL_Color on_hover_color{ 0x00,0x00,0x00,0x00 };
 		float border_size = 1.f;
 		float corner_radius = 1.f;
 		int maxValues = 1;
@@ -9552,33 +10546,35 @@ public:
 		std::string value = "";
 		std::string img = "";
 		std::any user_data;
+		std::vector<Value> inner_values;
 	};
 
 public:
-	CellBlock *getInnerBlock() { return &valuesBlock; }
-	Cell *getInnerCell() { return &viewValue; }
+	CellBlock* getInnerBlock() { return &valuesBlock; }
+	Cell* getInnerCell() { return &viewValue; }
 
-	IView *getView()
+	IView* getView()
 	{
 		return viewValue.getView();
 	}
 
-	IView *show()
+	IView* show()
 	{
 		return viewValue.show();
 	}
 
-	IView *hide()
+	IView* hide()
 	{
 		return viewValue.hide();
 	}
 
+    std::size_t size(){ return values_.size(); }
+
 public:
-	Select &Build(Context *_context, Select::Props _props, std::vector<Value> _values, std::size_t _default = 0)
+	Select& Build(Context* _context, Select::Props _props, std::vector<Value> _values, std::size_t _default = 0)
 	{
 		Context::setContext(_context);
 		Context::setView(viewValue.getView());
-		props = _props;
 		// if any of _values contains img then add img padding to all value cells
 		const auto bounds = _props.rect;
 		/*_props.inner_block_rect.x = bounds.x;
@@ -9588,7 +10584,7 @@ public:
 		std::size_t _max_values = _values.size();
 		_props.inner_block_rect.x = bounds.x + _props.inner_block_rect.x;
 		_props.inner_block_rect.y = bounds.y + bounds.h + 1.f;
-		
+
 		// if all values rect dimensions arent set we defaut
 		if (_props.inner_block_rect.w <= 0.f)
 		{
@@ -9601,6 +10597,7 @@ public:
 			// tmpH = std::clamp();
 			_props.inner_block_rect.h = bounds.h * tmpH;
 		}
+		props = _props;
 
 		viewValue.setContext(_context);
 		viewValue.bg_color = _props.bg_color;
@@ -9612,50 +10609,115 @@ public:
 				{//.mem_font = Font::OpenSansSemiBold,
 				 .rect = {2.f, 5.f, 96.f, 90.f},
 				 .textAttributes = {values_[_default].value, props.text_color, {0, 0, 0, 0}},
-				 .gravity = Gravity::Left});
+				 .gravity = Gravity::Left });
 		}
 
-		viewValue.registerCustomEventHandlerCallback([this](Cell &_cell) -> bool
-													 {
-			viewValue.prevent_default_behaviour = true;
-			if (valuesBlock.handleEvent())
+		viewValue.registerCustomEventHandlerCallback([this](Cell& _cell) -> bool
 			{
-				return true;
-			}
-			if (event->type == SDL_KEYDOWN)
-			{
-				if (event->key.keysym.scancode == SDL_SCANCODE_AC_BACK && not valuesBlock.isHidden())
+				viewValue.prevent_default_behaviour = true;
+				if (valuesBlock.handleEvent())
 				{
-					valuesBlock.hide();
 					return true;
 				}
-			}
-			if (event->type == EVT_FINGER_DOWN)
-			{
-				//mouse point
-				auto mp = SDL_FPoint{event->tfinger.x * DisplayInfo::Get().RenderW,
-									 event->tfinger.y * DisplayInfo::Get().RenderH};
-				//SDL_Log("d:%f,%f", mp.x, mp.y);
-				//SDL_Log("s:%f,%f,%f,%f", _cell.bounds.x, _cell.bounds.y, _cell.bounds.w, _cell.bounds.h);
-				if (_cell.isPointInBound(mp.x, mp.y) /* or p2*/)
+				if (event->type == SDL_KEYDOWN)
 				{
-					viewValue.childViews[0]->toggleView();
-					return true;
-				}
-				else
-				{
-					if (not valuesBlock.isHidden())
+					if (event->key.keysym.scancode == SDL_SCANCODE_AC_BACK && not valuesBlock.isHidden())
 					{
 						valuesBlock.hide();
 						return true;
 					}
-					valuesBlock.hide();
 				}
+				if (event->type == EVT_FINGER_DOWN)
+				{
+					//mouse point
+					auto mp = SDL_FPoint{ event->tfinger.x * DisplayInfo::Get().RenderW,
+										 event->tfinger.y * DisplayInfo::Get().RenderH };
+					//SDL_Log("d:%f,%f", mp.x, mp.y);
+					//SDL_Log("s:%f,%f,%f,%f", _cell.bounds.x, _cell.bounds.y, _cell.bounds.w, _cell.bounds.h);
+					if (_cell.isPointInBound(mp.x, mp.y) /* or p2*/)
+					{
+						viewValue.childViews[0]->toggleView();
+						return true;
+					}
+					else
+					{
+						if (not valuesBlock.isHidden())
+						{
+							valuesBlock.hide();
+							return true;
+						}
+						valuesBlock.hide();
+					}
+				}
+				return false; });
+		auto addBlock = [this, &bounds, on_hover_col = _props.on_hover_color](Cell& cell, CellBlock& cb) {
+			cb.setCellRect(cell, 1, bounds.h, 0.f, 1.f);
+			cell.bg_color = viewValue.bg_color;
+			cell.onHoverBgColor = on_hover_col;
+			cell.highlightOnHover = true;
+			cell.addTextBox(
+				{//.mem_font = Font::OpenSansSemiBold,
+				 .rect = {2.f, 5.f, 96.f, 90.f},
+				 .textAttributes = {values_[cell.index].value, props.text_color, {0, 0, 0, 0}},
+				 .gravity = Gravity::Left });
+
+			cell.textBox[0].onClick([this, &cell](TextBox* _textbox)
+				{
+					viewValue.textBox.pop_back();
+					selectedVal = cell.index;
+					viewValue.addTextBox(
+						{//.mem_font = Font::OpenSansSemiBold,
+						 .rect = {2.f, 5.f, 96.f, 90.f},
+						 .textAttributes = {values_[selectedVal].value, props.text_color, {0, 0, 0, 0}},
+						 .gravity = Gravity::Left });
+					if (layers.contains(cell.index)) {
+						layers[cell.index].show();
+					}
+					else {
+						valuesBlock.hide();
+					}
+
+					if (onSelectCB != nullptr)
+					{
+						onSelectCB(values_[selectedVal]);
+					}
+					return true;
+				});
+
+			// check for inner layers
+			if (not values_[cell.index].inner_values.empty()) {
+				layers[cell.index] = CellBlock{};
+				auto& inner_cb = layers[cell.index];
+
+				inner_cb.setOnFillNewCellData(
+					[_inner_values = values_[cell.index].inner_values, &inner_cb, this, bounds, on_hover_col = on_hover_col](Cell& _cell)
+					{
+						inner_cb.setCellRect(_cell, 1, bounds.h, 0.f, 1.f);
+						_cell.bg_color = viewValue.bg_color;
+						_cell.onHoverBgColor = on_hover_col;
+						_cell.highlightOnHover = true;
+						_cell.addTextBox(
+							{//.mem_font = Font::OpenSansSemiBold,
+							 .rect = {2.f, 5.f, 96.f, 90.f},
+							 .textAttributes = {_inner_values[_cell.index].value, props.text_color, {0, 0, 0, 0}},
+							 .gravity = Gravity::Left });
+						// GLogger.Log(Logger::Level::Info, "trx:" + std::to_string(_cell.textBox[0].getRealPosX()) + "  try:" + std::to_string(_cell.textBox[0].getRealPosY()));
+					});
+				auto rect = props.inner_block_rect;
+				rect.x -= rect.w;
+				rect.x -= 2.f;
+				inner_cb.Build(cell.getContext(), values_[cell.index].inner_values.size(), 1,
+					{ .rect = rect,
+					 .cornerRadius = props.corner_radius,
+					 .bgColor = props.inner_block_bg_color });
+				inner_cb.label = "inner cell block";
+				cell.addChildView(inner_cb.getView()->show());
 			}
-			return false; });
+
+			};
 
 		valuesBlock.setOnFillNewCellData(
-			[this, bounds, on_hover_col=_props.on_hover_color](Cell &_cell)
+			[this, bounds, on_hover_col = _props.on_hover_color](Cell& _cell)
 			{
 				valuesBlock.setCellRect(_cell, 1, bounds.h, 0.f, 1.f);
 				_cell.bg_color = viewValue.bg_color;
@@ -9665,29 +10727,68 @@ public:
 					{//.mem_font = Font::OpenSansSemiBold,
 					 .rect = {2.f, 5.f, 96.f, 90.f},
 					 .textAttributes = {values_[_cell.index].value, props.text_color, {0, 0, 0, 0}},
-					 .gravity = Gravity::Left});
+					 .gravity = Gravity::Left });
 				// GLogger.Log(Logger::Level::Info, "trx:" + std::to_string(_cell.textBox[0].getRealPosX()) + "  try:" + std::to_string(_cell.textBox[0].getRealPosY()));
-				_cell.textBox[0].onClick([this, &_cell](TextBox *_textbox)
-										 {
-					viewValue.textBox.pop_back();
-					selectedVal = _cell.index;
-					viewValue.addTextBox(
-						{//.mem_font = Font::OpenSansSemiBold,
-						 .rect = {2.f, 5.f, 96.f, 90.f},
-						 .textAttributes = {values_[selectedVal].value, props.text_color, {0, 0, 0, 0}},
-						 .gravity = Gravity::Left});
-					valuesBlock.hide();
-					if (onSelectCB != nullptr)
+				_cell.textBox[0].onClick([this, &_cell](TextBox* _textbox)
 					{
-						onSelectCB(values_[selectedVal]);
-					}
-					return true;
+						viewValue.textBox.pop_back();
+						selectedVal = _cell.index;
+						viewValue.addTextBox(
+							{//.mem_font = Font::OpenSansSemiBold,
+							 .rect = {2.f, 5.f, 96.f, 90.f},
+							 .textAttributes = {values_[selectedVal].value, props.text_color, {0, 0, 0, 0}},
+							 .gravity = Gravity::Left });
+						if (layers.contains(_cell.index)) {
+							layers[_cell.index].show();
+						}
+						else {
+							valuesBlock.hide();
+						}
+
+						if (onSelectCB != nullptr)
+						{
+							onSelectCB(values_[selectedVal]);
+						}
+						return true;
 					});
+
+				// check for inner layers
+				if (not values_[_cell.index].inner_values.empty()) {
+					layers[_cell.index] = CellBlock{};
+					auto& cb = layers[_cell.index];
+
+					cb.setOnFillNewCellData(
+						[_inner_values= values_[_cell.index].inner_values, &cb,this, bounds, on_hover_col = on_hover_col](Cell& _cell)
+						{
+							cb.setCellRect(_cell, 1, bounds.h, 0.f, 1.f);
+							_cell.bg_color = viewValue.bg_color;
+							_cell.onHoverBgColor = on_hover_col;
+							_cell.highlightOnHover = true;
+							_cell.addTextBox(
+								{//.mem_font = Font::OpenSansSemiBold,
+								 .rect = {2.f, 5.f, 96.f, 90.f},
+								 .textAttributes = {_inner_values[_cell.index].value, props.text_color, {0, 0, 0, 0}},
+								 .gravity = Gravity::Left });
+							// GLogger.Log(Logger::Level::Info, "trx:" + std::to_string(_cell.textBox[0].getRealPosX()) + "  try:" + std::to_string(_cell.textBox[0].getRealPosY()));
+						});
+					auto rect = props.inner_block_rect;
+					rect.x -= rect.w;
+					rect.x -= 2.f;
+					cb.Build(_cell.getContext(), values_[_cell.index].inner_values.size(), 1,
+						{ .rect = rect,
+						 .cornerRadius = props.corner_radius,
+						 .bgColor = props.inner_block_bg_color });
+					cb.label = "inner cell block";
+					_cell.addChildView(cb.getView()->show());
+				}
 			});
 		valuesBlock.Build(_context, _max_values, 1,
-						  {.rect = _props.inner_block_rect,
-						   .cornerRadius = _props.corner_radius,
-						   .bgColor = _props.inner_block_bg_color});
+			{ .rect = _props.inner_block_rect,
+			 .cornerRadius = _props.corner_radius,
+			 .bgColor = _props.inner_block_bg_color,
+			.cellSpacingX=0.f,
+			.cellSpacingY=0.f
+			});
 		valuesBlock.auto_hide = true;
 		/*
 		valuesBlock.getView()->rel_x=bounds.x;
@@ -9697,8 +10798,8 @@ public:
 		return *this;
 	}
 
-	Select &
-	Build(Context *_context, Select::Props _props, int _max_values, const int &_numVerticalGrid, std::function<void(Cell &)> _valueCellOnCreateCallback)
+	Select&
+		Build(Context* _context, Select::Props _props, int _max_values, const int& _numVerticalGrid, std::function<void(Cell&)> _valueCellOnCreateCallback)
 	{
 		Context::setContext(_context);
 		Context::setView(viewValue.getView());
@@ -9707,7 +10808,7 @@ public:
 		if (_props.inner_block_rect.w <= 0.f or _props.inner_block_rect.w)
 		{
 			float tmpH = _max_values >= 4 ? 4.f : static_cast<float>(_max_values);
-			_props.inner_block_rect = {bounds.x, bounds.y + bounds.h, bounds.w, bounds.h * tmpH};
+			_props.inner_block_rect = { bounds.x, bounds.y + bounds.h, bounds.w, bounds.h * tmpH };
 		}
 
 		viewValue.setContext(_context);
@@ -9717,13 +10818,13 @@ public:
 
 		valuesBlock.setOnFillNewCellData(_valueCellOnCreateCallback);
 		valuesBlock.Build(_context, _max_values, _numVerticalGrid,
-						  {.rect = _props.inner_block_rect,
-						   .bgColor = _props.bg_color});
+			{ .rect = _props.inner_block_rect,
+			 .bgColor = _props.bg_color });
 
 		return *this;
 	}
 
-	auto onSelect(std::function<void(Value &)> onselect)
+	auto onSelect(std::function<void(Value&)> onselect)
 	{
 		onSelectCB = onselect;
 	}
@@ -9738,7 +10839,7 @@ public:
 				{//.mem_font = Font::OpenSansSemiBold,
 				 .rect = {2.f, 5.f, 96.f, 90.f},
 				 .textAttributes = {newVal.value, {0, 0, 0, 0xff}, {0, 0, 0, 0}},
-				 .gravity = Gravity::Left});
+				 .gravity = Gravity::Left });
 		}
 		values_.emplace_back(newVal);
 		valuesBlock.updateNoMaxCells(values_.size());
@@ -9762,13 +10863,18 @@ public:
 				{//.mem_font = Font::OpenSansSemiBold,
 				 .rect = {2.f, 5.f, 96.f, 90.f},
 				 .textAttributes = {values_[defaultVal].value, {0, 0, 0, 0xff}, {0, 0, 0, 0}},
-				 .gravity = Gravity::Left});
+				 .gravity = Gravity::Left });
 		}
 	}
 
-	Value &getSelectedValue()
+	Value& getSelectedValue()
 	{
 		return values_[selectedVal];
+	}
+
+	Value& getValue(std::size_t index)
+	{
+		return values_[index];
 	}
 
 	std::size_t getSelectedValueIndex() const
@@ -9778,7 +10884,7 @@ public:
 
 	std::vector<Value> getAllValues() { return values_; }
 
-	bool hasValues() { return not values_.empty(); }
+	bool empty() { return values_.empty(); }
 
 	void reset() { values_ = {}; }
 
@@ -9794,19 +10900,25 @@ public:
 	void draw()
 	{
 		viewValue.draw();
+		for (auto& [a, b] : layers) {
+			b.draw();
+		}
 	}
 
 private:
 	Cell viewValue{};
 	CellBlock valuesBlock{};
+	std::unordered_map<std::size_t, CellBlock> layers{};
 	Props props;
-	std::vector<Value> values_;
+	std::vector<Value> values_{};
 	std::size_t selectedVal = 0;
 	std::size_t defaultVal = 0;
 	/// @todo implemment the show on over funtionality
 	bool show_all_on_hover = false;
-	std::function<void(Value &)> onSelectCB = nullptr;
+	std::function<void(Value&)> onSelectCB = nullptr;
 };
+
+
 
 using MenuProps = CellBlockProps;
 
