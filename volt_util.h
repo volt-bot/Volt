@@ -1,5 +1,3 @@
-// #ifndef VOLT_UTIL_H
-// #define VOLT_UTIL_H
 #pragma once
 
 #include <atomic>
@@ -16,10 +14,8 @@
 #include <algorithm>
 #include <memory>
 #include <future>
-#include <random>
 #include <any>
 #include <optional>
-#include <execution>
 #include <thread>
 #include <stdexcept>
 #include <unordered_map>
@@ -27,15 +23,9 @@
 #include <filesystem>
 #include <functional>
 #include <mutex>
-#include <shared_mutex>
 #include <unordered_set>
-#include <bitset>
 #include <clocale>
-#include <charconv>
-#include <cstring>
 #include <cstdlib>
-#include <locale>
-#include <codecvt>
 #include <type_traits>
 #include <typeindex>
 #ifdef _MSC_VER
@@ -451,24 +441,35 @@ constexpr inline void concat_rng(TargetContainer &target, InputIt first, InputIt
 	std::copy(first, last, std::back_inserter(target));
 }
 
+/*
+#include <format>
+inline std::string formatZoned_Cpp20(const std::chrono::system_clock::time_point& tp,
+	const std::string& zone = "") {
+	using namespace std::chrono;
+	const auto* tz = zone.empty() ? current_zone() : locate_zone(zone);
+	std::chrono::zoned_time z{ tz, tp };
+	return std::format("{:%Y-%m-%d %H:%M:%S}", z); // requires chrono format support
+}
+*/
+
+
 // get current date YYYY-MM-DD
 std::string getDateStr()
 {
 	const std::chrono::time_point<std::chrono::system_clock> now{ std::chrono::system_clock::now() };
 	// Get the time
 	std::time_t tt = std::chrono::system_clock::to_time_t(now);
+	std::tm tm{};
 #ifdef _MSC_VER
-	//std::tm* tm = nullptr;
-	//localtime_s(tm,&tt);
-	std::tm* tm = std::localtime(&tt);
+	localtime_s(&tm, &tt);
 #else
-	std::tm* tm = std::localtime(&tt);
+	localtime_r(&tt, &tm);
 #endif
 	std::stringstream timeAdded;
 	timeAdded
-		<< std::setfill('0') << std::setw(4) << tm->tm_year + 1900 << "-"
-		<< std::setfill('0') << std::setw(2) << tm->tm_mon + 1 << "-"
-		<< std::setfill('0') << std::setw(2) << tm->tm_mday;
+		<< std::setfill('0') << std::setw(4) << tm.tm_year + 1900 << "-"
+		<< std::setfill('0') << std::setw(2) << tm.tm_mon + 1 << "-"
+		<< std::setfill('0') << std::setw(2) << tm.tm_mday;
 	return timeAdded.str();
 }
 
@@ -479,21 +480,20 @@ inline std::string getDateAndTimeStr()
 
 	// Get the time
 	std::time_t tt = std::chrono::system_clock::to_time_t(now);
+	std::tm tm{};
 #ifdef _MSC_VER
-	//std::tm* tm = nullptr;
-	//localtime_s(tm,&tt);
-	std::tm* tm = std::localtime(&tt);
+	localtime_s(&tm, &tt);
 #else
-	std::tm* tm = std::localtime(&tt);
+	localtime_r(&tt, &tm);
 #endif
 	std::stringstream timeAdded;
 	timeAdded
-		<< std::setfill('0') << std::setw(4) << tm->tm_year + 1900 << "-"
-		<< std::setfill('0') << std::setw(2) << tm->tm_mon + 1 << "-"
-		<< std::setfill('0') << std::setw(2) << tm->tm_mday << " "
-		<< std::setfill('0') << std::setw(2) << tm->tm_hour << ":"
-		<< std::setfill('0') << std::setw(2) << tm->tm_min << ":"
-		<< std::setfill('0') << std::setw(2) << tm->tm_sec;
+		<< std::setfill('0') << std::setw(4) << tm.tm_year + 1900 << "-"
+		<< std::setfill('0') << std::setw(2) << tm.tm_mon + 1 << "-"
+		<< std::setfill('0') << std::setw(2) << tm.tm_mday << " "
+		<< std::setfill('0') << std::setw(2) << tm.tm_hour << ":"
+		<< std::setfill('0') << std::setw(2) << tm.tm_min << ":"
+		<< std::setfill('0') << std::setw(2) << tm.tm_sec;
 	// Combine date and time
 	//std::stringstream dateTimeAdded;
 	//dateTimeAdded <<std::to_string(ymd) << " " << timeAdded.str();
@@ -519,11 +519,10 @@ inline std::string toString(const T &v, const uint8_t decimals = 2)
 }
 
 // to upper using 0x20 || 32
-void printToUpper(std::string data) {
+inline void toUpper(std::string& data) {
 	for (auto& d : data) {
-		std::cout << (char)(d ^ 0x20);// << std::endl;
+		d=(char)(d ^ 0x20);
 	}
-	std::cout<<std::endl;
 }
 
 template <typename... Args>
@@ -576,6 +575,23 @@ std::string getTextFromFile(const std::string &filename)
 	file.read(&text[0], size);
 	file.close();
 	return text;
+}
+
+// returns the position of the most significant set bit using de Brujin sequence for efficiency
+constexpr inline uint32_t msb(uint32_t v) {
+	constexpr uint32_t POSITIONS[] =
+	{
+		0,9,1,10,13,21,2,29,11,14,16,18,22,25,3,30,
+		8,12,20,28,15,17,24,7,19,27,23,6,26,5,4,31
+	};
+
+	v |= v >> 1;
+	v |= v >> 2;
+	v |= v >> 4;
+	v |= v >> 8;
+	v |= v >> 16;
+
+	return POSITIONS[(v * 0x07C4ACDDu) >> 27];
 }
 
 // Define the structure for a Suffix Trie node
