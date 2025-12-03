@@ -406,6 +406,12 @@ auto DestroyTextureSafe = [](SDL_Texture *texture)
 	}
 };
 
+// get %val of ref
+template <typename T>
+constexpr inline T to_cust(const T& val, const T& ref) { return ((val * ref) / static_cast<decltype(val)>(100)); }
+
+void transformToRoundedTexture(SDL_Renderer* renderer, SDL_Texture* source_texture, float radius_percent);
+
 class Haptics
 {
 public:
@@ -487,6 +493,470 @@ private:
 	SharedHaptic haptic_dev = nullptr;
 	int effect_id = -1;
 };
+
+
+class TextAttributes
+{
+public:
+	TextAttributes() = default;
+
+	TextAttributes(const std::string& a_text, const SDL_Color a_text_col,
+		const SDL_Color& a_background_col) : text(a_text), text_color(a_text_col),
+		bg_color(a_background_col) {
+	}
+
+	std::string text;
+	SDL_Color bg_color;
+	SDL_Color text_color;
+
+	void setTextAttributes(const TextAttributes& text_attributes)
+	{
+		this->text = text_attributes.text;
+		this->bg_color = text_attributes.bg_color;
+		this->text_color = text_attributes.text_color;
+	}
+
+	TextAttributes& setText(const char* _text)
+	{
+		this->text = _text;
+		return *this;
+	}
+
+	TextAttributes& setTextColor(const SDL_Color& _textcolor)
+	{
+		this->text_color = _textcolor;
+		return *this;
+	}
+
+	TextAttributes& setTextBgColor(const SDL_Color& _text_bg_color)
+	{
+		this->bg_color = _text_bg_color;
+		return *this;
+	}
+};
+
+class FontAttributes
+{
+public:
+	std::string font_file;
+	uint8_t font_size = 0xff;
+	FontStyle font_style;
+
+	FontAttributes() = default;
+
+	FontAttributes(const std::string& a_font_file, const FontStyle& a_font_style,
+		const uint8_t& a_font_size) : font_file(a_font_file), font_size(a_font_size), font_style(a_font_style) {
+	}
+
+	void setFontAttributes(const FontAttributes& font_attributes)
+	{
+		this->font_file = font_attributes.font_file,
+			this->font_size = font_attributes.font_size,
+			this->font_style = font_attributes.font_style;
+	}
+
+	FontAttributes& setFontStyle(const FontStyle& a_fontstyle)
+	{
+		this->font_style = a_fontstyle;
+		return *this;
+	}
+
+	FontAttributes& setFontFile(const std::string& a_fontfile)
+	{
+		this->font_file = a_fontfile;
+		return *this;
+	}
+
+	FontAttributes& setFontSize(const uint8_t& a_fontsize)
+	{
+		this->font_size = a_fontsize;
+		return *this;
+	}
+};
+
+enum class Font
+{
+	ConsolasBold,
+	OpenSansRegular,
+	OpenSansSemiBold,
+	OpenSansBold,
+	OpenSansExtraBold,
+	RobotoBold,
+	SegoeUiEmoji,
+	// YuGothBold,
+};
+
+struct MemFont
+{
+	const unsigned char* font_data;
+	unsigned int font_data_size;
+	int font_size;
+	std::string font_name;
+};
+
+MemFont RobotoBold{
+	.font_data = ff_Roboto_Bold_ttf_data,
+	.font_data_size = ff_Roboto_Bold_ttf_len,
+	.font_size = 255,
+	.font_name = "roboto-bold" };
+
+std::unordered_map<Font, MemFont*> Fonts{
+	//{Font::ConsolasBold, &ConsolasBold},
+	//{Font::OpenSansRegular, &OpenSansRegular},
+	//{{Font::OpenSansSemiBold, &OpenSansSemiBold},
+	//{Font::OpenSansBold, &OpenSansBold},
+	//{Font::OpenSansExtraBold, &OpenSansExtraBold},
+	{Font::RobotoBold, &RobotoBold},
+	//{Font::SegoeUiEmoji, &SegoeUiEmoji},
+	//{Font::YuGothBold,&YuGothBold},
+};
+
+class FontStore
+{
+public:
+	~FontStore()
+	{
+		for (auto& [path_, font] : fonts)
+			TTF_CloseFont(font);
+	}
+
+	TTF_Font* operator[](const std::pair<std::string, int>& font)
+	{
+		const std::string key = font.first + std::to_string(font.second);
+		if (fonts.count(key) == 0)
+		{
+			if (!(fonts[key] = TTF_OpenFont(font.first.c_str(), font.second)))
+			{
+				SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", TTF_GetError());
+				fonts.erase(key);
+				return nullptr;
+			}
+			else
+			{
+				GLogger.Log(Logger::Level::Info, "New FileFont Loaded:", key);
+				// TTF_SetFontSDF(fonts[key], SDL_TRUE);
+				// TTF_SetFontOutline(fonts[key], m_font_outline);
+				// TTF_SetFontKerning(fonts[key], 0);
+				// TTF_SetFontHinting(fonts[key], TTF_HINTING_LIGHT_SUBPIXEL);
+				// TTF_SetFontHinting(fonts[key], TTF_HINTING_MONO);
+			}
+		}
+		return fonts[key];
+	}
+
+	TTF_Font* operator[](const MemFont& mem_font)
+	{
+		const std::string key = mem_font.font_name + std::to_string(mem_font.font_size);
+		if (fonts.count(key) == 0)
+		{
+			// GLogger.Log(Logger::Level::Info, "FT loading " + key);
+			SDL_RWops* rw_ = SDL_RWFromConstMem(mem_font.font_data, mem_font.font_data_size);
+			auto* ft = TTF_OpenFontRW(rw_, SDL_TRUE, mem_font.font_size);
+			if (!ft)
+			{
+				GLogger.Log(Logger::Level::Info, "TTF_OpenFontRW:", std::string(TTF_GetError()));
+				return nullptr;
+			}
+			else
+			{
+				fonts[key] = ft;
+				GLogger.Log(Logger::Level::Info, "New MemFont Loaded:", key);
+				// TTF_SetFontSDF(fonts[key], SDL_TRUE);
+				// TTF_SetFontOutline(fonts[key], m_font_outline);
+				// TTF_SetFontKerning(fonts[key], 1);
+				TTF_SetFontHinting(fonts[key], TTF_HINTING_MONO);
+			}
+		}
+		return fonts[key];
+	}
+
+private:
+	std::unordered_map<std::string, TTF_Font*> fonts;
+};
+
+class FontSystem
+{
+public:
+	FontSystem(const FontSystem&) = delete;
+
+	FontSystem(const FontSystem&&) = delete;
+
+	static FontSystem& Get()
+	{
+		static FontSystem instance;
+		return instance;
+	}
+
+	FontSystem& setFontFile(const char* font_file) noexcept
+	{
+		this->m_font_attributes.font_file = font_file;
+		return *this;
+	}
+
+	FontSystem& setFontSize(const uint8_t& font_size) noexcept
+	{
+		this->m_font_attributes.font_size = font_size;
+		return *this;
+	}
+
+	FontSystem& setFontStyle(const FontStyle& font_style) noexcept
+	{
+		this->m_font_attributes.font_style = font_style;
+		return *this;
+	}
+
+	FontSystem& setCustomFontStyle(const int& custom_font_style) noexcept
+	{
+		this->m_custom_fontstyle = custom_font_style;
+		return *this;
+	}
+
+	FontSystem& setFontAttributes(const FontAttributes& font_attributes,
+		const int& custom_fontstyle = 0) noexcept
+	{
+		this->m_font_attributes = font_attributes;
+		this->m_custom_fontstyle = custom_fontstyle;
+		return *this;
+	}
+
+	FontSystem& setFontAttributes(const MemFont& _mem_ft, const FontStyle& ft_style_, const int& custom_fontstyle = 0) noexcept
+	{
+		this->m_font_attributes.setFontAttributes(FontAttributes{ _mem_ft.font_name, ft_style_, static_cast<uint8_t>(_mem_ft.font_size) });
+		this->m_custom_fontstyle = custom_fontstyle;
+		return *this;
+	}
+
+	TTF_Font* getFont(const std::string& font_file, const int& font_size)
+	{
+		return fontStore[{font_file, font_size}];
+	}
+
+	TTF_Font* getFont(const MemFont& _mem_ft)
+	{
+		return fontStore[_mem_ft];
+	}
+
+	std::optional<UniqueTexture> genTextTextureUnique(SDL_Renderer* renderer, const char* text, const SDL_Color text_color)
+	{
+		if (!genTextCommon())
+			return {};
+		SDL_Surface* textSurf = TTF_RenderUTF8_Blended(m_font, text, text_color);
+		if (!textSurf)
+			SDL_Log("%s", SDL_GetError());
+		auto result = CreateUniqueTextureFromSurface(renderer, textSurf);
+		if (!result.get())
+			SDL_Log("%s", SDL_GetError());
+		Async::GThreadPool.enqueue([](SDL_Surface* surface)
+			{SDL_DestroySurface(surface); surface = nullptr; },
+			textSurf);
+		return result;
+	}
+
+	SDL_Texture* genTextTextureRaw(SDL_Renderer* renderer, const char* text, const SDL_Color text_color)
+	{
+		if (!genTextCommon())
+			return {};
+		SDL_Surface* textSurf = TTF_RenderUTF8_Blended(m_font, text, text_color);
+		if (!textSurf)
+			SDL_Log("%s", SDL_GetError());
+		auto result = SDL_CreateTextureFromSurface(renderer, textSurf);
+		if (!result)
+			SDL_Log("%s", SDL_GetError());
+		Async::GThreadPool.enqueue([](SDL_Surface* surface)
+			{SDL_DestroySurface(surface); surface = nullptr; },
+			textSurf);
+		return result;
+	}
+
+	std::optional<UniqueTexture> genTextTextureUniqueV2(SDL_Renderer* renderer, const char* text, const SDL_Color text_color, float _w, float _h, bool wordWrap = false)
+	{
+		if (!genTextCommon())
+			return {};
+		std::vector<std::pair<SDL_FRect, SDL_Texture*>> finalGlyphs{};
+		int maxW = 0, maxH = 0;
+		int length = strlen(text);
+		int textOffsetY = 0;
+		int textOffsetX = 0;
+		int lineHeight = TTF_FontLineSkip(m_font);
+
+		for (int i = 0; i < length;)
+		{
+			int wordWidth = 0;
+			int wordLength = 0;
+			int advance;
+			for (int j = i; j < length && text[j] != ' ' && text[j] != '\n'; ++j)
+			{
+				TTF_GlyphMetrics(m_font, text[j], NULL, NULL, NULL, NULL, &advance);
+				wordWidth += advance;
+				++wordLength;
+			}
+
+			if (wordWrap && textOffsetX + wordWidth > _w)
+			{
+				textOffsetX = 0;
+				textOffsetY += lineHeight;
+			}
+
+			for (int j = 0; j < wordLength; ++j)
+			{
+				if (text[i + j] == '\n')
+				{
+					textOffsetX = 0;
+					textOffsetY += lineHeight;
+					break;
+				}
+
+				TTF_GlyphMetrics(m_font, text[i + j], NULL, NULL, NULL, NULL, &advance);
+				SDL_Surface* textSurf = TTF_RenderGlyph_Blended(m_font, text[i + j], text_color);
+				SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, textSurf);
+				std::pair<SDL_FRect, SDL_Texture*> gl_{ {(float)textOffsetX, (float)textOffsetY, (float)textSurf->w, (float)textSurf->h}, texture };
+				finalGlyphs.emplace_back(gl_);
+				textOffsetX += advance;
+				if (textOffsetX + textSurf->w >= maxW)
+					maxW = textOffsetX + textSurf->w;
+				Async::GThreadPool.enqueue([](SDL_Surface* surface)
+					{SDL_DestroySurface(surface); surface = nullptr; }, textSurf);
+			}
+
+			if (text[i + wordLength] == ' ')
+			{
+				TTF_GlyphMetrics(m_font, ' ', NULL, NULL, NULL, NULL, &advance);
+				textOffsetX += advance;
+				++wordLength;
+			}
+
+			i += wordLength;
+		}
+
+		CacheRenderTarget crt_(renderer);
+		auto result = CreateUniqueTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, maxW, (int)_h);
+		SDL_SetTextureBlendMode(result.get(), SDL_BLENDMODE_BLEND);
+		SDL_SetRenderTarget(renderer, result.get());
+		RenderClear(renderer, 0, 0, 0, 0);
+		for (auto& [grect, gtexture] : finalGlyphs)
+		{
+			RenderTexture(renderer, gtexture, NULL, (const SDL_FRect*)&grect);
+			// SDL_DestroyTexture(gtexture);
+			Async::GThreadPool.enqueue([](SDL_Texture* dtex)
+				{SDL_DestroyTexture(dtex); dtex = nullptr; }, gtexture);
+		}
+		crt_.release(renderer);
+
+		return result;
+	}
+
+	std::optional<SharedTexture> genTextTextureShared(SDL_Renderer* renderer, const char* text, const SDL_Color text_color)
+	{
+		if (!genTextCommon())
+			return {};
+		SDL_Surface* textSurf = TTF_RenderUTF8_Blended(m_font, text, text_color);
+		if (!textSurf)
+			SDL_Log("%s", SDL_GetError());
+		auto result = CreateSharedTextureFromSurface(renderer, textSurf);
+		if (!result.get())
+			SDL_Log("%s", SDL_GetError());
+		Async::GThreadPool.enqueue([](SDL_Surface* surface)
+			{SDL_DestroySurface(surface); surface = nullptr; },
+			textSurf);
+		return result;
+	}
+
+	std::optional<UniqueTexture> u8GenTextTextureUnique(SDL_Renderer* renderer, const char8_t* text, const SDL_Color text_color)
+	{
+		if (!genTextCommon())
+			return {};
+
+		SDL_Surface* textSurf = TTF_RenderUTF8_Blended(m_font, (char*)text, text_color);
+		if (!textSurf)
+			SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", SDL_GetError());
+		UniqueTexture result = CreateUniqueTextureFromSurface(renderer, textSurf);
+		SDL_DestroySurface(textSurf);
+		textSurf = nullptr;
+		if (!result.get())
+		{
+			SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", SDL_GetError());
+			return {};
+		}
+		return result;
+	}
+
+private:
+	FontSystem()
+	{
+		this->m_font_attributes = FontAttributes{ "", FontStyle::Normal, 255 };
+		m_font_outline = 0;
+		m_custom_fontstyle = TTF_STYLE_NORMAL;
+	}
+
+	bool genTextCommon()
+	{
+		if (m_font_attributes.font_file.empty())
+		{
+			GLogger.Log(Logger::Level::Info, "FontSystem Error: Invlaid/empty fontfile!");
+			return false;
+		}
+
+		m_font = fontStore[{m_font_attributes.font_file, m_font_attributes.font_size}];
+		if (m_font == nullptr)
+		{
+			GLogger.Log(Logger::Level::Info, "Error generating text texture: NULL FONT");
+			return false;
+		}
+
+		switch (m_font_attributes.font_style)
+		{
+			// using enum FontStyle;
+		case FontStyle::Normal:
+			TTF_SetFontStyle(m_font, TTF_STYLE_NORMAL);
+			break;
+		case FontStyle::Bold:
+			TTF_SetFontStyle(m_font, TTF_STYLE_BOLD);
+			break;
+		case FontStyle::Italic:
+			TTF_SetFontStyle(m_font, TTF_STYLE_ITALIC);
+			break;
+		case FontStyle::Underline:
+			TTF_SetFontStyle(m_font, TTF_STYLE_UNDERLINE);
+			break;
+		case FontStyle::StrikeThrough:
+			TTF_SetFontStyle(m_font, TTF_STYLE_STRIKETHROUGH);
+			break;
+		case FontStyle::BoldUnderline:
+			TTF_SetFontStyle(m_font, TTF_STYLE_BOLD | TTF_STYLE_UNDERLINE);
+			break;
+		case FontStyle::BoldStrikeThrough:
+			TTF_SetFontStyle(m_font, TTF_STYLE_BOLD | TTF_STYLE_STRIKETHROUGH);
+			break;
+		case FontStyle::ItalicBold:
+			TTF_SetFontStyle(m_font, TTF_STYLE_ITALIC | TTF_STYLE_BOLD);
+			break;
+		case FontStyle::ItalicUnderline:
+			TTF_SetFontStyle(m_font, TTF_STYLE_ITALIC | TTF_STYLE_UNDERLINE);
+			break;
+		case FontStyle::ItalicStrikeThrough:
+			TTF_SetFontStyle(m_font, TTF_STYLE_ITALIC | TTF_STYLE_STRIKETHROUGH);
+			break;
+		case FontStyle::Custom:
+			TTF_SetFontStyle(m_font, m_custom_fontstyle);
+			break;
+		default:
+			TTF_SetFontStyle(m_font, TTF_STYLE_NORMAL);
+			break;
+		}
+
+		return true;
+	}
+
+	TTF_Font* m_font;
+	FontStore fontStore;
+	FontAttributes m_font_attributes;
+	int m_font_outline = 0;
+	int m_custom_fontstyle;
+};
+
+
+
+
 
 struct IViewAttributes
 {
@@ -966,6 +1436,175 @@ protected:
 	SDL_Event *RedrawTriggeredEvent;
 };
 
+class CharStore :public Context {
+public:
+	CharStore() = default;
+	void setProps(Context* cntx, FontAttributes& fa, int _custom_ft_style = 0) {
+		Context::setContext(cntx);
+		fattr = fa;
+		custom_ft_style = _custom_ft_style;
+	}
+
+	SDL_Texture* getChar(std::string& _txt, SDL_Color& color) {
+		if (_txt.empty()) {
+			GLogger.Log(Logger::Level::Error, "CharStore::getChar invoked with empty string!");
+			return nullptr;
+		}
+		if (not char_textures.contains(_txt)) {
+			FontSystem::Get().setFontAttributes(fattr, custom_ft_style);
+			auto textTex = FontSystem::Get().genTextTextureRaw(renderer, _txt.c_str(), color);
+			if (textTex != nullptr) {
+				char_textures[_txt] = textTex;
+			}
+			else {
+				GLogger.Log(Logger::Level::Error, "CharStore::getChar::genText returned null!");
+				return nullptr;
+			}
+		}
+		return char_textures[_txt];
+	}
+
+	~CharStore() {
+		for (auto& [text, texture] : char_textures) {
+			SDL_DestroyTexture(texture);
+		}
+	}
+private:
+	std::unordered_map<std::string, SDL_Texture*> char_textures{};
+	FontAttributes fattr{};
+	int custom_ft_style = 0;
+};
+
+class ToastManager : public Context {
+public:
+	void Build(Context* _cntx, FontAttributes _fattr, SDL_FRect _app_bounds) {
+		setContext(_cntx);
+		vsync.setAdaptiveVsync(_cntx->adaptiveVsync);
+		fattr = _fattr;
+		fattr.font_size = std::clamp(fattr.font_size, (uint8_t)0, (uint8_t)254);
+		app_bounds = _app_bounds;
+
+		if (fattr.font_file.empty())
+		{
+			Fonts[mem_font]->font_size = fattr.font_size;
+			fattr.font_file = Fonts[mem_font]->font_name;
+			//tmpFont = FontSystem::Get().getFont(*Fonts[mem_font]);
+		}
+		char_store.setProps(getContext(), fattr);
+		GLogger.Log(Logger::Level::Info, "Toast FTS:", (uint8_t)fattr.font_size);
+	}
+
+	void addToast(std::string message, uint64_t duration=3000, SDL_Color bg_col = { 255,255,255,200 }, SDL_Color txt_col = { 0,0,0,255 }, float corner_radius = 25.f) {
+		auto capped_duration = std::clamp(duration, (uint64_t)1, (uint64_t)3000);
+		std::vector<std::vector<SDL_Texture*>> textures{};
+		std::vector<float> heights{};
+		float max_w = to_cust(80.f,app_bounds.w);
+		float sum_w = 0.f, sum_h = 0.f;
+		float max_ln_h = 0.f;
+		std::size_t line = 0;
+		textures.push_back({});
+		for (auto& ch : message) {
+			std::string outStr = { ch };
+			auto ch_texture = char_store.getChar(outStr, txt_col);
+			int tmp_w, tmp_h;
+			SDL_QueryTexture(ch_texture, nullptr, nullptr, &tmp_w, &tmp_h);
+			sum_w += (float)tmp_w;
+			max_ln_h = std::max(max_ln_h, (float)tmp_h);
+			if (sum_w > max_w) {
+				GLogger.Log(Logger::Level::Info, "Toast Line Height:", max_ln_h);
+				line++;
+				sum_w = (float)tmp_w;
+				sum_h += (float)max_ln_h;
+				heights.push_back(max_ln_h);
+				max_ln_h = 0.f;
+				textures.push_back({});
+			}
+			textures[line].push_back(ch_texture);
+		}
+
+		float tw = textures.size() == 1 ? sum_w : max_w;
+		float th = textures.size() == 1 ? max_ln_h : sum_h;
+
+		SharedTexture ttexr = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, (int)tw, (int)th);
+		CacheRenderTarget crt(renderer);
+		SDL_SetRenderTarget(renderer, ttexr.get());
+		SDL_SetRenderDrawColor(renderer, bg_col.r, bg_col.g, bg_col.b, bg_col.a);
+		SDL_RenderClear(renderer);
+		max_ln_h = 0.f;
+		sum_w = 0.f;
+		sum_h = 0.f;
+		SDL_FRect ch_dst{ 0.f,0.f,100.f,100.f };
+		for (auto& vec_txr : textures) {
+			for (auto txr : vec_txr) {
+				int tmp_w, tmp_h;
+				SDL_QueryTexture(txr, nullptr, nullptr, &tmp_w, &tmp_h);
+				
+				ch_dst.x = sum_w;
+				ch_dst.y = sum_h;
+				ch_dst.w = (float)tmp_w;
+				ch_dst.h = (float)tmp_h;
+				RenderTexture(renderer, txr, nullptr, &ch_dst);
+				sum_w += (float)tmp_w;
+				max_ln_h = std::max(max_ln_h, (float)tmp_h);
+			}
+			sum_h += max_ln_h;
+			max_ln_h = 0.f;
+			sum_w = 0.f;
+		}
+		crt.release(renderer);
+		transformToRoundedTexture(renderer, ttexr.get(), corner_radius);
+		ch_dst = {
+			app_bounds.x + ((app_bounds.w - tw) / 2.f),
+			app_bounds.h-to_cust(20.f,app_bounds.h)-th,
+			tw, th
+		};
+		toast_msgs.push_back({ SDL_GetTicks64() - trans_duration, SDL_GetTicks64(), ch_dst,std::move(ttexr) });
+		if (not toast_msgs.empty()) {
+			vsync.startRedrawSession();
+		}
+	}
+
+	void onUpdate() {
+		//SDL_GetTicks64()
+	}
+
+	void draw() {
+		if (not toast_msgs.empty()) {
+			auto& [strt, time, rect, txr] = toast_msgs.front();
+			const auto elapsed_pause_duration = SDL_GetTicks64() - strt;
+			if (elapsed_pause_duration >= trans_duration) {
+				const auto elapsed = SDL_GetTicks64() - time;
+				RenderTexture(renderer, txr.get(), nullptr, &rect);
+				if (elapsed >= 3000) {
+					toast_msgs.pop_front();
+					// if not empty update/reset the next entity start time
+					if (not toast_msgs.empty()) {
+						auto& [nxt_strt, nxt_time, nxt_rect, nxt_txr] = toast_msgs.front();
+						nxt_strt = SDL_GetTicks64();
+						nxt_time = SDL_GetTicks64() + trans_duration;
+					}
+				}
+			}
+		}
+		else {
+			vsync.stopRedrawSession();
+		}
+	}
+
+private:
+	// toast msg transition duration
+	uint64_t trans_duration = 250;
+	SDL_Color bg_col{ 255,255,255,200 };
+	// <start_time, duration, rect, texture>
+	std::deque<std::tuple<uint64_t, uint64_t, SDL_FRect, SharedTexture>> toast_msgs{};
+	CharStore char_store{};
+	FontAttributes fattr{};
+	Font mem_font = Font::RobotoBold;
+	SDL_FRect app_bounds{0.f,0.f,480.f,720.f};
+	AdaptiveVsyncHandler vsync{};
+};
+
+
 class DisplayInfo : Context
 {
 public:
@@ -1057,7 +1696,7 @@ public:
 
 	// get %val of ref
 	template <typename T>
-	constexpr inline T to_cust(const T &val, const T &ref) const { return ((val * ref) / static_cast<decltype(val)>(100)); }
+	constexpr inline T to_cust(const T& val, const T& ref) const { return ((val * ref) / static_cast<decltype(val)>(100)); }
 
 	template <typename T>
 	constexpr inline T dpToPx(const T &dp) const
@@ -1096,6 +1735,7 @@ public:
 		bool init_everyting = true;
 		bool mouse_touch_events = true;
 		std::string logs_dir = "";
+		float toast_ft_size = 2.5f;// px
 	};
 
 public:
@@ -1121,6 +1761,7 @@ public:
 	std::ofstream file;
 	std::ofstream out_app_props_file;
 	Config cfg;
+	ToastManager toast_mgr{};
 
 public:
 	Application()
@@ -1235,6 +1876,10 @@ public:
 		SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
 		DisplayInfo::Get().setContext(this);
 
+		FontAttributes tst_ft{};
+		tst_ft.font_size = IView::to_cust(config.toast_ft_size, bounds.h);
+		toast_mgr.Build(getContext(), tst_ft, bounds);
+
 		/*BasePath = SDL_GetBasePath();
 			PrefPath = SDL_GetPrefPath("Volt", config.title.c_str());
 			GLogger.setOutputFile(PrefPath + "logs-" + getDateAndTimeStr() + ".");
@@ -1290,6 +1935,11 @@ public:
 		return fps;
 	}
 
+	void showToast(std::string message, uint64_t duration = 3000, SDL_Color bg_col = { 255,255,255,205 }, SDL_Color txt_col = { 0,0,0,255 }, float corner_radius = 25.f) {
+		toast_mgr.addToast(message, duration, bg_col, txt_col, corner_radius);
+		WakeGui();
+	}
+
 	~Application()
 	{
         file.close();
@@ -1315,6 +1965,7 @@ private:
 			{
 				onUpdate();
 				this->draw();
+				toast_mgr.draw();
 				SDL_RenderPresent(renderer);
 			}
 			skipFrame = false;
@@ -1442,6 +2093,7 @@ inline auto rotate(const std::array<float, 2> &position, const float &angle) noe
 		cosf(angle) * position[0] - sinf(angle) * position[1],
 		sinf(angle) * position[0] + cosf(angle) * position[1]};
 }
+
 inline constexpr auto translate(const std::array<float, 2> &position, const float &x, const float &y) noexcept
 {
 	return std::array{position[0] + x, position[1] + y};
@@ -1724,6 +2376,7 @@ void draw_ring_4quad(SDL_Renderer *_renderer, const float &_x, const float &_y, 
 		}
 	}
 }
+
 /*
 void draw_ring_top_left_quadrant(SDL_Renderer *_renderer, const float &_x, const float &_y, const float &_inner_r, const float &_outer_r,
 								 const SDL_Color &_color = {0xff, 0xff, 0xff, 0xff})
@@ -3964,462 +4617,8 @@ class AnticipateOvershootInterpolator
 };
 */
 
-class TextAttributes
-{
-public:
-	TextAttributes() = default;
 
-	TextAttributes(const std::string &a_text, const SDL_Color a_text_col,
-				   const SDL_Color &a_background_col) : text(a_text), text_color(a_text_col),
-														bg_color(a_background_col) {}
 
-	std::string text;
-	SDL_Color bg_color;
-	SDL_Color text_color;
-
-	void setTextAttributes(const TextAttributes &text_attributes)
-	{
-		this->text = text_attributes.text;
-		this->bg_color = text_attributes.bg_color;
-		this->text_color = text_attributes.text_color;
-	}
-
-	TextAttributes &setText(const char *_text)
-	{
-		this->text = _text;
-		return *this;
-	}
-
-	TextAttributes &setTextColor(const SDL_Color &_textcolor)
-	{
-		this->text_color = _textcolor;
-		return *this;
-	}
-
-	TextAttributes &setTextBgColor(const SDL_Color &_text_bg_color)
-	{
-		this->bg_color = _text_bg_color;
-		return *this;
-	}
-};
-
-class FontAttributes
-{
-public:
-	std::string font_file;
-	uint8_t font_size = 0xff;
-	FontStyle font_style;
-
-	FontAttributes() = default;
-
-	FontAttributes(const std::string &a_font_file, const FontStyle &a_font_style,
-				   const uint8_t &a_font_size) : font_file(a_font_file), font_size(a_font_size), font_style(a_font_style) {}
-
-	void setFontAttributes(const FontAttributes &font_attributes)
-	{
-		this->font_file = font_attributes.font_file,
-		this->font_size = font_attributes.font_size,
-		this->font_style = font_attributes.font_style;
-	}
-
-	FontAttributes &setFontStyle(const FontStyle &a_fontstyle)
-	{
-		this->font_style = a_fontstyle;
-		return *this;
-	}
-
-	FontAttributes &setFontFile(const std::string &a_fontfile)
-	{
-		this->font_file = a_fontfile;
-		return *this;
-	}
-
-	FontAttributes &setFontSize(const uint8_t &a_fontsize)
-	{
-		this->font_size = a_fontsize;
-		return *this;
-	}
-};
-
-enum class Font
-{
-	ConsolasBold,
-	OpenSansRegular,
-	OpenSansSemiBold,
-	OpenSansBold,
-	OpenSansExtraBold,
-	RobotoBold,
-	SegoeUiEmoji,
-	// YuGothBold,
-};
-
-struct MemFont
-{
-	const unsigned char *font_data;
-	unsigned int font_data_size;
-	int font_size;
-	std::string font_name;
-};
-
-MemFont RobotoBold{
-	.font_data = ff_Roboto_Bold_ttf_data,
-	.font_data_size = ff_Roboto_Bold_ttf_len,
-	.font_size = 255,
-	.font_name = "roboto-bold"};
-
-std::unordered_map<Font, MemFont *> Fonts{
-	//{Font::ConsolasBold, &ConsolasBold},
-	//{Font::OpenSansRegular, &OpenSansRegular},
-	//{{Font::OpenSansSemiBold, &OpenSansSemiBold},
-	//{Font::OpenSansBold, &OpenSansBold},
-	//{Font::OpenSansExtraBold, &OpenSansExtraBold},
-	{Font::RobotoBold, &RobotoBold},
-	//{Font::SegoeUiEmoji, &SegoeUiEmoji},
-	//{Font::YuGothBold,&YuGothBold},
-};
-
-class FontStore
-{
-public:
-	~FontStore()
-	{
-		for (auto &[path_, font] : fonts)
-			TTF_CloseFont(font);
-	}
-
-	TTF_Font *operator[](const std::pair<std::string, int> &font)
-	{
-		const std::string key = font.first + std::to_string(font.second);
-		if (fonts.count(key) == 0)
-		{
-			if (!(fonts[key] = TTF_OpenFont(font.first.c_str(), font.second)))
-			{
-				SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", TTF_GetError());
-				fonts.erase(key);
-				return nullptr;
-			}
-			else
-			{
-				GLogger.Log(Logger::Level::Info, "New FileFont Loaded:", key);
-				// TTF_SetFontSDF(fonts[key], SDL_TRUE);
-				// TTF_SetFontOutline(fonts[key], m_font_outline);
-				// TTF_SetFontKerning(fonts[key], 0);
-				// TTF_SetFontHinting(fonts[key], TTF_HINTING_LIGHT_SUBPIXEL);
-				// TTF_SetFontHinting(fonts[key], TTF_HINTING_MONO);
-			}
-		}
-		return fonts[key];
-	}
-
-	TTF_Font *operator[](const MemFont &mem_font)
-	{
-		const std::string key = mem_font.font_name + std::to_string(mem_font.font_size);
-		if (fonts.count(key) == 0)
-		{
-			// GLogger.Log(Logger::Level::Info, "FT loading " + key);
-			SDL_RWops *rw_ = SDL_RWFromConstMem(mem_font.font_data, mem_font.font_data_size);
-			auto *ft = TTF_OpenFontRW(rw_, SDL_TRUE, mem_font.font_size);
-			if (!ft)
-			{
-				GLogger.Log(Logger::Level::Info, "TTF_OpenFontRW:", std::string(TTF_GetError()));
-				return nullptr;
-			}
-			else
-			{
-				fonts[key] = ft;
-				GLogger.Log(Logger::Level::Info, "New MemFont Loaded:", key);
-				// TTF_SetFontSDF(fonts[key], SDL_TRUE);
-				// TTF_SetFontOutline(fonts[key], m_font_outline);
-				// TTF_SetFontKerning(fonts[key], 1);
-				TTF_SetFontHinting(fonts[key], TTF_HINTING_MONO);
-			}
-		}
-		return fonts[key];
-	}
-
-private:
-	std::unordered_map<std::string, TTF_Font *> fonts;
-};
-
-class FontSystem
-{
-public:
-	FontSystem(const FontSystem &) = delete;
-
-	FontSystem(const FontSystem &&) = delete;
-
-	static FontSystem &Get()
-	{
-		static FontSystem instance;
-		return instance;
-	}
-
-	FontSystem &setFontFile(const char *font_file) noexcept
-	{
-		this->m_font_attributes.font_file = font_file;
-		return *this;
-	}
-
-	FontSystem &setFontSize(const uint8_t &font_size) noexcept
-	{
-		this->m_font_attributes.font_size = font_size;
-		return *this;
-	}
-
-	FontSystem &setFontStyle(const FontStyle &font_style) noexcept
-	{
-		this->m_font_attributes.font_style = font_style;
-		return *this;
-	}
-
-	FontSystem &setCustomFontStyle(const int &custom_font_style) noexcept
-	{
-		this->m_custom_fontstyle = custom_font_style;
-		return *this;
-	}
-
-	FontSystem &setFontAttributes(const FontAttributes &font_attributes,
-								  const int &custom_fontstyle = 0) noexcept
-	{
-		this->m_font_attributes = font_attributes;
-		this->m_custom_fontstyle = custom_fontstyle;
-		return *this;
-	}
-
-	FontSystem &setFontAttributes(const MemFont &_mem_ft, const FontStyle &ft_style_, const int &custom_fontstyle = 0) noexcept
-	{
-		this->m_font_attributes.setFontAttributes(FontAttributes{_mem_ft.font_name, ft_style_, static_cast<uint8_t>(_mem_ft.font_size)});
-		this->m_custom_fontstyle = custom_fontstyle;
-		return *this;
-	}
-
-	TTF_Font *getFont(const std::string &font_file, const int &font_size)
-	{
-		return fontStore[{font_file, font_size}];
-	}
-
-	TTF_Font *getFont(const MemFont &_mem_ft)
-	{
-		return fontStore[_mem_ft];
-	}
-
-	std::optional<UniqueTexture> genTextTextureUnique(SDL_Renderer *renderer, const char *text, const SDL_Color text_color)
-	{
-		if (!genTextCommon())
-			return {};
-		SDL_Surface *textSurf = TTF_RenderUTF8_Blended(m_font, text, text_color);
-		if (!textSurf)
-			SDL_Log("%s", SDL_GetError());
-		auto result = CreateUniqueTextureFromSurface(renderer, textSurf);
-		if (!result.get())
-			SDL_Log("%s", SDL_GetError());
-		Async::GThreadPool.enqueue([](SDL_Surface *surface)
-								   {SDL_DestroySurface(surface); surface = nullptr; },
-								   textSurf);
-		return result;
-	}
-
-	SDL_Texture* genTextTextureRaw(SDL_Renderer* renderer, const char* text, const SDL_Color text_color)
-	{
-		if (!genTextCommon())
-			return {};
-		SDL_Surface* textSurf = TTF_RenderUTF8_Blended(m_font, text, text_color);
-		if (!textSurf)
-			SDL_Log("%s", SDL_GetError());
-		auto result = SDL_CreateTextureFromSurface(renderer, textSurf);
-		if (!result)
-			SDL_Log("%s", SDL_GetError());
-		Async::GThreadPool.enqueue([](SDL_Surface* surface)
-			{SDL_DestroySurface(surface); surface = nullptr; },
-			textSurf);
-		return result;
-	}
-
-	std::optional<UniqueTexture> genTextTextureUniqueV2(SDL_Renderer *renderer, const char *text, const SDL_Color text_color, float _w, float _h, bool wordWrap = false)
-	{
-		if (!genTextCommon())
-			return {};
-		std::vector<std::pair<SDL_FRect, SDL_Texture *>> finalGlyphs{};
-		int maxW = 0, maxH = 0;
-		int length = strlen(text);
-		int textOffsetY = 0;
-		int textOffsetX = 0;
-		int lineHeight = TTF_FontLineSkip(m_font);
-
-		for (int i = 0; i < length;)
-		{
-			int wordWidth = 0;
-			int wordLength = 0;
-			int advance;
-			for (int j = i; j < length && text[j] != ' ' && text[j] != '\n'; ++j)
-			{
-				TTF_GlyphMetrics(m_font, text[j], NULL, NULL, NULL, NULL, &advance);
-				wordWidth += advance;
-				++wordLength;
-			}
-
-			if (wordWrap && textOffsetX + wordWidth > _w)
-			{
-				textOffsetX = 0;
-				textOffsetY += lineHeight;
-			}
-
-			for (int j = 0; j < wordLength; ++j)
-			{
-				if (text[i + j] == '\n')
-				{
-					textOffsetX = 0;
-					textOffsetY += lineHeight;
-					break;
-				}
-
-				TTF_GlyphMetrics(m_font, text[i + j], NULL, NULL, NULL, NULL, &advance);
-				SDL_Surface *textSurf = TTF_RenderGlyph_Blended(m_font, text[i + j], text_color);
-				SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, textSurf);
-				std::pair<SDL_FRect, SDL_Texture *> gl_{{(float)textOffsetX, (float)textOffsetY, (float)textSurf->w, (float)textSurf->h}, texture};
-				finalGlyphs.emplace_back(gl_);
-				textOffsetX += advance;
-				if (textOffsetX + textSurf->w >= maxW)
-					maxW = textOffsetX + textSurf->w;
-				Async::GThreadPool.enqueue([](SDL_Surface *surface)
-										   {SDL_DestroySurface(surface); surface = nullptr; }, textSurf);
-			}
-
-			if (text[i + wordLength] == ' ')
-			{
-				TTF_GlyphMetrics(m_font, ' ', NULL, NULL, NULL, NULL, &advance);
-				textOffsetX += advance;
-				++wordLength;
-			}
-
-			i += wordLength;
-		}
-
-		CacheRenderTarget crt_(renderer);
-		auto result = CreateUniqueTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, maxW, (int)_h);
-		SDL_SetTextureBlendMode(result.get(), SDL_BLENDMODE_BLEND);
-		SDL_SetRenderTarget(renderer, result.get());
-		RenderClear(renderer, 0, 0, 0, 0);
-		for (auto &[grect, gtexture] : finalGlyphs)
-		{
-			RenderTexture(renderer, gtexture, NULL, (const SDL_FRect *)&grect);
-			// SDL_DestroyTexture(gtexture);
-			Async::GThreadPool.enqueue([](SDL_Texture *dtex)
-									   {SDL_DestroyTexture(dtex); dtex = nullptr; }, gtexture);
-		}
-		crt_.release(renderer);
-
-		return result;
-	}
-
-	std::optional<SharedTexture> genTextTextureShared(SDL_Renderer *renderer, const char *text, const SDL_Color text_color)
-	{
-		if (!genTextCommon())
-			return {};
-		SDL_Surface *textSurf = TTF_RenderUTF8_Blended(m_font, text, text_color);
-		if (!textSurf)
-			SDL_Log("%s", SDL_GetError());
-		auto result = CreateSharedTextureFromSurface(renderer, textSurf);
-		if (!result.get())
-			SDL_Log("%s", SDL_GetError());
-		Async::GThreadPool.enqueue([](SDL_Surface *surface)
-								   {SDL_DestroySurface(surface); surface = nullptr; },
-								   textSurf);
-		return result;
-	}
-
-	std::optional<UniqueTexture> u8GenTextTextureUnique(SDL_Renderer *renderer, const char8_t *text, const SDL_Color text_color)
-	{
-		if (!genTextCommon())
-			return {};
-
-		SDL_Surface *textSurf = TTF_RenderUTF8_Blended(m_font, (char *)text, text_color);
-		if (!textSurf)
-			SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", SDL_GetError());
-		UniqueTexture result = CreateUniqueTextureFromSurface(renderer, textSurf);
-		SDL_DestroySurface(textSurf);
-		textSurf = nullptr;
-		if (!result.get())
-		{
-			SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", SDL_GetError());
-			return {};
-		}
-		return result;
-	}
-
-private:
-	FontSystem()
-	{
-		this->m_font_attributes = FontAttributes{"", FontStyle::Normal, 255};
-		m_font_outline = 0;
-		m_custom_fontstyle = TTF_STYLE_NORMAL;
-	}
-
-	bool genTextCommon()
-	{
-		if (m_font_attributes.font_file.empty())
-		{
-			GLogger.Log(Logger::Level::Info, "FontSystem Error: Invlaid/empty fontfile!");
-			return false;
-		}
-
-		m_font = fontStore[{m_font_attributes.font_file, m_font_attributes.font_size}];
-		if (m_font == nullptr)
-		{
-			GLogger.Log(Logger::Level::Info, "Error generating text texture: NULL FONT");
-			return false;
-		}
-
-		switch (m_font_attributes.font_style)
-		{
-			// using enum FontStyle;
-		case FontStyle::Normal:
-			TTF_SetFontStyle(m_font, TTF_STYLE_NORMAL);
-			break;
-		case FontStyle::Bold:
-			TTF_SetFontStyle(m_font, TTF_STYLE_BOLD);
-			break;
-		case FontStyle::Italic:
-			TTF_SetFontStyle(m_font, TTF_STYLE_ITALIC);
-			break;
-		case FontStyle::Underline:
-			TTF_SetFontStyle(m_font, TTF_STYLE_UNDERLINE);
-			break;
-		case FontStyle::StrikeThrough:
-			TTF_SetFontStyle(m_font, TTF_STYLE_STRIKETHROUGH);
-			break;
-		case FontStyle::BoldUnderline:
-			TTF_SetFontStyle(m_font, TTF_STYLE_BOLD | TTF_STYLE_UNDERLINE);
-			break;
-		case FontStyle::BoldStrikeThrough:
-			TTF_SetFontStyle(m_font, TTF_STYLE_BOLD | TTF_STYLE_STRIKETHROUGH);
-			break;
-		case FontStyle::ItalicBold:
-			TTF_SetFontStyle(m_font, TTF_STYLE_ITALIC | TTF_STYLE_BOLD);
-			break;
-		case FontStyle::ItalicUnderline:
-			TTF_SetFontStyle(m_font, TTF_STYLE_ITALIC | TTF_STYLE_UNDERLINE);
-			break;
-		case FontStyle::ItalicStrikeThrough:
-			TTF_SetFontStyle(m_font, TTF_STYLE_ITALIC | TTF_STYLE_STRIKETHROUGH);
-			break;
-		case FontStyle::Custom:
-			TTF_SetFontStyle(m_font, m_custom_fontstyle);
-			break;
-		default:
-			TTF_SetFontStyle(m_font, TTF_STYLE_NORMAL);
-			break;
-		}
-
-		return true;
-	}
-
-	TTF_Font *m_font;
-	FontStore fontStore;
-	FontAttributes m_font_attributes;
-	int m_font_outline = 0;
-	int m_custom_fontstyle;
-};
 
 struct ImageButtonAttributes
 {
@@ -4879,14 +5078,600 @@ private:
 
 Async::ThreadPool ImageButton::executor_(1);
 
+
+struct TextBoxAttributes
+{
+	Font mem_font = Font::RobotoBold;
+	SDL_FRect rect = { 0.f, 0.f, 0.f, 0.f };
+	TextAttributes textAttributes = { "", {0x00, 0x00, 0x00, 0xff}, {0xff, 0xff, 0xff, 0xff} };
+	SDL_FRect margin = { 0.f, 0.f, 0.f, 0.f };
+	std::string fontFile;
+	FontStyle fontStyle = FontStyle::Normal;
+	EdgeType edgeType = EdgeType::RECT;
+	uint32_t maxlines = 1;
+	TextWrapStyle textWrapStyle = TextWrapStyle::MAX_CHARS_PER_LN;
+	Gravity gravity = Gravity::Left;
+	float cornerRadius = 0.f;
+	int customFontstyle = 0x00;
+	float lineSpacing = 0.f;
+	float outline = 0.f;
+	bool isButton = false;
+	bool shrinkToFit = false;
+	bool useHaptics = false;
+	bool highlightOnHover = false;
+	SDL_Color outlineColor = { 0x00, 0x00, 0x00, 0x00 };
+	SDL_Color onHoverOutlineColor = { 0x00, 0x00, 0x00, 0x00 };
+	SDL_Color onHoverBgColor = { 0x00, 0x00, 0x00, 0x00 };
+	SDL_Color onHoverTxtColor = { 0x00, 0x00, 0x00, 0x00 };
+};
+
+class TextBox : public Context, public IView
+{
+public:
+	TextBox& setContext(Context* _context)
+	{
+		Context::setContext(_context);
+		Context::setView(this);
+		return *this;
+	}
+
+	TextBox& Build(Context* _context, const TextBoxAttributes& textboxAttr_)
+	{
+		Context::setContext(_context);
+		config_dat_ = textboxAttr_;
+		coner_radius_ = textboxAttr_.cornerRadius;
+		line_skip_ = textboxAttr_.lineSpacing;
+		isButton = textboxAttr_.isButton;
+		bounds = textboxAttr_.rect;
+		// outlineRect.Build(this, textboxAttr_.rect, textboxAttr_.outline, textboxAttr_.conerRadius, textboxAttr_.textAttributes.bg_color, textboxAttr_.outlineColor);
+
+		text_rect_ = { to_cust(textboxAttr_.margin.x, bounds.w),
+					  to_cust(textboxAttr_.margin.y, bounds.h),
+					  to_cust(100.f - (textboxAttr_.margin.w + textboxAttr_.margin.x), bounds.w),
+					  to_cust(100.f - (textboxAttr_.margin.h + textboxAttr_.margin.y), bounds.h) };
+		text_attributes_ = textboxAttr_.textAttributes;
+		font_attributes_.font_file = textboxAttr_.fontFile;
+		font_attributes_.font_style = textboxAttr_.fontStyle;
+		// font_attributes_.font_size = static_cast<uint8_t>(to_cust(95.f, text_rect_.h));
+		font_attributes_.font_size = static_cast<uint8_t>(text_rect_.h);
+		custom_fontstyle_ = textboxAttr_.customFontstyle;
+		max_lines_ = textboxAttr_.maxlines;
+		edge_type_ = textboxAttr_.edgeType;
+		text_wrap_style_ = textboxAttr_.textWrapStyle;
+		gravity_ = textboxAttr_.gravity;
+		shrink_to_fit = textboxAttr_.shrinkToFit;
+		wrapped_text_.clear();
+
+		TTF_Font* font = getFont();
+		if (!font)
+		{
+			GLogger.Log(Logger::Level::Info, "TextBox::getFont Error: Font not available.");
+			return *this;
+		}
+		int m_width_px = 0;
+		if (TTF_GlyphMetrics(font, 'a', nullptr, nullptr, nullptr, nullptr, &m_width_px) != 0)
+		{
+			m_width_px = text_rect_.h / 2; // Fallback if metrics fail
+		}
+		m_width_px = text_rect_.h / 2;
+		if (m_width_px == 0)
+			m_width_px = 1; // Avoid division by zero
+
+		max_displayable_chars_per_ln_ = static_cast<uint32_t>(text_rect_.w / m_width_px);
+		if (text_attributes_.text.size() < max_displayable_chars_per_ln_)
+		{
+			wrapped_text_.emplace_back(text_attributes_.text);
+		}
+		else
+		{
+			if (text_wrap_style_ == TextWrapStyle::MAX_WORDS_PER_LN)
+			{
+				TextProcessor::Get().wrap_by_word_unicode(text_attributes_.text, &wrapped_text_, " ,-_?\./:;|}[]())!",
+					max_displayable_chars_per_ln_, max_lines_);
+			}
+			else
+			{
+				TextProcessor::Get().wrap_max_char_unicode(text_attributes_.text, &wrapped_text_, max_displayable_chars_per_ln_, max_lines_);
+			}
+		}
+		/*if(max_displayable_chars_per_ln_<text_attributes_.text.size()){
+				wrapped_text_.back() = wrapped_text_.back().replace(wrapped_text_.back().begin()+ (wrapped_text_.back().size()-3), wrapped_text_.back().end(),"...");
+			}*/
+		max_displayable_lines_ = std::clamp(static_cast<uint32_t>(std::floorf(bounds.h / text_rect_.h)), (uint32_t)1, (uint32_t)1000000);
+		capture_src_ = { 0.f, 0.f, text_rect_.w, (text_rect_.h) * std::clamp((float)wrapped_text_.size(), 1.f, (float)max_displayable_lines_) };
+		dest_src_ = text_rect_;
+		dest_src_.h = capture_src_.h;
+		dest_src_.x += bounds.x;
+		dest_src_.y += bounds.y;
+
+		this->texture_.reset();
+		// CacheRenderTarget crt_(renderer);
+		this->texture_ = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
+			SDL_TEXTUREACCESS_TARGET, static_cast<int>(text_rect_.w),
+			static_cast<int>(text_rect_.h * wrapped_text_.size()));
+
+		outlineRect.Build(this, { textboxAttr_.rect.x, textboxAttr_.rect.y, textboxAttr_.rect.w, textboxAttr_.rect.h /* capture_src_.w, capture_src_.h*/ }, textboxAttr_.outline, textboxAttr_.cornerRadius, textboxAttr_.textAttributes.bg_color, textboxAttr_.outlineColor);
+
+		// SDL_SetTextureBlendMode(this->texture_.get(), SDL_BLENDMODE_BLEND);
+		// SDL_SetRenderTarget(renderer, this->texture_.get());
+		// RenderClear(renderer, 0, 0, 0, 0);
+		// FontSystem::Get().setFontAttributes({ font_attributes_.font_file.c_str(), font_attributes_.font_style, font_attributes_.font_size, 0.f }, custom_fontstyle_);
+		try
+		{
+			genText();
+		}
+		catch (std::exception e)
+		{
+			GLogger.Log(Logger::Level::Error, e.what());
+		}
+		return *this;
+	}
+
+public:
+	void draw() override
+	{
+		if (hidden)return;
+		/*SDL_SetRenderDrawColor(renderer, text_attributes_.bg_color.r, text_attributes_.bg_color.g, text_attributes_.bg_color.b, text_attributes_.bg_color.a);
+			RenderFillRect(renderer, &dest_);*/
+		outlineRect.draw();
+		// fillRoundedRectF(renderer, dest_, coner_radius_, text_attributes_.bg_color);
+		// RenderTexture(renderer, texture_.get(), NULL, &dest_src_);
+		RenderTexture(renderer, texture_.get(), &capture_src_, &dest_src_);
+		for (auto iview : on_click_views) {
+			if (not iview->hidden)
+				iview->draw();
+		}
+		// SDL_Log("d:%f,%f,%f,%f",dest_src_.x,dest_src_.y,dest_src_.w,dest_src_.h);
+		// SDL_Log("s:%f,%f,%f,%f",capture_src_.x,capture_src_.y,capture_src_.w,capture_src_.h);
+		//  return *this;
+	}
+
+	TextBox& onClick(std::function<bool(TextBox*)> _on_clicked_callback) noexcept
+	{
+		onClickedCallback_ = _on_clicked_callback;
+		return *this;
+	}
+
+	TextBox& addOnClickView(IView* _on_click_view) noexcept
+	{
+		on_click_views.push_back(_on_click_view);
+		return *this;
+	}
+
+	constexpr inline TextBox& setConerRadius(const float& cr_) noexcept
+	{
+		this->coner_radius_ = cr_;
+		return *this;
+	}
+
+	TextBox& setId(const uint32_t& _id) noexcept
+	{
+		this->id_ = _id;
+		return *this;
+	}
+
+	SDL_FRect& getBounds()
+	{
+		return bounds;
+	}
+
+	float getRealPosX() { return pv->getRealX() + bounds.x; }
+
+	float getRealPosY() { return pv->getRealY() + bounds.y; }
+
+	inline const SDL_FRect& getBoundsConst() const noexcept
+	{
+		return this->bounds;
+	}
+
+	TextBox& setPos(const float x, const float y)
+	{
+		return *this;
+	}
+
+	inline void updatePosBy(float x, float y) override
+	{
+		update_pos_internal(x, y, false);
+		// return *this;
+	}
+
+	TextBox& updatePosByAnimated(const float x, const float y)
+	{
+		update_pos_internal(x, y, true);
+		return *this;
+	}
+
+	std::string getText() const
+	{
+		return this->text_attributes_.text;
+	}
+
+	bool isEnabled() const
+	{
+		return is_enabled_;
+	}
+
+	void setEnabled(const bool& _enabled)
+	{
+		is_enabled_ = _enabled;
+	}
+
+	uint32_t getId() const
+	{
+		return this->id_;
+	}
+
+	TextBox& updateTextColor(const SDL_Color& bgColor, const SDL_Color& outlineColor, const SDL_Color& textColor)
+	{
+		text_attributes_.bg_color = bgColor;
+		text_attributes_.text_color = textColor;
+		outlineRect.color = bgColor;
+		outlineRect.outline_color = outlineColor;
+
+		CacheRenderTarget crt_(renderer);
+		SDL_SetRenderTarget(renderer, this->texture_.get());
+		SDL_SetTextureBlendMode(this->texture_.get(), SDL_BLENDMODE_BLEND);
+		RenderClear(renderer, 0, 0, 0, 0);
+		const SDL_FRect cache_text_rect = text_rect_;
+		int tmp_sw = 0, tmp_sh = 0;
+		text_rect_.y = 0.f;
+		text_rect_.x = 0.f;
+
+		TTF_Font* tmpFont = nullptr;
+		if (font_attributes_.font_file.empty())
+		{
+			Fonts[config_dat_.mem_font]->font_size = font_attributes_.font_size;
+			font_attributes_.font_file = Fonts[config_dat_.mem_font]->font_name;
+			tmpFont = FontSystem::Get().getFont(*Fonts[config_dat_.mem_font]);
+		}
+		else
+		{
+			tmpFont = FontSystem::Get().getFont(font_attributes_.font_file, font_attributes_.font_size);
+		}
+		const float fa_ = static_cast<float>(TTF_FontDescent(tmpFont));
+		FontSystem::Get().setFontAttributes({ font_attributes_.font_file.c_str(), font_attributes_.font_style, font_attributes_.font_size }, custom_fontstyle_);
+		for (auto const& line_ : wrapped_text_)
+		{
+			auto textTex = FontSystem::Get().genTextTextureUnique(renderer, line_.c_str(), this->text_attributes_.text_color);
+			if (textTex.has_value())
+			{
+				SDL_QueryTexture(textTex.value().get(), nullptr, nullptr, &tmp_sw, &tmp_sh);
+				// SDL_Log("TW: %d, TH: %d", tmp_sw, tmp_sh);
+				text_rect_.w = static_cast<float>(tmp_sw);
+				// text_rect_.h = (float)(tmp_sh);
+				text_rect_.w = std::clamp(text_rect_.w, 0.f, cache_text_rect.w);
+
+				if (max_lines_ == 1)
+				{
+					if (gravity_ == Gravity::Center)
+					{
+						text_rect_.x = ((cache_text_rect.w - text_rect_.w) / 2.f);
+					}
+					if (shrink_to_fit)
+					{
+						float final_rad = 1.f;
+						if (bounds.h > bounds.w)
+						{
+							final_rad = ((coner_radius_ / 2.f) * bounds.w) / 100.f;
+						}
+						else if (bounds.h <= bounds.w)
+						{
+							final_rad = ((coner_radius_ / 2.f) * bounds.h) / 100.f;
+						}
+						// dest_.x = dest_.x + (text_rect_.x - final_rad);
+						// dest_.w = text_rect_.w + (final_rad * 2.f);
+					}
+				}
+				RenderTexture(renderer, textTex.value().get(), nullptr, &text_rect_);
+				text_rect_.y += line_skip_ + text_rect_.h;
+			}
+			else
+				break;
+		}
+		text_rect_ = cache_text_rect;
+		crt_.release(renderer);
+		return *this;
+	}
+
+	TextBox& updateText(const std::string new_text)
+	{
+		text_attributes_.text = new_text;
+		wrapped_text_.clear();
+		if (text_wrap_style_ == TextWrapStyle::MAX_WORDS_PER_LN)
+		{
+			TextProcessor::Get().wrap_by_word_unicode(
+				text_attributes_.text, &wrapped_text_, " ,-_?\./:;|}[]())!",
+				max_displayable_chars_per_ln_, max_lines_);
+		}
+		else
+		{
+			TextProcessor::Get().wrap_max_char_unicode(
+				text_attributes_.text, &wrapped_text_, max_displayable_chars_per_ln_, max_lines_);
+		}
+		try
+		{
+			genText();
+		}
+		catch (std::exception e)
+		{
+			std::cout << e.what();
+		}
+		return *this;
+	}
+
+	void resolveTextureReset()
+	{
+		// this->Build(this, config_dat_);
+		updateTextColor(config_dat_.textAttributes.bg_color, config_dat_.outlineColor, config_dat_.textAttributes.text_color);
+	}
+
+	bool handleEvent()
+	{
+		// SDL_Log("tb handle event");
+		bool result = false;
+		for (auto iview : on_click_views) {
+			if (not iview->hidden)
+				result |= iview->handleEvent();
+		}
+		if (result) return result;
+		/*for (auto iview : on_click_views) {
+			iview->hide();
+		}*/
+		switch (event->type)
+		{
+		case EVT_RENDER_TARGETS_RESET:
+			resolveTextureReset();
+			result = true;
+			break;
+		case EVT_MOUSE_BTN_DOWN:
+			if (onClick(event->button.x, event->button.y))
+			{
+				mouse_in_bound_ = true, result = true;
+				if (config_dat_.useHaptics)
+					haptics->play_effect();
+			}
+			else
+				mouse_in_bound_ = false;
+			break;
+		case EVT_MOUSE_MOTION:
+			if (onClick(event->motion.x, event->motion.y))
+			{
+				mouse_in_bound_ = true;
+				if (config_dat_.highlightOnHover)
+				{
+					outlineRect.outline_color = config_dat_.onHoverOutlineColor;
+					outlineRect.color = config_dat_.onHoverBgColor;
+				}
+			}
+			else
+			{
+				mouse_in_bound_ = false;
+				if (config_dat_.highlightOnHover)
+				{
+					outlineRect.outline_color = config_dat_.outlineColor;
+					outlineRect.color = text_attributes_.bg_color;
+				}
+			}
+			break; /*
+			 case EVT_MOUSE_BTN_UP:
+				 if (onClick(event->motion.x, event->motion.y)) {
+					 if (isButton)result = true;
+					 if (onClickedCallback_!=nullptr) {
+						 result = true;
+						 onClickedCallback_(this);
+					 }
+				 }
+				 mouse_in_bound_ = false;
+				 break;*/
+		case EVT_WPSC:
+		case EVT_WMAX:
+			config_dat_.rect =
+			{
+				DisplayInfo::Get().toUpdatedWidth(config_dat_.rect.x),
+				DisplayInfo::Get().toUpdatedHeight(config_dat_.rect.y),
+				DisplayInfo::Get().toUpdatedWidth(config_dat_.rect.w),
+				DisplayInfo::Get().toUpdatedHeight(config_dat_.rect.h),
+			};
+			this->Build(this, config_dat_);
+			break;
+		case EVT_FINGER_UP:
+			if (onClick(event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.y * DisplayInfo::Get().RenderH))
+			{
+				if (isButton)
+					result = true;
+				for (auto iview : on_click_views) {
+					iview->toggleView();
+				}
+				if (onClickedCallback_)
+				{
+					result = onClickedCallback_(this);
+				}
+			}
+			mouse_in_bound_ = false;
+			break;
+		}
+		return result;
+	}
+
+private:
+	TTF_Font* getFont()
+	{
+		if (font_attributes_.font_file.empty())
+		{
+			// SDL_Log("TX: %s,     ws: %d", text_attributes_.text.c_str(),wrapped_text_.size());
+			Fonts[config_dat_.mem_font]->font_size = font_attributes_.font_size;
+			font_attributes_.font_file = Fonts[config_dat_.mem_font]->font_name;
+			return FontSystem::Get().getFont(*Fonts[config_dat_.mem_font]);
+		}
+		else
+		{
+			return FontSystem::Get().getFont(font_attributes_.font_file, font_attributes_.font_size);
+		}
+	}
+
+	void genText()
+	{
+		CacheRenderTarget crt_(renderer);
+		SDL_SetTextureBlendMode(this->texture_.get(), SDL_BLENDMODE_BLEND);
+		SDL_SetRenderTarget(renderer, this->texture_.get());
+		RenderClear(renderer, 0, 0, 0, 0);
+		const SDL_FRect cache_text_rect = text_rect_;
+		int tmp_sw = 0, tmp_sh = 0, i = 0;
+		text_rect_.y = 0.f;
+		text_rect_.x = 0.f;
+		TTF_Font* tmpFont = getFont();
+
+		const auto fa_ = static_cast<float>(TTF_FontAscent(tmpFont));
+		const auto fd_ = static_cast<float>(TTF_FontDescent(tmpFont));
+
+		FontSystem::Get().setFontAttributes(std::move(FontAttributes{ font_attributes_.font_file.c_str(), font_attributes_.font_style, font_attributes_.font_size }), custom_fontstyle_);
+		for (auto const& line_ : wrapped_text_)
+		{
+			/*
+				auto start_ = std::chrono::system_clock::now();
+				{
+					auto textTex = FontSystem::Get().genTextTextureUnique(renderer, line_.c_str(), this->text_attributes_.text_color);
+					std::chrono::duration<double> dt = std::chrono::system_clock::now() - start_;
+					std::cout << "otlt:" << dt.count() << std::endl;
+				}
+				start_= std::chrono::system_clock::now();
+				auto textTex = FontSystem::Get().genTextTextureUniqueV2(renderer, line_.c_str(), this->text_attributes_.text_color,text_rect_.w, text_rect_.h,true);
+				std::chrono::duration<double> dt = std::chrono::system_clock::now() - start_;
+				std::cout << "ntlt:" << dt.count() << std::endl;*/
+				// SDL_Log("TXL: %s", line_.c_str());
+
+			auto textTex = FontSystem::Get().genTextTextureUnique(renderer, line_.c_str(), this->text_attributes_.text_color);
+			if (textTex.has_value())
+			{
+				SDL_QueryTexture(textTex.value().get(), nullptr, nullptr, &tmp_sw, &tmp_sh);
+				// SDL_Log("TW: %d, TH: %d", tmp_sw, tmp_sh);
+				text_rect_.w = static_cast<float>(tmp_sw);
+				// std::cout << "TT: " <<tmp_sh<< " - FA: " << fa_ << " - FD: " << fd_ << std::endl;
+				text_rect_.h = static_cast<float>(tmp_sh);
+				// text_rect_.h = std::clamp(text_rect_.h, 0.f, text_rect_.h);
+				text_rect_.w = std::clamp(text_rect_.w, 0.f, cache_text_rect.w);
+				if (static_cast<float>(tmp_sh) > text_rect_.h)
+					text_rect_.y += fd_, text_rect_.h = static_cast<float>(tmp_sh);
+
+				if (max_lines_ == 1)
+				{
+					if (gravity_ == Gravity::Center)
+					{
+						text_rect_.x = ((cache_text_rect.w - text_rect_.w) / 2.f);
+					}
+					if (gravity_ == Gravity::Right)
+					{
+						text_rect_.x = ((cache_text_rect.w - text_rect_.w));
+					}
+					if (shrink_to_fit)
+					{
+						float final_rad = 1.f;
+						if (bounds.h > bounds.w)
+						{
+							final_rad = ((coner_radius_ / 2.f) * bounds.w) / 100.f;
+						}
+						else if (bounds.h <= bounds.w)
+						{
+							final_rad = ((coner_radius_ / 2.f) * bounds.h) / 100.f;
+						}
+						bounds.x = bounds.x + (text_rect_.x - final_rad);
+						bounds.w = text_rect_.w + (final_rad * 2.f);
+						outlineRect.rect.x = outlineRect.rect.x + (text_rect_.x - final_rad);
+						outlineRect.rect.w = text_rect_.w + (final_rad * 2.f);
+					}
+				}
+				RenderTexture(renderer, textTex.value().get(), nullptr, &text_rect_);
+				text_rect_.y += line_skip_ + text_rect_.h;
+				text_rect_.y += fd_;
+			}
+			else
+				break;
+			//++i;
+			// if (i >= max_lines_)
+			//	break;
+		}
+		text_rect_ = cache_text_rect;
+		if (max_lines_ > 1)
+		{
+			if (shrink_to_fit)
+			{
+				float final_rad = 1.f;
+				if (bounds.h > bounds.w)
+				{
+					final_rad = ((coner_radius_ / 2.f) * bounds.w) / 100.f;
+				}
+				else if (bounds.h <= bounds.w)
+				{
+					final_rad = ((coner_radius_ / 2.f) * bounds.h) / 100.f;
+				}
+				bounds.x = bounds.x + (text_rect_.x - final_rad);
+				bounds.w = text_rect_.w + (final_rad * 2.f);
+				outlineRect.rect.x = outlineRect.rect.x + (text_rect_.x - final_rad);
+				outlineRect.rect.w = text_rect_.w + (final_rad * 2.f);
+			}
+		}
+		crt_.release(renderer);
+	}
+
+protected:
+	template <typename T>
+	bool onClick(T x, T y, unsigned short axis = 0)
+	{
+		[[likely]] if (axis == 0)
+		{
+			if (x < pv->getRealX() + bounds.x || x >(pv->getRealX() + bounds.x + bounds.w) || y < pv->getRealY() + bounds.y ||
+				y >(pv->getRealY() + bounds.y + bounds.h))
+				return false;
+		}
+		else if (axis == 1 /*x-axis only*/)
+		{
+			if (x < bounds.x || x >(bounds.x + bounds.w))
+				return false;
+		}
+		else if (axis == 2 /*y-axis only*/)
+		{
+			if (y < bounds.y || y >(bounds.y + bounds.h))
+				return false;
+		}
+		return true;
+	}
+
+	inline void update_pos_internal(const float& x, const float& y, const bool& _is_animated) noexcept
+	{
+		bounds.x += x, bounds.y += y;
+		dest_src_.x += x, dest_src_.y += y;
+		config_dat_.rect.x += x, config_dat_.rect.y += y;
+		outlineRect.rect.x += x, outlineRect.rect.y += y;
+	}
+
+protected:
+	SDL_FRect text_rect_, dest_src_, capture_src_;
+	RectOutline outlineRect;
+	SharedTexture texture_;
+	ImageButton image_button_;
+	std::deque<std::string> wrapped_text_;
+	std::function<bool(TextBox*)> onClickedCallback_;
+	std::vector<IView*>on_click_views{};
+	EdgeType edge_type_;
+	Gravity gravity_;
+	TextWrapStyle text_wrap_style_;
+	TextAttributes text_attributes_;
+	FontAttributes font_attributes_;
+	TextBoxAttributes config_dat_;
+	bool isButton = false, is_enabled_, highlight_on_mouse_hover_, mouse_in_bound_, shrink_to_fit;
+	float margin_ = 0.f, line_skip_ = 0.f, coner_radius_ = 0.f;
+	uint32_t id_, max_displayable_chars_per_ln_, max_displayable_lines_ = 1, max_lines_ = 1;
+	int custom_fontstyle_ = TTF_STYLE_NORMAL;
+};
+
 class RunningText : public Context, public IView
 {
 public:
 	struct Attr
 	{
-		SDL_FRect rect{0.f, 0.f, 0.f, 0.f};
-		SDL_Color text_color{255, 255, 255, 255};
-		SDL_Color bg_color{0, 0, 0, 0};
+		SDL_FRect rect{ 0.f, 0.f, 0.f, 0.f };
+		SDL_Color text_color{ 255, 255, 255, 255 };
+		SDL_Color bg_color{ 0, 0, 0, 0 };
 		Font mem_font = Font::RobotoBold;
 		FontStyle font_style = FontStyle::Normal;
 		std::string font_file;
@@ -4898,12 +5683,12 @@ public:
 
 public:
 	RunningText() = default;
-	RunningText(Context *_context, const RunningText::Attr &_attr)
+	RunningText(Context* _context, const RunningText::Attr& _attr)
 	{
 		Build(_context, _attr);
 	}
 
-	RunningText &Build(Context *_context, const RunningText::Attr &_attr)
+	RunningText& Build(Context* _context, const RunningText::Attr& _attr)
 	{
 		setContext(_context);
 		adaptiveVsyncHD.setAdaptiveVsync(adaptiveVsync);
@@ -4936,7 +5721,7 @@ public:
 
 	std::string getText() { return text_; }
 
-	void updateText(const std::string &_text)
+	void updateText(const std::string& _text)
 	{
 		text_ = _text;
 		if (_text.empty())
@@ -4949,8 +5734,8 @@ public:
 		SDL_SetRenderTarget(renderer, texture.get());
 		RenderClear(renderer, attr.bg_color.r, attr.bg_color.g, attr.bg_color.b, attr.bg_color.a);
 
-		FontAttributes fontAttrb = {attr.font_file, attr.font_style, static_cast<uint8_t>(bounds.h)};
-		TTF_Font *tmpFont = nullptr;
+		FontAttributes fontAttrb = { attr.font_file, attr.font_style, static_cast<uint8_t>(bounds.h) };
+		TTF_Font* tmpFont = nullptr;
 		if (fontAttrb.font_file.empty())
 		{
 			Fonts[attr.mem_font]->font_size = fontAttrb.font_size;
@@ -4965,7 +5750,7 @@ public:
 		text_texture = FontSystem::Get().genTextTextureShared(renderer, _text.c_str(), attr.text_color).value();
 		int tw = 0, th = 0;
 		SDL_QueryTexture(text_texture.get(), nullptr, nullptr, &tw, &th);
-		SDL_FRect dst{0.f, 0.f, bounds.w, bounds.h};
+		SDL_FRect dst{ 0.f, 0.f, bounds.w, bounds.h };
 		dst.w = static_cast<float>(tw);
 		if (static_cast<float>(th) > dst.h)
 			dst.y += fd_, dst.h = static_cast<float>(th);
@@ -4980,7 +5765,7 @@ public:
 		tm_last_pause = SDL_GetTicks();
 		tm_last_update = tm_last_pause; //+attr.pause_duration+1;
 		Async::GThreadPool.enqueue([this]()
-								   {SDL_Delay(attr.pause_duration); WakeGui(); });
+			{SDL_Delay(attr.pause_duration); WakeGui(); });
 		// adaptiveVsyncHD.startRedrawSession();
 	}
 
@@ -5025,7 +5810,7 @@ private:
 			tm_last_pause = SDL_GetTicks();
 			tm_last_update = SDL_GetTicks();
 			Async::GThreadPool.enqueue([this]()
-									   {SDL_Delay(attr.pause_duration); WakeGui(); });
+				{SDL_Delay(attr.pause_duration); WakeGui(); });
 			adaptiveVsyncHD.stopRedrawSession();
 		}
 		RenderTexture(renderer, text_texture.get(), nullptr, &txt_rect);
@@ -5038,8 +5823,8 @@ private:
 	Attr attr;
 	SharedTexture texture;
 	SharedTexture text_texture;
-	SDL_FRect txt_rect{0.f, 0.f, 0.f, 0.f};
-	SDL_FRect txt_rect2{0.f, 0.f, 0.f, 0.f};
+	SDL_FRect txt_rect{ 0.f, 0.f, 0.f, 0.f };
+	SDL_FRect txt_rect2{ 0.f, 0.f, 0.f, 0.f };
 	bool is_running = false;
 	bool is_centered = false;
 	uint32_t tm_last_pause = 0;
@@ -5127,1377 +5912,6 @@ private:
 	SDL_FRect m_rect;
 	uint32_t m_blink_tm;
 	SDL_Color m_color;
-};
-
-namespace m1
-{
-	struct TextBoxAttributes
-	{
-		Font mem_font = Font::RobotoBold;
-		SDL_FRect rect = {0.f, 0.f, 100.f, 20.f};															 // Default size
-		TextAttributes textAttributes = {"Hello World", {0x00, 0x00, 0x00, 0xff}, {0xff, 0xff, 0xff, 0x00}}; // Transparent BG for text texture by default
-		SDL_FRect margin = {5.f, 5.f, 95.f, 95.f};															 // Default: 5% margin on all sides (x,y are start, w,h are end percentages)
-		std::string fontFile;																				 // Path to .ttf file if not using mem_font
-		int fontSizePt = 16;																				 // ADDED: Explicit font size in points
-		FontStyle fontStyle = FontStyle::Normal;
-		EdgeType edgeType = EdgeType::RECT;
-		uint32_t maxlines = 0; // 0 for unlimited lines within bounds, >0 for specific line limit for wrapping
-		TextWrapStyle textWrapStyle = TextWrapStyle::MAX_WORDS_PER_LN;
-		Gravity gravity = Gravity::Left;
-		float cornerRadius = 0.f; // Renamed from conerRadius
-		// int customFontstyle = 0x00; // Replaced by mapping FontStyle to SDL_TTF styles
-		float lineSpacing = 2.0f;	  // Additional spacing between lines in pixels
-		float outlineThickness = 0.f; // Renamed from outline
-		bool isButton = false;
-		bool shrinkToFit = false;
-		bool highlightOnHover = false;
-		SDL_Color outlineColor = {0x00, 0x00, 0x00, 0xff};
-		SDL_Color onHoverOutlineColor = {0x33, 0x33, 0x33, 0xff};
-		SDL_Color onHoverBgColor = {0xee, 0xee, 0xee, 0xff};
-		SDL_Color onHoverTextColor = {0x00, 0x00, 0x00, 0xff}; // For changing text color on hover
-		SDL_Color backgroundColor = {0xff, 0xff, 0xff, 0xff};  // Overall background color for the TextBox bounds
-	};
-
-	class TextBox : public Context, public IView
-	{
-	public:
-		// Make sure IView's virtual functions are accessible if not public in IView
-		// using IView::getView; // Already public in mock
-		// using IView::isHidden; // Already public in mock
-		// using IView::type; // Already public in mock
-
-	public:
-		TextBox() { IView::type = "TextBox"; } // Set type
-
-		TextBox &setContext(Context *_context)
-		{
-			Context::setContext(_context);
-			Context::setView(this); // Assuming Context has setView
-			return *this;
-		}
-
-		TextBox &Build(Context *_context, const TextBoxAttributes &attrs)
-		{
-			setContext(_context);
-			config_dat_ = attrs;
-			current_text_attributes_ = config_dat_.textAttributes; // Store current text attributes for hover changes
-			current_bg_color_ = config_dat_.backgroundColor;
-			current_outline_color_ = config_dat_.outlineColor;
-
-			// 1. Overall bounds
-			IView::bounds = config_dat_.rect; // Use IView's bounds member
-
-			// 2. Font Loading and Metrics
-			font_attributes_.font_file = config_dat_.fontFile;
-			font_attributes_.font_size = config_dat_.fontSizePt;
-			font_attributes_.font_style = config_dat_.fontStyle;
-			// font_attributes_.sdl_ttf_style = mapFontStyleToSDL(config_dat_.fontStyle);
-
-			is_valid_ = true;
-
-			TTF_Font *font = getFont();
-			if (!font)
-			{
-				std::cout << "TextBox::Build Error: Font not available." << std::endl;
-				is_valid_ = false;
-				return *this;
-			}
-			actual_line_height_ = TTF_FontLineSkip(font);
-			if (actual_line_height_ <= 0)
-				actual_line_height_ = font_attributes_.font_size; // Fallback
-
-			// 3. Calculate Text Rendering Area (relative to 0,0 for the texture)
-			// This is the area *within* the TextBox bounds where text can be drawn, after margins.
-			float text_area_x_offset = to_cust(config_dat_.margin.x, IView::bounds.w);
-			float text_area_y_offset = to_cust(config_dat_.margin.y, IView::bounds.h);
-			float text_area_w_percent_span = config_dat_.margin.w - config_dat_.margin.x;
-			float text_area_h_percent_span = config_dat_.margin.h - config_dat_.margin.y;
-
-			text_render_area_local_.x = 0; // Texture is rendered from its own 0,0
-			text_render_area_local_.y = 0;
-			text_render_area_local_.w = to_cust(text_area_w_percent_span, IView::bounds.w);
-			text_render_area_local_.h = to_cust(text_area_h_percent_span, IView::bounds.h);
-
-			// Store absolute offsets for drawing the texture later
-			text_render_area_abs_offset_x_ = text_area_x_offset;
-			text_render_area_abs_offset_y_ = text_area_y_offset;
-
-			if (text_render_area_local_.w <= 0 || text_render_area_local_.h <= 0)
-			{
-				GLogger.Log(Logger::Level::Info, "TextBox::Build Warning: Text render area has zero or negative dimensions.");
-				is_valid_ = false;
-				// wrapped_text_.clear(); // No space to render
-				// texture_.reset();
-				// return *this; // Or allow it, will just render nothing
-			}
-
-			// 4. Text Wrapping
-			wrapped_text_.clear();
-			if (!current_text_attributes_.text.empty() && text_render_area_local_.w > 0)
-			{
-				// Estimate max chars per line for wrapping (can be improved)
-				// A better way is for TextProcessor to take pixel width if possible.
-				// For now, using a rough estimate based on font size.
-				// 'M' is often a wide character.
-				int m_width_px = 0;
-				if (TTF_GlyphMetrics(font, 'M', nullptr, nullptr, nullptr, nullptr, &m_width_px) != 0)
-				{
-					m_width_px = font_attributes_.font_size / 2; // Fallback if metrics fail
-				}
-				if (m_width_px == 0)
-					m_width_px = 1; // Avoid division by zero
-
-				uint32_t chars_for_wrapping = static_cast<uint32_t>(text_render_area_local_.w / m_width_px);
-				if (chars_for_wrapping == 0 && text_render_area_local_.w > 0)
-					chars_for_wrapping = 1;
-
-				if (config_dat_.textWrapStyle == TextWrapStyle::MAX_WORDS_PER_LN)
-				{
-					TextProcessor::Get().wrap_by_word_unicode(current_text_attributes_.text, &wrapped_text_, " ,-_./\\:;|})!",
-															  chars_for_wrapping, config_dat_.maxlines);
-				}
-				else
-				{
-					TextProcessor::Get().wrap_max_char_unicode(current_text_attributes_.text, &wrapped_text_,
-															   chars_for_wrapping, config_dat_.maxlines);
-				}
-			}
-			if (wrapped_text_.empty() && !current_text_attributes_.text.empty())
-			{
-				// If wrapping resulted in no lines but there was text (e.g. area too small)
-				// add the original text as one line to attempt rendering, or handle as error.
-				// For now, let it be empty, regenerateTextTexture will handle it.
-				GLogger.Log(Logger::Level::Info, "wrapped_text is empty");
-			}
-
-			// 5. Calculate Required Text Dimensions (for shrink_to_fit and texture sizing)
-			float required_text_pixel_width = 0;
-			for (const auto &line : wrapped_text_)
-			{
-				// GLogger.Log(Logger::Level::Info,"wrapped_text:"+line);
-				int lw, lh;
-				if (TTF_SizeUTF8(font, line.c_str(), &lw, &lh) == 0)
-				{
-					if (static_cast<float>(lw) > required_text_pixel_width)
-					{
-						required_text_pixel_width = static_cast<float>(lw);
-					}
-				}
-			}
-			if (wrapped_text_.empty() && !current_text_attributes_.text.empty())
-			{ // If text exists but couldn't be wrapped (e.g. too small area)
-				// GLogger.Log(Logger::Level::Info,"single line text");
-				int tw, th;
-				if (TTF_SizeUTF8(font, current_text_attributes_.text.c_str(), &tw, &th) == 0)
-				{
-					required_text_pixel_width = static_cast<float>(tw);
-				}
-			}
-
-			float required_text_pixel_height = 0;
-			if (!wrapped_text_.empty())
-			{
-				required_text_pixel_height = wrapped_text_.size() * actual_line_height_ +
-											 (wrapped_text_.size() > 1 ? (wrapped_text_.size() - 1) * config_dat_.lineSpacing : 0);
-			}
-			else if (!current_text_attributes_.text.empty())
-			{ // Text exists but not wrapped
-				required_text_pixel_height = actual_line_height_;
-			}
-
-			// 6. Apply `shrinkToFit`
-			SDL_FRect original_bounds = IView::bounds; // Keep original for relative margin calcs if needed
-			if (config_dat_.shrinkToFit)
-			{
-				float content_w = required_text_pixel_width;
-				float content_h = required_text_pixel_height;
-
-				// Calculate total horizontal and vertical margin percentages
-				float total_h_margin_percent = config_dat_.margin.x + (100.0f - config_dat_.margin.w);
-				float total_v_margin_percent = config_dat_.margin.y + (100.0f - config_dat_.margin.h);
-
-				if (100.0f - total_h_margin_percent > 0)
-				{ // Avoid division by zero if margins are 100%
-					IView::bounds.w = content_w / ((100.0f - total_h_margin_percent) / 100.0f);
-				}
-				else
-				{
-					IView::bounds.w = content_w; // Fallback: content width is total width
-				}
-				if (100.0f - total_v_margin_percent > 0)
-				{
-					IView::bounds.h = content_h / ((100.0f - total_v_margin_percent) / 100.0f);
-				}
-				else
-				{
-					IView::bounds.h = content_h; // Fallback
-				}
-
-				// Recalculate text_render_area_local_ based on new bounds
-				text_render_area_local_.w = to_cust(text_area_w_percent_span, IView::bounds.w);
-				text_render_area_local_.h = to_cust(text_area_h_percent_span, IView::bounds.h);
-				// And absolute offsets
-				text_render_area_abs_offset_x_ = to_cust(config_dat_.margin.x, IView::bounds.w);
-				text_render_area_abs_offset_y_ = to_cust(config_dat_.margin.y, IView::bounds.h);
-			}
-
-			// 7. Determine max_displayable_lines_ based on final text_render_area_local_.h
-			if (actual_line_height_ + config_dat_.lineSpacing > 0)
-			{
-				max_displayable_lines_ = static_cast<uint32_t>(
-					std::floorf(text_render_area_local_.h / (actual_line_height_ + config_dat_.lineSpacing)));
-				// Adjust for the last line not needing lineSpacing after it
-				if (max_displayable_lines_ > 0 && text_render_area_local_.h - (max_displayable_lines_ * (actual_line_height_ + config_dat_.lineSpacing) - config_dat_.lineSpacing) < 0)
-				{
-					if (max_displayable_lines_ > 0)
-						max_displayable_lines_--;
-				}
-			}
-			else
-			{
-				max_displayable_lines_ = wrapped_text_.size(); // Or 0 if actual_line_height_ is 0
-			}
-			if (max_displayable_lines_ == 0 && !wrapped_text_.empty() && text_render_area_local_.h > 0)
-				max_displayable_lines_ = 1; // Can display at least one line if space
-
-			// 8. Regenerate Text Texture
-			regenerateTextTexture();
-
-			// 9. Setup `capture_src_` and `dest_rect_on_screen_` for drawing
-			// `dest_rect_on_screen_` is where the text texture (or part of it) is drawn on the screen.
-			dest_rect_on_screen_.x = IView::bounds.x + text_render_area_abs_offset_x_;
-			dest_rect_on_screen_.y = IView::bounds.y + text_render_area_abs_offset_y_;
-
-			if (texture_.get())
-			{
-				int tex_w, tex_h;
-				SDL_QueryTexture(texture_.get(), nullptr, nullptr, &tex_w, &tex_h);
-
-				capture_src_.x = 0;
-				capture_src_.y = current_scroll_y_offset_px_; // For scrolling
-				capture_src_.w = static_cast<float>(tex_w);
-				// Height of capture is limited by available text render area height on screen
-				capture_src_.h = std::min(static_cast<float>(tex_h) - current_scroll_y_offset_px_, text_render_area_local_.h);
-				if (capture_src_.h < 0)
-				{
-					capture_src_.h = 0;
-					// capture_src_.h = static_cast<float>(tex_h);
-				}
-
-				dest_rect_on_screen_.w = capture_src_.w; // Draw captured part at its native width
-				dest_rect_on_screen_.h = capture_src_.h; // And native height
-			}
-			else
-			{
-				GLogger.Log(Logger::Level::Warning, "Null Text Texture!");
-				capture_src_ = {0, 0, 0, 0};
-				dest_rect_on_screen_.w = 0;
-				dest_rect_on_screen_.h = 0;
-			}
-
-			// Build outline rect based on final IView::bounds
-			outlineRect.Build(this, IView::bounds, config_dat_.outlineThickness, config_dat_.cornerRadius,
-							  current_bg_color_, current_outline_color_);
-
-			is_valid_ = true;
-			return *this;
-		}
-
-		void draw() override
-		{
-			if (/*m_isHidden || */ !is_valid_ || !renderer)
-				return;
-
-			outlineRect.color = current_bg_color_; // Update colors potentially changed by hover
-			outlineRect.outline_color = current_outline_color_;
-			outlineRect.draw();
-
-			if (texture_ && capture_src_.w > 0 && capture_src_.h > 0)
-			{
-				// std::cout << "TextBox::Build Error: Font not available." << std::endl;
-				RenderTexture(renderer, texture_.get(), &capture_src_, &dest_rect_on_screen_);
-			}
-			/*
-			GLogger.Log(Logger::Level::Info, "cap_src:" +
-												 packToString(capture_src_.x, capture_src_.y, capture_src_.w, capture_src_.h));
-			GLogger.Log(Logger::Level::Info, "cap_dst:" +
-												 packToString(dest_rect_on_screen_.x,
-												 dest_rect_on_screen_.y, dest_rect_on_screen_.w, dest_rect_on_screen_.h));*/
-		}
-
-		bool handleEvent() override
-		{
-			if (/*m_isHidden ||*/ !is_valid_ || !event || !renderer)
-				return false;
-
-			bool event_handled = false;
-			SDL_FPoint mouse_pos;
-
-			switch (event->type)
-			{
-			case EVT_RENDER_TARGETS_RESET: // Your custom event
-				// This might mean the renderer context was lost and textures need recreation.
-				// Full rebuild might be too much if only textures were lost.
-				// A lighter "resolveTextureReset" that only calls regenerateTextTexture might be better.
-				// For now, assume it means a significant state change requiring rebuild.
-				Build(this, config_dat_); // Re-pass current context
-				event_handled = true;
-				break;
-
-			case EVT_MOUSE_MOTION:
-				mouse_pos = {static_cast<float>(event->motion.x), static_cast<float>(event->motion.y)};
-				handleMouseMove(mouse_pos);
-				// Mouse motion itself doesn't usually "handle" an event in a way that stops propagation,
-				// unless it triggers a state change that consumes subsequent events.
-				break;
-
-			case EVT_MOUSE_BTN_DOWN:
-				mouse_pos = {static_cast<float>(event->button.x), static_cast<float>(event->button.y)};
-				if (isPointInside(mouse_pos))
-				{
-					haptics->play_effect();
-					mouse_in_bounds_on_click_ = true;
-					// Handle click start visual changes if any (e.g., pressed state)
-					event_handled = true; // Potentially consume event if it's a button
-				}
-				else
-				{
-					mouse_in_bounds_on_click_ = false;
-				}
-				break;
-
-			case EVT_FINGER_UP:	   // Assuming EVT_FINGER_UP provides absolute pixel coords
-			case EVT_MOUSE_BTN_UP: // Assuming EVT_MOUSE_BTN_UP
-				if (event->type == EVT_FINGER_UP)
-				{
-					mouse_pos = {event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.y * DisplayInfo::Get().RenderH};
-				}
-				else
-				{
-					mouse_pos = {static_cast<float>(event->button.x), static_cast<float>(event->button.y)};
-				}
-
-				if (mouse_in_bounds_on_click_ && isPointInside(mouse_pos))
-				{
-					if (onClickedCallback_)
-					{
-						onClickedCallback_(this);
-						event_handled = true;
-					}
-					else if (config_dat_.isButton)
-					{ // Default button behavior
-						event_handled = true;
-					}
-				}
-				mouse_in_bounds_on_click_ = false;
-				// Reset hover state if mouse is no longer over after click
-				handleMouseMove(mouse_pos); // Update hover state based on current mouse pos
-				break;
-
-			case EVT_WPSC: // Your custom window events
-			case EVT_WMAX:
-				// Assuming these require recalculating layout based on new display info
-				// This is a simplified version. A real resize might pass new dimensions.
-				config_dat_.rect.x = DisplayInfo::Get().toUpdatedWidth(config_dat_.rect.x);
-				config_dat_.rect.y = DisplayInfo::Get().toUpdatedHeight(config_dat_.rect.y);
-				config_dat_.rect.w = DisplayInfo::Get().toUpdatedWidth(config_dat_.rect.w);
-				config_dat_.rect.h = DisplayInfo::Get().toUpdatedHeight(config_dat_.rect.h);
-				Build(this, config_dat_); // Re-pass current context
-				event_handled = true;
-				break;
-			}
-			return event_handled;
-		}
-
-		// --- New/Updated Public Methods ---
-		TextBox &setText(const std::string &new_text)
-		{
-			if (current_text_attributes_.text == new_text)
-				return *this;
-			current_text_attributes_.text = new_text;
-			// Need to re-evaluate everything: wrap, shrink_to_fit, render
-			Build(this, config_dat_); // Re-pass current context and attributes (config_dat_ now has new text via current_text_attributes_)
-			return *this;
-		}
-
-		TextBox &setFontSize(int new_point_size)
-		{
-			if (config_dat_.fontSizePt == new_point_size || new_point_size <= 0)
-				return *this;
-			config_dat_.fontSizePt = new_point_size;
-			font_attributes_.font_size = new_point_size; // Update internal cache too
-			Build(this, config_dat_);
-			return *this;
-		}
-
-		TextBox &setTextColor(const SDL_Color &new_color)
-		{
-			// Simple equality check for SDL_Color
-			if (current_text_attributes_.text_color.r == new_color.r &&
-				current_text_attributes_.text_color.g == new_color.g &&
-				current_text_attributes_.text_color.b == new_color.b &&
-				current_text_attributes_.text_color.a == new_color.a)
-				return *this;
-
-			current_text_attributes_.text_color = new_color;
-			config_dat_.textAttributes.text_color = new_color; // Persist in config if Build uses it directly
-
-			// Only need to regenerate texture, not full build if layout doesn't change
-			if (is_valid_)
-				regenerateTextTexture();
-			return *this;
-		}
-
-		TextBox &setBackgroundColor(const SDL_Color &new_color)
-		{
-			if (config_dat_.backgroundColor.r == new_color.r && /* ... */ config_dat_.backgroundColor.a == new_color.a)
-				return *this;
-			config_dat_.backgroundColor = new_color;
-			current_bg_color_ = new_color;		   // For immediate redraw
-			outlineRect.color = current_bg_color_; // Update outline's bg part
-			// No need to rebuild texture if only overall BG changes
-			return *this;
-		}
-
-		TextBox &setOutlineColor(const SDL_Color &new_color)
-		{
-			if (config_dat_.outlineColor.r == new_color.r && /* ... */ config_dat_.outlineColor.a == new_color.a)
-				return *this;
-			config_dat_.outlineColor = new_color;
-			current_outline_color_ = new_color; // For immediate redraw
-			outlineRect.outline_color = current_outline_color_;
-			return *this;
-		}
-
-		TextBox &setRect(const SDL_FRect &new_rect)
-		{
-			config_dat_.rect = new_rect;
-			Build(this, config_dat_);
-			return *this;
-		}
-
-		TextBox &setMaxLines(uint32_t new_max_lines)
-		{
-			if (config_dat_.maxlines == new_max_lines)
-				return *this;
-			config_dat_.maxlines = new_max_lines;
-			Build(this, config_dat_);
-			return *this;
-		}
-
-		TextBox &onClick(std::function<void(TextBox *)> callback) noexcept
-		{
-			onClickedCallback_ = callback;
-			return *this;
-		}
-
-		std::string getText() const { return current_text_attributes_.text; }
-		const SDL_FRect &getBounds() const { return IView::bounds; }
-		uint32_t getId() const { return id_; } // Assuming id_ is a member
-		TextBox &setId(uint32_t id)
-		{
-			id_ = id;
-			return *this;
-		}
-
-		// Scrolling related (basic implementation)
-		void scroll(float dy_px)
-		{
-			if (!texture_ || !is_valid_)
-				return;
-
-			int tex_w, tex_h;
-			SDL_QueryTexture(texture_.get(), nullptr, nullptr, &tex_w, &tex_h);
-
-			float max_scroll_y = static_cast<float>(tex_h) - text_render_area_local_.h;
-			if (max_scroll_y < 0)
-				max_scroll_y = 0;
-
-			current_scroll_y_offset_px_ += dy_px;
-			current_scroll_y_offset_px_ = std::max(0.0f, std::min(current_scroll_y_offset_px_, max_scroll_y));
-
-			// Update capture_src_ for next draw
-			capture_src_.y = current_scroll_y_offset_px_;
-			capture_src_.h = std::min(static_cast<float>(tex_h) - current_scroll_y_offset_px_, text_render_area_local_.h);
-			if (capture_src_.h < 0)
-				capture_src_.h = 0;
-			// dest_rect_on_screen_ height also needs to match capture_src_.h
-			dest_rect_on_screen_.h = capture_src_.h;
-		}
-		float getCurrentScrollY() const { return current_scroll_y_offset_px_; }
-		float getMaxScrollY() const
-		{
-			if (!texture_ || !is_valid_)
-				return 0.0f;
-			int tex_w, tex_h;
-			SDL_QueryTexture(texture_.get(), nullptr, nullptr, &tex_w, &tex_h);
-			float max_s = static_cast<float>(tex_h) - text_render_area_local_.h;
-			return (max_s < 0) ? 0.0f : max_s;
-		}
-
-	private:
-		TTF_Font *getFont()
-		{
-			if (font_attributes_.font_file.empty())
-			{
-				// SDL_Log("TX: %s,     ws: %d", current_text_attributes_.text.c_str(),wrapped_text_.size());
-				Fonts[config_dat_.mem_font]->font_size = font_attributes_.font_size;
-				font_attributes_.font_file = Fonts[config_dat_.mem_font]->font_name;
-				return FontSystem::Get().getFont(*Fonts[config_dat_.mem_font]);
-			}
-			else
-			{
-				return FontSystem::Get().getFont(font_attributes_.font_file, font_attributes_.font_size);
-			}
-		}
-		/*
-		int mapFontStyleToSDL(FontStyle style)
-		{
-			switch (style)
-			{
-			case FontStyle::Normal:
-				return TTF_STYLE_NORMAL;
-			case FontStyle::Bold:
-				return TTF_STYLE_BOLD;
-			case FontStyle::Italic:
-				return TTF_STYLE_ITALIC;
-			case FontStyle::BoldItalic:
-				return TTF_STYLE_BOLD | TTF_STYLE_ITALIC;
-			// Add underline, strikethrough if your FontStyle enum supports them
-			default:
-				return TTF_STYLE_NORMAL;
-			}
-		}*/
-
-		void regenerateTextTexture()
-		{
-
-			if (!renderer || !is_valid_)
-			{ // is_valid_ check to ensure layout calcs were okay
-				texture_.reset();
-				GLogger.Log(Logger::Level::Info, "is_valid_ check to ensure layout calcs were okay");
-				return;
-			}
-			// texture_.reset();
-
-			TTF_Font *font = getFont();
-			if (!font)
-			{
-				GLogger.Log(Logger::Level::Info, "TextBox::regenerateTextTexture Error: Font not available.");
-				texture_.reset();
-				return;
-			}
-			GLogger.Log(Logger::Level::Info, "here");
-
-			// Texture dimensions are based on the text_render_area_local_ for width,
-			// and the total height of all wrapped lines that are meant to be rendered.
-			float total_required_text_height = 0;
-			size_t lines_to_actually_render_in_texture = wrapped_text_.size();
-			if (config_dat_.maxlines > 0 && lines_to_actually_render_in_texture > config_dat_.maxlines)
-			{
-				lines_to_actually_render_in_texture = config_dat_.maxlines;
-			}
-
-			if (lines_to_actually_render_in_texture > 0)
-			{
-				total_required_text_height = (lines_to_actually_render_in_texture * actual_line_height_) +
-											 ((lines_to_actually_render_in_texture - 1) * config_dat_.lineSpacing);
-			}
-			else if (!current_text_attributes_.text.empty() && lines_to_actually_render_in_texture == 0)
-			{
-				// Case: text exists, but wrapping resulted in 0 lines (e.g., area too small for even one char of first word)
-				// OR maxlines was 0 and text was empty.
-				// If text exists, we should at least try to render one line's height for the texture.
-				total_required_text_height = actual_line_height_;
-				if (wrapped_text_.empty())
-					lines_to_actually_render_in_texture = 1; // Render a blank line space
-			}
-
-			int texture_w = static_cast<int>(text_render_area_local_.w);
-			int texture_h = static_cast<int>(std::max(1.0f, total_required_text_height)); // Min 1px height
-
-			if (texture_w <= 0)
-			{ // Texture height can be 0 if no text and no min height
-				GLogger.Log(Logger::Level::Info, "TextBox::regenerateTextTexture Warning: Calculated texture width is <= 0.");
-				texture_.reset();
-				return;
-			}
-			if (texture_h <= 0 && !current_text_attributes_.text.empty())
-			{
-				texture_h = static_cast<int>(actual_line_height_); // Min height for one line if text exists
-			}
-			if (texture_h <= 0)
-			{
-				texture_.reset();
-				return;
-			}
-
-			texture_ = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
-										   SDL_TEXTUREACCESS_TARGET, texture_w, texture_h);
-			if (!texture_)
-			{
-				GLogger.Log(Logger::Level::Error, packToString("TextBox Error: Failed to create texture: ", SDL_GetError()));
-				return;
-			}
-			else
-				GLogger.Log(Logger::Level::Info, "text texture created");
-
-			CacheRenderTarget crt_(renderer);
-			SDL_SetRenderTarget(renderer, texture_.get());
-			SDL_SetTextureBlendMode(texture_.get(), SDL_BLENDMODE_BLEND);
-			SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0); // Clear with transparent
-			SDL_RenderClear(renderer);
-			/*
-			TTF_SetFontStyle(font, font_attributes_.sdl_ttf_style);
-			TTF_SetFontOutline(font, config_dat_.outlineThickness > 0 ? static_cast<int>(config_dat_.outlineThickness) : 0);
-			// Note: SDL_ttf outline color is not directly settable; it uses the main text color.
-			// For a different outline color, you'd render text twice (once for outline in outline color, then main text).
-			// This example uses the simpler TTF_SetFontOutline.
-	*/
-			float current_y_render_pos = 0.0f;
-			SDL_FRect line_render_rect = {0.0f, 0.0f, 0.0f, 0.0f};
-
-			for (size_t i = 0; i < lines_to_actually_render_in_texture; ++i)
-			{
-				const std::string &line_text = (i < wrapped_text_.size()) ? wrapped_text_[i] : ""; // Handle case where lines_to_actually_render_in_texture > wrapped_text_.size() (e.g. for blank space)
-
-				if (line_text.empty() && !(lines_to_actually_render_in_texture == 1 && current_text_attributes_.text.empty()))
-				{
-					// If it's an empty line (not the only line representing fully empty text), just advance Y
-					current_y_render_pos += actual_line_height_ + config_dat_.lineSpacing;
-					continue;
-				}
-				/*
-				// Use current_text_attributes_.text_color (can be changed by hover)
-				SDL_Surface *text_surface = TTF_RenderUTF8_Blended(font, line_text.c_str(), current_text_attributes_.text_color);
-				if (!text_surface)
-				{*/
-				FontSystem::Get().setFontAttributes({font_attributes_.font_file.c_str(), font_attributes_.font_style, font_attributes_.font_size}, 0);
-				auto line_texture_temp = FontSystem::Get().genTextTextureUnique(renderer, line_text.c_str(), current_text_attributes_.text_color);
-				if (!line_texture_temp.has_value())
-				{
-					GLogger.Log(Logger::Level::Warning, "TextBox Warning: SDL_CreateTextureFromSurface failed for line.");
-					current_y_render_pos += actual_line_height_ + config_dat_.lineSpacing;
-					continue;
-				}
-
-				int line_w_px, line_h_px;
-				SDL_QueryTexture(line_texture_temp.value().get(), nullptr, nullptr, &line_w_px, &line_h_px);
-
-				line_render_rect.y = current_y_render_pos;
-				line_render_rect.w = static_cast<float>(line_w_px);
-				line_render_rect.h = static_cast<float>(line_h_px); // Use actual rendered height of the line
-
-				switch (config_dat_.gravity)
-				{
-				case Gravity::Left:
-					line_render_rect.x = 0.0f;
-					break;
-				case Gravity::Center:
-					line_render_rect.x = (texture_w - line_render_rect.w) / 2.0f;
-					break;
-				case Gravity::Right:
-					line_render_rect.x = texture_w - line_render_rect.w;
-					break;
-				}
-				if (line_render_rect.x < 0)
-					line_render_rect.x = 0; // Ensure non-negative X
-
-				SDL_RenderCopyF(renderer, line_texture_temp.value().get(), nullptr, &line_render_rect);
-				// SDL_DestroyTexture(line_texture_temp);
-
-				current_y_render_pos += actual_line_height_ + config_dat_.lineSpacing;
-			}
-			GLogger.Log(Logger::Level::Info, "here final");
-			// Reset font styles if they were global for the TTF_Font object and you expect other users
-			// TTF_SetFontOutline(font, 0);
-			// TTF_SetFontStyle(font, TTF_STYLE_NORMAL);
-		}
-
-		bool isPointInside(const SDL_FPoint &point) const
-		{
-			// Check against the main bounds of the TextBox
-			return (point.x >= IView::bounds.x && point.x <= IView::bounds.x + IView::bounds.w &&
-					point.y >= IView::bounds.y && point.y <= IView::bounds.y + IView::bounds.h);
-		}
-
-		void handleMouseMove(const SDL_FPoint &mouse_pos)
-		{
-			bool currently_over = isPointInside(mouse_pos);
-			if (currently_over != mouse_is_over_)
-			{
-				mouse_is_over_ = currently_over;
-				if (config_dat_.highlightOnHover)
-				{
-					if (mouse_is_over_)
-					{
-						current_outline_color_ = config_dat_.onHoverOutlineColor;
-						current_bg_color_ = config_dat_.onHoverBgColor;
-						// Optionally change text color too
-						if (config_dat_.onHoverTextColor.a > 0)
-						{ // Check if hover text color is set
-							bool text_color_changed = !(current_text_attributes_.text_color.r == config_dat_.onHoverTextColor.r &&
-														current_text_attributes_.text_color.g == config_dat_.onHoverTextColor.g &&
-														current_text_attributes_.text_color.b == config_dat_.onHoverTextColor.b &&
-														current_text_attributes_.text_color.a == config_dat_.onHoverTextColor.a);
-							current_text_attributes_.text_color = config_dat_.onHoverTextColor;
-							if (text_color_changed && is_valid_)
-								regenerateTextTexture(); // Re-render if text color changes
-						}
-					}
-					else
-					{
-						current_outline_color_ = config_dat_.outlineColor;
-						current_bg_color_ = config_dat_.backgroundColor;
-						bool text_color_changed = !(current_text_attributes_.text_color.r == config_dat_.textAttributes.text_color.r &&
-													current_text_attributes_.text_color.g == config_dat_.textAttributes.text_color.g &&
-													current_text_attributes_.text_color.b == config_dat_.textAttributes.text_color.b &&
-													current_text_attributes_.text_color.a == config_dat_.textAttributes.text_color.a);
-						current_text_attributes_.text_color = config_dat_.textAttributes.text_color; // Revert to original
-						if (text_color_changed && is_valid_)
-							regenerateTextTexture();
-					}
-				}
-			}
-		}
-
-	protected:
-		// Internal state
-		TextBoxAttributes config_dat_;
-		FontAttributes font_attributes_;
-		TextAttributes current_text_attributes_; // For hover effects on text color
-		SDL_Color current_bg_color_;
-		SDL_Color current_outline_color_;
-
-		SharedTexture texture_ = nullptr;
-		std::deque<std::string> wrapped_text_;
-
-		SDL_FRect text_render_area_local_;		  // Text area relative to (0,0) of the texture (w,h for texture creation)
-		float text_render_area_abs_offset_x_ = 0; // Offset of text area from bounds.x
-		float text_render_area_abs_offset_y_ = 0; // Offset of text area from bounds.y
-
-		SDL_FRect dest_rect_on_screen_; // Where the (captured part of) texture is drawn on screen
-		SDL_FRect capture_src_;			// Which part of the texture_ to draw (for scrolling)
-
-		RectOutline outlineRect;
-
-		std::function<void(TextBox *)> onClickedCallback_ = nullptr;
-
-		bool is_valid_ = false; // Becomes true after a successful Build
-		bool mouse_is_over_ = false;
-		bool mouse_in_bounds_on_click_ = false; // To track if click started inside
-
-		float actual_line_height_ = 0.0f; // Calculated from TTF_FontLineSkip
-		uint32_t max_displayable_lines_ = 1;
-		float current_scroll_y_offset_px_ = 0.0f;
-
-		uint32_t id_ = 0; // If you need an ID
-	};
-} // namespace m1
-
-struct TextBoxAttributes
-{
-	Font mem_font = Font::RobotoBold;
-	SDL_FRect rect = {0.f, 0.f, 0.f, 0.f};
-	TextAttributes textAttributes = {"", {0x00, 0x00, 0x00, 0xff}, {0xff, 0xff, 0xff, 0xff}};
-	SDL_FRect margin = {0.f, 0.f, 0.f, 0.f};
-	std::string fontFile;
-	FontStyle fontStyle = FontStyle::Normal;
-	EdgeType edgeType = EdgeType::RECT;
-	uint32_t maxlines = 1;
-	TextWrapStyle textWrapStyle = TextWrapStyle::MAX_CHARS_PER_LN;
-	Gravity gravity = Gravity::Left;
-	float cornerRadius = 0.f;
-	int customFontstyle = 0x00;
-	float lineSpacing = 0.f;
-	float outline = 0.f;
-	bool isButton = false;
-	bool shrinkToFit = false;
-	bool useHaptics = false;
-	bool highlightOnHover = false;
-	SDL_Color outlineColor = {0x00, 0x00, 0x00, 0x00};
-	SDL_Color onHoverOutlineColor = {0x00, 0x00, 0x00, 0x00};
-	SDL_Color onHoverBgColor = {0x00, 0x00, 0x00, 0x00};
-	SDL_Color onHoverTxtColor = {0x00, 0x00, 0x00, 0x00};
-};
-
-class TextBox : public Context, public IView
-{
-public:
-	TextBox &setContext(Context *_context)
-	{
-		Context::setContext(_context);
-		Context::setView(this);
-		return *this;
-	}
-
-	TextBox &Build(Context *_context, const TextBoxAttributes &textboxAttr_)
-	{
-		Context::setContext(_context);
-		config_dat_ = textboxAttr_;
-		coner_radius_ = textboxAttr_.cornerRadius;
-		line_skip_ = textboxAttr_.lineSpacing;
-		isButton = textboxAttr_.isButton;
-		bounds = textboxAttr_.rect;
-		// outlineRect.Build(this, textboxAttr_.rect, textboxAttr_.outline, textboxAttr_.conerRadius, textboxAttr_.textAttributes.bg_color, textboxAttr_.outlineColor);
-
-		text_rect_ = {to_cust(textboxAttr_.margin.x, bounds.w),
-					  to_cust(textboxAttr_.margin.y, bounds.h),
-					  to_cust(100.f - (textboxAttr_.margin.w + textboxAttr_.margin.x), bounds.w),
-					  to_cust(100.f - (textboxAttr_.margin.h + textboxAttr_.margin.y), bounds.h)};
-		text_attributes_ = textboxAttr_.textAttributes;
-		font_attributes_.font_file = textboxAttr_.fontFile;
-		font_attributes_.font_style = textboxAttr_.fontStyle;
-		// font_attributes_.font_size = static_cast<uint8_t>(to_cust(95.f, text_rect_.h));
-		font_attributes_.font_size = static_cast<uint8_t>(text_rect_.h);
-		custom_fontstyle_ = textboxAttr_.customFontstyle;
-		max_lines_ = textboxAttr_.maxlines;
-		edge_type_ = textboxAttr_.edgeType;
-		text_wrap_style_ = textboxAttr_.textWrapStyle;
-		gravity_ = textboxAttr_.gravity;
-		shrink_to_fit = textboxAttr_.shrinkToFit;
-		wrapped_text_.clear();
-
-		TTF_Font *font = getFont();
-		if (!font)
-		{
-			GLogger.Log(Logger::Level::Info, "TextBox::getFont Error: Font not available.");
-			return *this;
-		}
-		int m_width_px = 0;
-		if (TTF_GlyphMetrics(font, 'a', nullptr, nullptr, nullptr, nullptr, &m_width_px) != 0)
-		{
-			m_width_px = text_rect_.h / 2; // Fallback if metrics fail
-		}
-		m_width_px = text_rect_.h / 2;
-		if (m_width_px == 0)
-			m_width_px = 1; // Avoid division by zero
-
-		max_displayable_chars_per_ln_ = static_cast<uint32_t>(text_rect_.w / m_width_px);
-		if (text_attributes_.text.size() < max_displayable_chars_per_ln_)
-		{
-			wrapped_text_.emplace_back(text_attributes_.text);
-		}
-		else
-		{
-			if (text_wrap_style_ == TextWrapStyle::MAX_WORDS_PER_LN)
-			{
-				TextProcessor::Get().wrap_by_word_unicode(text_attributes_.text, &wrapped_text_, " ,-_?\./:;|}[]())!",
-														  max_displayable_chars_per_ln_, max_lines_);
-			}
-			else
-			{
-				TextProcessor::Get().wrap_max_char_unicode(text_attributes_.text, &wrapped_text_, max_displayable_chars_per_ln_, max_lines_);
-			}
-		}
-		/*if(max_displayable_chars_per_ln_<text_attributes_.text.size()){
-				wrapped_text_.back() = wrapped_text_.back().replace(wrapped_text_.back().begin()+ (wrapped_text_.back().size()-3), wrapped_text_.back().end(),"...");
-			}*/
-		max_displayable_lines_ = std::clamp(static_cast<uint32_t>(std::floorf(bounds.h / text_rect_.h)), (uint32_t)1, (uint32_t)1000000);
-		capture_src_ = {0.f, 0.f, text_rect_.w, (text_rect_.h) * std::clamp((float)wrapped_text_.size(), 1.f, (float)max_displayable_lines_)};
-		dest_src_ = text_rect_;
-		dest_src_.h = capture_src_.h;
-		dest_src_.x += bounds.x;
-		dest_src_.y += bounds.y;
-
-		this->texture_.reset();
-		// CacheRenderTarget crt_(renderer);
-		this->texture_ = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
-											 SDL_TEXTUREACCESS_TARGET, static_cast<int>(text_rect_.w),
-											 static_cast<int>(text_rect_.h * wrapped_text_.size()));
-
-		outlineRect.Build(this, {textboxAttr_.rect.x, textboxAttr_.rect.y, textboxAttr_.rect.w, textboxAttr_.rect.h /* capture_src_.w, capture_src_.h*/}, textboxAttr_.outline, textboxAttr_.cornerRadius, textboxAttr_.textAttributes.bg_color, textboxAttr_.outlineColor);
-
-		// SDL_SetTextureBlendMode(this->texture_.get(), SDL_BLENDMODE_BLEND);
-		// SDL_SetRenderTarget(renderer, this->texture_.get());
-		// RenderClear(renderer, 0, 0, 0, 0);
-		// FontSystem::Get().setFontAttributes({ font_attributes_.font_file.c_str(), font_attributes_.font_style, font_attributes_.font_size, 0.f }, custom_fontstyle_);
-		try
-		{
-			genText();
-		}
-		catch (std::exception e)
-		{
-			GLogger.Log(Logger::Level::Error,e.what());
-		}
-		return *this;
-	}
-
-public:
-	void draw() override
-	{
-		if (hidden)return;
-		/*SDL_SetRenderDrawColor(renderer, text_attributes_.bg_color.r, text_attributes_.bg_color.g, text_attributes_.bg_color.b, text_attributes_.bg_color.a);
-			RenderFillRect(renderer, &dest_);*/
-		outlineRect.draw();
-		// fillRoundedRectF(renderer, dest_, coner_radius_, text_attributes_.bg_color);
-		// RenderTexture(renderer, texture_.get(), NULL, &dest_src_);
-		RenderTexture(renderer, texture_.get(), &capture_src_, &dest_src_);
-		// SDL_Log("d:%f,%f,%f,%f",dest_src_.x,dest_src_.y,dest_src_.w,dest_src_.h);
-		// SDL_Log("s:%f,%f,%f,%f",capture_src_.x,capture_src_.y,capture_src_.w,capture_src_.h);
-		//  return *this;
-	}
-
-	TextBox &onClick(std::function<bool(TextBox *)> _on_clicked_callback) noexcept
-	{
-		onClickedCallback_ = _on_clicked_callback;
-		return *this;
-	}
-
-	constexpr inline TextBox &setConerRadius(const float &cr_) noexcept
-	{
-		this->coner_radius_ = cr_;
-		return *this;
-	}
-
-	TextBox &setId(const uint32_t &_id) noexcept
-	{
-		this->id_ = _id;
-		return *this;
-	}
-
-	SDL_FRect &getBounds()
-	{
-		return bounds;
-	}
-
-	float getRealPosX() { return pv->getRealX() + bounds.x; }
-
-	float getRealPosY() { return pv->getRealY() + bounds.y; }
-
-	inline const SDL_FRect &getBoundsConst() const noexcept
-	{
-		return this->bounds;
-	}
-
-	TextBox &setPos(const float x, const float y)
-	{
-		return *this;
-	}
-
-	inline void updatePosBy(float x, float y) override
-	{
-		update_pos_internal(x, y, false);
-		// return *this;
-	}
-
-	TextBox &updatePosByAnimated(const float x, const float y)
-	{
-		update_pos_internal(x, y, true);
-		return *this;
-	}
-
-	std::string getText() const
-	{
-		return this->text_attributes_.text;
-	}
-
-	bool isEnabled() const
-	{
-		return is_enabled_;
-	}
-
-	void setEnabled(const bool &_enabled)
-	{
-		is_enabled_ = _enabled;
-	}
-
-	uint32_t getId() const
-	{
-		return this->id_;
-	}
-
-	TextBox &updateTextColor(const SDL_Color &bgColor, const SDL_Color &outlineColor, const SDL_Color &textColor)
-	{
-		text_attributes_.bg_color = bgColor;
-		text_attributes_.text_color = textColor;
-		outlineRect.color = bgColor;
-		outlineRect.outline_color = outlineColor;
-
-		CacheRenderTarget crt_(renderer);
-		SDL_SetRenderTarget(renderer, this->texture_.get());
-		SDL_SetTextureBlendMode(this->texture_.get(), SDL_BLENDMODE_BLEND);
-		RenderClear(renderer, 0, 0, 0, 0);
-		const SDL_FRect cache_text_rect = text_rect_;
-		int tmp_sw = 0, tmp_sh = 0;
-		text_rect_.y = 0.f;
-		text_rect_.x = 0.f;
-
-		TTF_Font *tmpFont = nullptr;
-		if (font_attributes_.font_file.empty())
-		{
-			Fonts[config_dat_.mem_font]->font_size = font_attributes_.font_size;
-			font_attributes_.font_file = Fonts[config_dat_.mem_font]->font_name;
-			tmpFont = FontSystem::Get().getFont(*Fonts[config_dat_.mem_font]);
-		}
-		else
-		{
-			tmpFont = FontSystem::Get().getFont(font_attributes_.font_file, font_attributes_.font_size);
-		}
-		const float fa_ = static_cast<float>(TTF_FontDescent(tmpFont));
-		FontSystem::Get().setFontAttributes({font_attributes_.font_file.c_str(), font_attributes_.font_style, font_attributes_.font_size}, custom_fontstyle_);
-		for (auto const &line_ : wrapped_text_)
-		{
-			auto textTex = FontSystem::Get().genTextTextureUnique(renderer, line_.c_str(), this->text_attributes_.text_color);
-			if (textTex.has_value())
-			{
-				SDL_QueryTexture(textTex.value().get(), nullptr, nullptr, &tmp_sw, &tmp_sh);
-				// SDL_Log("TW: %d, TH: %d", tmp_sw, tmp_sh);
-				text_rect_.w = static_cast<float>(tmp_sw);
-				// text_rect_.h = (float)(tmp_sh);
-				text_rect_.w = std::clamp(text_rect_.w, 0.f, cache_text_rect.w);
-
-				if (max_lines_ == 1)
-				{
-					if (gravity_ == Gravity::Center)
-					{
-						text_rect_.x = ((cache_text_rect.w - text_rect_.w) / 2.f);
-					}
-					if (shrink_to_fit)
-					{
-						float final_rad = 1.f;
-						if (bounds.h > bounds.w)
-						{
-							final_rad = ((coner_radius_ / 2.f) * bounds.w) / 100.f;
-						}
-						else if (bounds.h <= bounds.w)
-						{
-							final_rad = ((coner_radius_ / 2.f) * bounds.h) / 100.f;
-						}
-						// dest_.x = dest_.x + (text_rect_.x - final_rad);
-						// dest_.w = text_rect_.w + (final_rad * 2.f);
-					}
-				}
-				RenderTexture(renderer, textTex.value().get(), nullptr, &text_rect_);
-				text_rect_.y += line_skip_ + text_rect_.h;
-			}
-			else
-				break;
-		}
-		text_rect_ = cache_text_rect;
-		crt_.release(renderer);
-		return *this;
-	}
-
-	TextBox &updateText(const std::string new_text)
-	{
-		text_attributes_.text = new_text;
-		wrapped_text_.clear();
-		if (text_wrap_style_ == TextWrapStyle::MAX_WORDS_PER_LN)
-		{
-			TextProcessor::Get().wrap_by_word_unicode(
-				text_attributes_.text, &wrapped_text_, " ,-_?\./:;|}[]())!",
-				max_displayable_chars_per_ln_, max_lines_);
-		}
-		else
-		{
-			TextProcessor::Get().wrap_max_char_unicode(
-				text_attributes_.text, &wrapped_text_, max_displayable_chars_per_ln_, max_lines_);
-		}
-		try
-		{
-			genText();
-		}
-		catch (std::exception e)
-		{
-			std::cout << e.what();
-		}
-		return *this;
-	}
-
-	void resolveTextureReset()
-	{
-		// this->Build(this, config_dat_);
-		updateTextColor(config_dat_.textAttributes.bg_color, config_dat_.outlineColor, config_dat_.textAttributes.text_color);
-	}
-
-	bool handleEvent()
-	{
-		// SDL_Log("tb handle event");
-		bool result = false;
-		switch (event->type)
-		{
-		case EVT_RENDER_TARGETS_RESET:
-			resolveTextureReset();
-			result = true;
-			break;
-		case EVT_MOUSE_BTN_DOWN:
-			if (onClick(event->button.x, event->button.y))
-			{
-				mouse_in_bound_ = true, result = true;
-				if (config_dat_.useHaptics)
-					haptics->play_effect();
-			}
-			else
-				mouse_in_bound_ = false;
-			break;
-		case EVT_MOUSE_MOTION:
-			if (onClick(event->motion.x, event->motion.y))
-			{
-				mouse_in_bound_ = true;
-				if (config_dat_.highlightOnHover)
-				{
-					outlineRect.outline_color = config_dat_.onHoverOutlineColor;
-					outlineRect.color = config_dat_.onHoverBgColor;
-				}
-			}
-			else
-			{
-				mouse_in_bound_ = false;
-				if (config_dat_.highlightOnHover)
-				{
-					outlineRect.outline_color = config_dat_.outlineColor;
-					outlineRect.color = text_attributes_.bg_color;
-				}
-			}
-			break; /*
-			 case EVT_MOUSE_BTN_UP:
-				 if (onClick(event->motion.x, event->motion.y)) {
-					 if (isButton)result = true;
-					 if (onClickedCallback_!=nullptr) {
-						 result = true;
-						 onClickedCallback_(this);
-					 }
-				 }
-				 mouse_in_bound_ = false;
-				 break;*/
-		case EVT_WPSC:
-		case EVT_WMAX:
-			config_dat_.rect =
-				{
-					DisplayInfo::Get().toUpdatedWidth(config_dat_.rect.x),
-					DisplayInfo::Get().toUpdatedHeight(config_dat_.rect.y),
-					DisplayInfo::Get().toUpdatedWidth(config_dat_.rect.w),
-					DisplayInfo::Get().toUpdatedHeight(config_dat_.rect.h),
-				};
-			this->Build(this, config_dat_);
-			break;
-		case EVT_FINGER_UP:
-			if (onClick(event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.y * DisplayInfo::Get().RenderH))
-			{
-				if (isButton)
-					result = true;
-				if (onClickedCallback_)
-				{
-					result = onClickedCallback_(this);
-				}
-			}
-			mouse_in_bound_ = false;
-			break;
-		}
-		return result;
-	}
-
-private:
-	TTF_Font *getFont()
-	{
-		if (font_attributes_.font_file.empty())
-		{
-			// SDL_Log("TX: %s,     ws: %d", text_attributes_.text.c_str(),wrapped_text_.size());
-			Fonts[config_dat_.mem_font]->font_size = font_attributes_.font_size;
-			font_attributes_.font_file = Fonts[config_dat_.mem_font]->font_name;
-			return FontSystem::Get().getFont(*Fonts[config_dat_.mem_font]);
-		}
-		else
-		{
-			return FontSystem::Get().getFont(font_attributes_.font_file, font_attributes_.font_size);
-		}
-	}
-
-	void genText()
-	{
-		CacheRenderTarget crt_(renderer);
-		SDL_SetTextureBlendMode(this->texture_.get(), SDL_BLENDMODE_BLEND);
-		SDL_SetRenderTarget(renderer, this->texture_.get());
-		RenderClear(renderer, 0, 0, 0, 0);
-		const SDL_FRect cache_text_rect = text_rect_;
-		int tmp_sw = 0, tmp_sh = 0, i = 0;
-		text_rect_.y = 0.f;
-		text_rect_.x = 0.f;
-		TTF_Font *tmpFont = getFont();
-
-		const auto fa_ = static_cast<float>(TTF_FontAscent(tmpFont));
-		const auto fd_ = static_cast<float>(TTF_FontDescent(tmpFont));
-
-		FontSystem::Get().setFontAttributes(std::move(FontAttributes{font_attributes_.font_file.c_str(), font_attributes_.font_style, font_attributes_.font_size}), custom_fontstyle_);
-		for (auto const &line_ : wrapped_text_)
-		{
-			/*
-				auto start_ = std::chrono::system_clock::now();
-				{
-					auto textTex = FontSystem::Get().genTextTextureUnique(renderer, line_.c_str(), this->text_attributes_.text_color);
-					std::chrono::duration<double> dt = std::chrono::system_clock::now() - start_;
-					std::cout << "otlt:" << dt.count() << std::endl;
-				}
-				start_= std::chrono::system_clock::now();
-				auto textTex = FontSystem::Get().genTextTextureUniqueV2(renderer, line_.c_str(), this->text_attributes_.text_color,text_rect_.w, text_rect_.h,true);
-				std::chrono::duration<double> dt = std::chrono::system_clock::now() - start_;
-				std::cout << "ntlt:" << dt.count() << std::endl;*/
-			// SDL_Log("TXL: %s", line_.c_str());
-
-			auto textTex = FontSystem::Get().genTextTextureUnique(renderer, line_.c_str(), this->text_attributes_.text_color);
-			if (textTex.has_value())
-			{
-				SDL_QueryTexture(textTex.value().get(), nullptr, nullptr, &tmp_sw, &tmp_sh);
-				// SDL_Log("TW: %d, TH: %d", tmp_sw, tmp_sh);
-				text_rect_.w = static_cast<float>(tmp_sw);
-				// std::cout << "TT: " <<tmp_sh<< " - FA: " << fa_ << " - FD: " << fd_ << std::endl;
-				text_rect_.h = static_cast<float>(tmp_sh);
-				// text_rect_.h = std::clamp(text_rect_.h, 0.f, text_rect_.h);
-				text_rect_.w = std::clamp(text_rect_.w, 0.f, cache_text_rect.w);
-				if (static_cast<float>(tmp_sh) > text_rect_.h)
-					text_rect_.y += fd_, text_rect_.h = static_cast<float>(tmp_sh);
-
-				if (max_lines_ == 1)
-				{
-					if (gravity_ == Gravity::Center)
-					{
-						text_rect_.x = ((cache_text_rect.w - text_rect_.w) / 2.f);
-					}
-					if (gravity_ == Gravity::Right)
-					{
-						text_rect_.x = ((cache_text_rect.w - text_rect_.w));
-					}
-					if (shrink_to_fit)
-					{
-						float final_rad = 1.f;
-						if (bounds.h > bounds.w)
-						{
-							final_rad = ((coner_radius_ / 2.f) * bounds.w) / 100.f;
-						}
-						else if (bounds.h <= bounds.w)
-						{
-							final_rad = ((coner_radius_ / 2.f) * bounds.h) / 100.f;
-						}
-						bounds.x = bounds.x + (text_rect_.x - final_rad);
-						bounds.w = text_rect_.w + (final_rad * 2.f);
-						outlineRect.rect.x = outlineRect.rect.x + (text_rect_.x - final_rad);
-						outlineRect.rect.w = text_rect_.w + (final_rad * 2.f);
-					}
-				}
-				RenderTexture(renderer, textTex.value().get(), nullptr, &text_rect_);
-				text_rect_.y += line_skip_ + text_rect_.h;
-				text_rect_.y += fd_;
-			}
-			else
-				break;
-			//++i;
-			// if (i >= max_lines_)
-			//	break;
-		}
-		text_rect_ = cache_text_rect;
-		if (max_lines_ > 1)
-		{
-			if (shrink_to_fit)
-			{
-				float final_rad = 1.f;
-				if (bounds.h > bounds.w)
-				{
-					final_rad = ((coner_radius_ / 2.f) * bounds.w) / 100.f;
-				}
-				else if (bounds.h <= bounds.w)
-				{
-					final_rad = ((coner_radius_ / 2.f) * bounds.h) / 100.f;
-				}
-				bounds.x = bounds.x + (text_rect_.x - final_rad);
-				bounds.w = text_rect_.w + (final_rad * 2.f);
-				outlineRect.rect.x = outlineRect.rect.x + (text_rect_.x - final_rad);
-				outlineRect.rect.w = text_rect_.w + (final_rad * 2.f);
-			}
-		}
-		crt_.release(renderer);
-	}
-
-protected:
-	template <typename T>
-	bool onClick(T x, T y, unsigned short axis = 0)
-	{
-		[[likely]] if (axis == 0)
-		{
-			if (x < pv->getRealX() + bounds.x || x > (pv->getRealX() + bounds.x + bounds.w) || y < pv->getRealY() + bounds.y ||
-				y > (pv->getRealY() + bounds.y + bounds.h))
-				return false;
-		}
-		else if (axis == 1 /*x-axis only*/)
-		{
-			if (x < bounds.x || x > (bounds.x + bounds.w))
-				return false;
-		}
-		else if (axis == 2 /*y-axis only*/)
-		{
-			if (y < bounds.y || y > (bounds.y + bounds.h))
-				return false;
-		}
-		return true;
-	}
-
-	inline void update_pos_internal(const float &x, const float &y, const bool &_is_animated) noexcept
-	{
-		bounds.x += x, bounds.y += y;
-		dest_src_.x += x, dest_src_.y += y;
-		config_dat_.rect.x += x, config_dat_.rect.y += y;
-		outlineRect.rect.x += x, outlineRect.rect.y += y;
-	}
-
-protected:
-	SDL_FRect text_rect_, dest_src_, capture_src_;
-	RectOutline outlineRect;
-	SharedTexture texture_;
-	ImageButton image_button_;
-	std::deque<std::string> wrapped_text_;
-	std::function<bool(TextBox *)> onClickedCallback_;
-	EdgeType edge_type_;
-	Gravity gravity_;
-	TextWrapStyle text_wrap_style_;
-	TextAttributes text_attributes_;
-	FontAttributes font_attributes_;
-	TextBoxAttributes config_dat_;
-	bool isButton = false, is_enabled_, highlight_on_mouse_hover_, mouse_in_bound_, shrink_to_fit;
-	float margin_ = 0.f, line_skip_ = 0.f, coner_radius_ = 0.f;
-	uint32_t id_, max_displayable_chars_per_ln_, max_displayable_lines_ = 1, max_lines_ = 1;
-	int custom_fontstyle_ = TTF_STYLE_NORMAL;
-};
-
-
-
-
-class CharStore :public Context {
-public:
-	CharStore() = default;
-	void setProps(Context* cntx, FontAttributes& fa, int _custom_ft_style = 0) {
-		Context::setContext(cntx);
-		fattr = fa;
-		custom_ft_style = _custom_ft_style;
-	}
-
-	SDL_Texture* getChar(std::string& _txt, SDL_Color& color) {
-		if (_txt.empty()) {
-			GLogger.Log(Logger::Level::Error, "CharStore::getChar invoked with empty string!");
-			return nullptr;
-		}
-		if (not char_textures.contains(_txt)) {
-			FontSystem::Get().setFontAttributes(fattr, custom_ft_style);
-			auto textTex = FontSystem::Get().genTextTextureRaw(renderer, _txt.c_str(), color);
-			if (textTex != nullptr) {
-				char_textures[_txt] = textTex;
-			}
-			else {
-				GLogger.Log(Logger::Level::Error, "CharStore::getChar::genText returned null!");
-				return nullptr;
-			}
-		}
-		return char_textures[_txt];
-	}
-
-	~CharStore() {
-		for (auto& [text, texture] : char_textures) {
-			SDL_DestroyTexture(texture);
-		}
-	}
-private:
-	std::unordered_map<std::string, SDL_Texture*> char_textures{};
-	FontAttributes fattr{};
-	int custom_ft_style = 0;
 };
 
 struct EditBoxAttributes
@@ -7088,6 +6502,8 @@ protected:
 	SDL_Color outlineColor = { 0x00, 0x00, 0x00, 0x00 };
 	int prevVsync = 1200;
 };
+
+
 class UIWidget
 {
 public:
@@ -8412,6 +7828,11 @@ public:
 		Context::setView(this);
 		return *this;
 	}
+
+	Cell& setUseScroll(bool use_scroll) {
+		useScrollView = use_scroll;
+		return *this;
+	}
 	/*
 	Cell::State getState()
 	{
@@ -8506,8 +7927,8 @@ public:
 		cell.bounds = { pw(pbounds.x), ph(pbounds.y), pw(pbounds.w), ph(pbounds.h) };
 		cell.bg_color = bg;
 		cell.corner_radius = _corner_radius;
-		GLogger.Log(Logger::Level::Info, "Cell bounds rect{", bounds.x, bounds.y, bounds.w, bounds.h, "}");
-		GLogger.Log(Logger::Level::Info, "Footer Cell bounds rect{", cell.bounds.x, cell.bounds.y, cell.bounds.w, cell.bounds.h,"}");
+		//GLogger.Log(Logger::Level::Info, "Cell bounds rect{", bounds.x, bounds.y, bounds.w, bounds.h, "}");
+		//GLogger.Log(Logger::Level::Info, "Footer Cell bounds rect{", cell.bounds.x, cell.bounds.y, cell.bounds.w, cell.bounds.h,"}");
 		return header_footer.back();
 	}
 
@@ -9060,9 +8481,9 @@ public:
 				customDrawCallback(*this);
 			}
 
-			if (useScrollView) {
+			/*if (useScrollView) {
 				scrollView.draw(renderer);
-			}
+			}*/
 			redraw = false;
 			crt_.release(renderer);
 			transformToRoundedTexture(renderer, texture.get(), corner_radius);
@@ -9745,7 +9166,8 @@ public:
 		RenderClear(renderer, bgColor.r, bgColor.g, bgColor.b, bgColor.a);
 		//		fillRoundedRectF(renderer, { 0.f,0.f,rect.w,rect.h }, 0.f, bgColor);
 		// fillRoundedRectF(renderer, {0.f, 0.f, bounds.w, bounds.h}, 0.f, bgColor);
-
+		/*if (fillNewCellDataCallbackHeader)
+			header_cell.draw();*/
 		crt_.release(renderer);
 
 		const int originalMaxCells = maxCells;
@@ -9844,6 +9266,8 @@ public:
 				return true;
 			}
 		}
+		if (fillNewCellDataCallbackHeader)
+			header_cell.handleEvent();
 		if (event->type == EVT_RENDER_TARGETS_RESET)
 		{
 			SDL_Log("targets reset. must recreate textures");
@@ -10109,6 +9533,8 @@ public:
 
 	void onUpdate() override
 	{
+		if (fillNewCellDataCallbackHeader)
+			header_cell.onUpdate();
 		for (auto &cell : visibleCells)
 		{
 			cell->onUpdate();
@@ -10145,10 +9571,11 @@ public:
 		if (scrlAction == ScrollAction::None and not ANIM_ACTION_DN and not ANIM_ACTION_UP and not CELL_PRESSED and not adaptiveVsyncHD.shouldReDrawFrame())
 		{
 			// fillRoundedRectF(renderer, {bounds.x, bounds.y, bounds.w, bounds.h}, cornerRadius, bgColor);
-			if (fillNewCellDataCallbackHeader)
-				header_cell.draw();
+			
 			// transformToRoundedTexture(renderer, texture.get(), cornerRadius);
 			RenderTexture(renderer, texture.get(), nullptr, &margin);
+			if (fillNewCellDataCallbackHeader)
+				header_cell.draw();
 			if (not childViews.empty())
 			{
 				for (auto child : childViews)
@@ -10262,8 +9689,8 @@ protected:
 	void simpleDraw()
 	{
 		// fillRoundedRectF(renderer, {bounds.x, bounds.y, bounds.w, bounds.h}, cornerRadius, bgColor);
-		if (fillNewCellDataCallbackHeader)
-			header_cell.draw();
+		/*if (fillNewCellDataCallbackHeader)
+			header_cell.draw();*/
 		CacheRenderTarget crt_(renderer);
 		SDL_SetRenderTarget(renderer, texture.get());
 		RenderClear(renderer, bgColor.r, bgColor.g, bgColor.b, bgColor.a);
@@ -10273,6 +9700,7 @@ protected:
 			cell->draw();
 			// SDL_Log("s9:%f,%f,%f,%f",cell->bounds.x,cell->bounds.y,cell->bounds.w,cell->bounds.h);
 		}
+		
 		crt_.release(renderer);
 		transformToRoundedTexture(renderer, texture.get(), cornerRadius);
 		RenderTexture(renderer, texture.get(), nullptr, &margin);
