@@ -997,6 +997,7 @@ public:
 	// bool relative_pos = false;
 	std::function<void()> onHideCallback = nullptr;
 	std::vector<IView *> childViews;
+	IView* linked_view = nullptr;
 
 public:
 	IView *getView()
@@ -1072,8 +1073,14 @@ public:
 		onHideCallback = _onHideCallback;
 	}
 
+	virtual void linkView(IView* link_view) {
+		linked_view = link_view;
+	}
+
 	IView *toggleView()
 	{
+		if (linked_view)
+			linked_view->toggleView();
 		if (hidden)
 		{
 			hidden = false;
@@ -1087,8 +1094,10 @@ public:
 		return this;
 	}
 
-	IView *hide()
+	virtual IView *hide()
 	{
+		if (linked_view)
+			linked_view->hide();
 		for (auto child : childViews)
 			child->hide();
 		hidden = true;
@@ -1099,8 +1108,10 @@ public:
 
 	bool isHidden() const { return hidden; }
 
-	IView *show()
+	virtual IView *show()
 	{
+		if (linked_view)
+			linked_view->show();
 		hidden = false;
 		return this;
 	}
@@ -1445,23 +1456,28 @@ public:
 		custom_ft_style = _custom_ft_style;
 	}
 
+	inline std::string colorToStr(SDL_Color& col) {
+		return packToString("", col.r, col.g, col.b, col.a);
+	}
+
 	SDL_Texture* getChar(std::string& _txt, SDL_Color& color) {
 		if (_txt.empty()) {
 			GLogger.Log(Logger::Level::Error, "CharStore::getChar invoked with empty string!");
 			return nullptr;
 		}
-		if (not char_textures.contains(_txt)) {
+		auto col_txt = colorToStr(color) + _txt;
+		if (not char_textures.contains(col_txt)) {
 			FontSystem::Get().setFontAttributes(fattr, custom_ft_style);
 			auto textTex = FontSystem::Get().genTextTextureRaw(renderer, _txt.c_str(), color);
 			if (textTex != nullptr) {
-				char_textures[_txt] = textTex;
+				char_textures[col_txt] = textTex;
 			}
 			else {
 				GLogger.Log(Logger::Level::Error, "CharStore::getChar::genText returned null!");
 				return nullptr;
 			}
 		}
-		return char_textures[_txt];
+		return char_textures[col_txt];
 	}
 
 	~CharStore() {
@@ -1505,13 +1521,18 @@ public:
 		textures.push_back({});
 		for (auto& ch : message) {
 			std::string outStr = { ch };
-			auto ch_texture = char_store.getChar(outStr, txt_col);
-			int tmp_w, tmp_h;
-			SDL_QueryTexture(ch_texture, nullptr, nullptr, &tmp_w, &tmp_h);
-			sum_w += (float)tmp_w;
-			max_ln_h = std::max(max_ln_h, (float)tmp_h);
-			if (sum_w > max_w) {
-				GLogger.Log(Logger::Level::Info, "Toast Line Height:", max_ln_h);
+			int tmp_w = 0, tmp_h = 0;
+			SDL_Texture* ch_texture = nullptr;
+			bool is_new_ln = false;
+			[[unlikely]] if (ch == '\n') is_new_ln = true;
+			[[likely]] if (not is_new_ln) {
+				ch_texture = char_store.getChar(outStr, txt_col);
+				SDL_QueryTexture(ch_texture, nullptr, nullptr, &tmp_w, &tmp_h);
+				sum_w += (float)tmp_w;
+				max_ln_h = std::max(max_ln_h, (float)tmp_h);
+			}
+			if (sum_w > max_w or is_new_ln) {
+				//GLogger.Log(Logger::Level::Info, "Toast Line Height:", max_ln_h);
 				line++;
 				sum_w = (float)tmp_w;
 				sum_h += (float)max_ln_h;
@@ -1519,7 +1540,7 @@ public:
 				max_ln_h = 0.f;
 				textures.push_back({});
 			}
-			textures[line].push_back(ch_texture);
+			[[likely]]if (not is_new_ln)textures[line].push_back(ch_texture);
 		}
 
 		float tw = textures.size() == 1 ? sum_w : max_w;
@@ -1538,7 +1559,6 @@ public:
 			for (auto txr : vec_txr) {
 				int tmp_w, tmp_h;
 				SDL_QueryTexture(txr, nullptr, nullptr, &tmp_w, &tmp_h);
-				
 				ch_dst.x = sum_w;
 				ch_dst.y = sum_h;
 				ch_dst.w = (float)tmp_w;
@@ -5217,10 +5237,8 @@ public:
 		// fillRoundedRectF(renderer, dest_, coner_radius_, text_attributes_.bg_color);
 		// RenderTexture(renderer, texture_.get(), NULL, &dest_src_);
 		RenderTexture(renderer, texture_.get(), &capture_src_, &dest_src_);
-		for (auto iview : on_click_views) {
-			if (not iview->hidden)
-				iview->draw();
-		}
+		if (linked_view)
+			linked_view->draw();
 		// SDL_Log("d:%f,%f,%f,%f",dest_src_.x,dest_src_.y,dest_src_.w,dest_src_.h);
 		// SDL_Log("s:%f,%f,%f,%f",capture_src_.x,capture_src_.y,capture_src_.w,capture_src_.h);
 		//  return *this;
@@ -5229,12 +5247,6 @@ public:
 	TextBox& onClick(std::function<bool(TextBox*)> _on_clicked_callback) noexcept
 	{
 		onClickedCallback_ = _on_clicked_callback;
-		return *this;
-	}
-
-	TextBox& addOnClickView(IView* _on_click_view) noexcept
-	{
-		on_click_views.push_back(_on_click_view);
 		return *this;
 	}
 
@@ -5405,18 +5417,18 @@ public:
 		updateTextColor(config_dat_.textAttributes.bg_color, config_dat_.outlineColor, config_dat_.textAttributes.text_color);
 	}
 
-	bool handleEvent()
+	void onUpdate() override {
+		if (linked_view)
+			linked_view->onUpdate();
+	}
+
+	bool handleEvent() override
 	{
 		// SDL_Log("tb handle event");
 		bool result = false;
-		for (auto iview : on_click_views) {
-			if (not iview->hidden)
-				result |= iview->handleEvent();
-		}
-		if (result) return result;
-		/*for (auto iview : on_click_views) {
-			iview->hide();
-		}*/
+		if (linked_view)
+			result != linked_view->handleEvent();
+		if (result)return result;
 		switch (event->type)
 		{
 		case EVT_RENDER_TARGETS_RESET:
@@ -5479,9 +5491,6 @@ public:
 			{
 				if (isButton)
 					result = true;
-				for (auto iview : on_click_views) {
-					iview->toggleView();
-				}
 				if (onClickedCallback_)
 				{
 					result = onClickedCallback_(this);
@@ -5651,7 +5660,6 @@ protected:
 	ImageButton image_button_;
 	std::deque<std::string> wrapped_text_;
 	std::function<bool(TextBox*)> onClickedCallback_;
-	std::vector<IView*>on_click_views{};
 	EdgeType edge_type_;
 	Gravity gravity_;
 	TextWrapStyle text_wrap_style_;
@@ -9144,6 +9152,8 @@ public:
 			header_cell.setContext(this)
 				.setIndex(0);
 			header_cell.pv = this;
+			header_cell.getView()->rel_x = bounds.x;
+			header_cell.getView()->rel_y = bounds.y;
 			header_cell.adaptiveVsync = adaptiveVsync;
 			fillNewCellDataCallbackHeader(header_cell);
 			header_h = header_cell.bounds.h;
@@ -9166,8 +9176,8 @@ public:
 		RenderClear(renderer, bgColor.r, bgColor.g, bgColor.b, bgColor.a);
 		//		fillRoundedRectF(renderer, { 0.f,0.f,rect.w,rect.h }, 0.f, bgColor);
 		// fillRoundedRectF(renderer, {0.f, 0.f, bounds.w, bounds.h}, 0.f, bgColor);
-		/*if (fillNewCellDataCallbackHeader)
-			header_cell.draw();*/
+		if (fillNewCellDataCallbackHeader)
+			header_cell.draw();
 		crt_.release(renderer);
 
 		const int originalMaxCells = maxCells;
@@ -9257,6 +9267,10 @@ public:
 		{
 			return result;
 		}
+
+		if (linked_view)
+			result |= linked_view->handleEvent();
+
 		for (auto child : childViews)
 		{
 			if (child->handleEvent())
@@ -9266,8 +9280,12 @@ public:
 				return true;
 			}
 		}
+
 		if (fillNewCellDataCallbackHeader)
-			header_cell.handleEvent();
+			result |= header_cell.handleEvent();
+
+		if (result) return result;
+
 		if (event->type == EVT_RENDER_TARGETS_RESET)
 		{
 			SDL_Log("targets reset. must recreate textures");
@@ -9533,6 +9551,8 @@ public:
 
 	void onUpdate() override
 	{
+		if (linked_view)
+			linked_view->onUpdate();
 		if (fillNewCellDataCallbackHeader)
 			header_cell.onUpdate();
 		for (auto &cell : visibleCells)
@@ -9574,8 +9594,12 @@ public:
 			
 			// transformToRoundedTexture(renderer, texture.get(), cornerRadius);
 			RenderTexture(renderer, texture.get(), nullptr, &margin);
-			if (fillNewCellDataCallbackHeader)
-				header_cell.draw();
+			if (linked_view)
+				linked_view->draw();
+
+			/*if (fillNewCellDataCallbackHeader)
+				header_cell.draw();*/
+
 			if (not childViews.empty())
 			{
 				for (auto child : childViews)
@@ -9691,6 +9715,8 @@ protected:
 		// fillRoundedRectF(renderer, {bounds.x, bounds.y, bounds.w, bounds.h}, cornerRadius, bgColor);
 		/*if (fillNewCellDataCallbackHeader)
 			header_cell.draw();*/
+		if (linked_view)
+			linked_view->draw();
 		CacheRenderTarget crt_(renderer);
 		SDL_SetRenderTarget(renderer, texture.get());
 		RenderClear(renderer, bgColor.r, bgColor.g, bgColor.b, bgColor.a);
@@ -9700,7 +9726,8 @@ protected:
 			cell->draw();
 			// SDL_Log("s9:%f,%f,%f,%f",cell->bounds.x,cell->bounds.y,cell->bounds.w,cell->bounds.h);
 		}
-		
+		if (fillNewCellDataCallbackHeader)
+			header_cell.draw();
 		crt_.release(renderer);
 		transformToRoundedTexture(renderer, texture.get(), cornerRadius);
 		RenderTexture(renderer, texture.get(), nullptr, &margin);
