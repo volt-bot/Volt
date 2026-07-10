@@ -40,7 +40,7 @@
 
 #include "utf8.h"
 
-// #define FMT_HEADER_ONLY
+
 
 enum class DeviceDisplayType
 {
@@ -435,11 +435,16 @@ auto person = dict{};
  * @param first  An input iterator pointing to the beginning of the range to concatenate.
  * @param last   An input iterator pointing to the end of the range to concatenate (exclusive).
  */
+
+
+
 template <typename TargetContainer, typename InputIt>
 constexpr inline void concat_rng(TargetContainer &target, InputIt first, InputIt last)
 {
 	std::copy(first, last, std::back_inserter(target));
 }
+
+
 
 /*
 #include <format>
@@ -451,6 +456,89 @@ inline std::string formatZoned_Cpp20(const std::chrono::system_clock::time_point
 	return std::format("{:%Y-%m-%d %H:%M:%S}", z); // requires chrono format support
 }
 */
+
+// Parse a UTC ISO-8601 datetime string into a system_clock::time_point.
+// CRITICAL: uses timegm/_mkgmtime, NOT mktime.
+//   mktime() interprets tm as *local* time -- if the machine running this
+//   is not in UTC (a dev box, or any non-UTC server), mktime silently shifts
+//   every timestamp by the local UTC offset, timegm/_mkgmtime interpret tm as UTC
+//
+// Returns the Unix epoch (time_point{}) on any parse failure -- callers
+// should treat a zero timestamp as a sentinel and log/skip that bar.
+static std::chrono::system_clock::time_point from_iso8601_utc(const std::string& s) {
+	if (s.empty()) return {};
+
+	std::tm tm{};
+	// std::get_time with "%Y-%m-%dT%H:%M:%S" handles the ISO-8601 form.
+	// A trailing Z (if present) is left unconsumed by the stream but that
+	// is harmless -- ss.fail() only fires on a genuine format mismatch,
+	// not on trailing unconsumed input.
+	std::istringstream ss(s);
+	ss >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%S");
+	if (ss.fail()) {
+		//GLogger.Log(Logger::Level::Warning, "from_iso8601_utc: failed to parse '", s, "'");
+		return {};
+	}
+
+	std::time_t t;
+#ifdef _MSC_VER
+	t = _mkgmtime(&tm);   // MSVC stdlib: treat tm as UTC
+#else
+	t = timegm(&tm);      // POSIX: treat tm as UTC
+#endif
+
+	if (t == static_cast<std::time_t>(-1)) {
+		//GLogger.Log(Logger::Level::Warning, "from_iso8601_utc: timegm failed for '", s, "'");
+		return {};
+	}
+
+	return std::chrono::system_clock::from_time_t(t);
+}
+
+// Format a time_point's UTC date component as "YYYY-MM-DD".
+// Used to populate Bar::day from a parsed timestamp.
+static std::string to_date_utc(const std::chrono::system_clock::time_point& tp) {
+	std::time_t t = std::chrono::system_clock::to_time_t(tp);
+	std::tm tm{};
+#ifdef _MSC_VER
+	gmtime_s(&tm, &t);
+#else
+	gmtime_r(&t, &tm);
+#endif
+	char buf[16];
+	std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
+	return std::string(buf);
+}
+
+// Format a time_point's UTC time component as "HH:MM".
+// Used to populate Bar::timeOfDay from a parsed timestamp.
+static std::string to_time_of_day_utc(const std::chrono::system_clock::time_point& tp) {
+	std::time_t t = std::chrono::system_clock::to_time_t(tp);
+	std::tm tm{};
+#ifdef _MSC_VER
+	gmtime_s(&tm, &t);
+#else
+	gmtime_r(&t, &tm);
+#endif
+	char buf[8];
+	std::strftime(buf, sizeof(buf), "%H:%M", &tm);
+	return std::string(buf);
+}
+
+// format time_point as ISO8601 Z (UTC)
+static std::string to_iso8601_utc(const std::chrono::system_clock::time_point& tp) {
+	std::time_t t = std::chrono::system_clock::to_time_t(tp);
+	std::tm tm{};
+#ifdef _MSC_VER
+	gmtime_s(&tm, &t);
+#else
+	gmtime_r(&t, &tm);
+#endif
+	char buf[32];
+	std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
+	return std::string(buf);
+}
+
 
 
 // get current date YYYY-MM-DD
@@ -485,6 +573,33 @@ inline std::string getDateAndTimeStr()
 	localtime_s(&tm, &tt);
 #else
 	localtime_r(&tt, &tm);
+#endif
+	std::stringstream timeAdded;
+	timeAdded
+		<< std::setfill('0') << std::setw(4) << tm.tm_year + 1900 << "-"
+		<< std::setfill('0') << std::setw(2) << tm.tm_mon + 1 << "-"
+		<< std::setfill('0') << std::setw(2) << tm.tm_mday << " "
+		<< std::setfill('0') << std::setw(2) << tm.tm_hour << ":"
+		<< std::setfill('0') << std::setw(2) << tm.tm_min << ":"
+		<< std::setfill('0') << std::setw(2) << tm.tm_sec;
+	// Combine date and time
+	//std::stringstream dateTimeAdded;
+	//dateTimeAdded <<std::to_string(ymd) << " " << timeAdded.str();
+	return timeAdded.str();
+}
+
+// get current UTC date YYYY-MM-DD HH:MM:SS
+inline std::string getUTCDateAndTimeStr()
+{
+	const std::chrono::time_point<std::chrono::system_clock> now{ std::chrono::system_clock::now() };
+
+	// Get the time
+	std::time_t tt = std::chrono::system_clock::to_time_t(now);
+	std::tm tm{};
+#ifdef _MSC_VER
+	gmtime_s(&tm, &tt);
+#else
+	gmtime_r(&tt, &tm);
 #endif
 	std::stringstream timeAdded;
 	timeAdded
@@ -554,6 +669,20 @@ inline std::string replaceStringAll(std::string str, const std::string &replace,
 		}
 	}
 	return str;
+}
+
+inline std::string StrCat(std::initializer_list<std::string> strings)
+{
+	std::size_t len = 0;
+	for (const auto& s : strings) {
+		len += s.size();
+	}
+	std::string result;
+	result.reserve(len);
+	for (const auto& s : strings) {
+		result += s;
+	}
+	return result;
 }
 
 // get text from file
@@ -745,17 +874,34 @@ class Logger
 			break;
 		}
 		std::unique_lock<std::mutex> lock(this->queue_mutex);
-		logs[level].push_back(sLevel + " " + getDateAndTimeStr() + ": " + msg);
+		std::string prefix = "[" + sLevel + "][" + getDateAndTimeStr() + "] ";
+		std::string finalMsg = prefix + msg;
+		if (last_log == prefix + msg)
+		{
+				finalMsg = "...";
+		}
+		else {
+			if (last_log.contains(prefix)) {
+				finalMsg = "... " + msg;
+				last_log = prefix + msg;
+			}
+			else {
+				finalMsg = prefix + msg;
+				last_log = finalMsg;
+			}
+		}
+		logs[level].push_back(finalMsg);
 		lock.unlock();
 		try
-		{ 
-			if (onLogFunc)
+		{
+			if (onLogFunc and last_final_msg != "...")
 				onLogFunc(logs[level].back());
 		}
 		catch (std::exception ex)
 		{
 			//
 		}
+		last_final_msg = finalMsg;
 		////TODO: write to file
 		//static std::ofstream file("logs.out");
 		//std::cout << logs[level].back() << std::endl;
@@ -846,6 +992,7 @@ class Logger
 	std::queue<std::function<void()>> tasks;
 	std::mutex queue_mutex;
 	bool stop = false;
+	std::string last_log{}, last_final_msg{};
 };
 
 namespace Async
@@ -1030,7 +1177,21 @@ class TextProcessor
 #endif
 	}
 
-	std::size_t strlen_mb(const std::string_view s)
+    std::size_t strlen_mb(const std::string_view s)
+    {
+        std::size_t count = 0;
+        for (unsigned char c : s)
+        {
+            // In UTF-8, continuation bytes always start with '10' in binary (0x80 to 0xBF).
+            // We only count bytes that are NOT continuation bytes.
+            if ((c & 0xC0) != 0x80) {
+                ++count;
+            }
+        }
+        return count;
+    }
+
+	/*std::size_t strlen_mb(const std::string_view s)
 	{
 		std::mblen(nullptr, 0); // reset the conversion state
 		std::size_t result = 0;
@@ -1043,7 +1204,7 @@ class TextProcessor
 			ptr += next;
 		}
 		return result;
-	}
+	}*/
 
 	void u8wrap_max_char(const std::u8string &_text, std::deque<std::u8string> *_wrapped_text,
 						 const std::size_t &_max_char_per_line, const std::size_t &_max_lines)
@@ -1909,12 +2070,12 @@ std::vector<std::string> wrapText1(const std::string &text, size_t maxLineLength
 #include <sys/stat.h>
 #include <cstring>
 #include <cerrno>
-#include <SDL2/SDL_log.h>
+#include <SDL3/SDL_log.h>
 #endif
 #ifdef _MSC_VER
-#include <SDL_Log.h>
+#include <SDL3/SDL_Log.h>
 #else
-#include <SDL2/SDL_log.h>
+#include <SDL3/SDL_log.h>
 #endif
 
 template <typename T>
@@ -2025,7 +2186,7 @@ class FileStore
 	}
 
 	inline const std::deque<std::filesystem::path> *getFileStore() const noexcept { return &m_files_store; }
-	
+
 	inline FileStore &setRootPath(const std::filesystem::path &root_path) noexcept
 	{
 		std::scoped_lock lock(m_mutex);
@@ -2034,7 +2195,7 @@ class FileStore
 	}
 
 	inline const std::unordered_map<std::string, int> *getExtensions() const { return &extension_filter; }
-	
+
 	inline size_t size() noexcept
 	{
 		std::scoped_lock lock(m_mutex);
@@ -2053,11 +2214,11 @@ class FileStore
 		for (auto &pair : extension_filter)
 			pair.second = 0;
 	}
-	
+
 	inline int getDirCount() noexcept { return dir_count.load(); }
-	
+
 	inline int getScannedFilesCount() noexcept { return scanned_files.load(); }
-	
+
 	FileStore &clearAndReset()
 	{
 		std::scoped_lock lock(m_mutex);
@@ -2251,7 +2412,7 @@ class FileStore
 	}
 
 	inline bool checkExtension(const std::filesystem::path &path, std::string &out_ext)
-	{ 
+	{
 		if (!path.has_extension())
 			return false;
 		out_ext = path.extension().string();
