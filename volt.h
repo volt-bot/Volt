@@ -4482,6 +4482,7 @@ void transformToRoundedTexture(SDL_Renderer* renderer, SDL_Texture* source_textu
 		SDL_Log("transformToRoundedTextureInPlace: Texture modification failed or was not applicable.");
 	}
 }
+
 struct Margin
 {
 	// Left
@@ -4806,8 +4807,8 @@ public:
 
 		final_txt_area.x = to_cust(attr.margin.left, bounds.w);
 		final_txt_area.y = to_cust(attr.margin.top, bounds.h);
-		final_txt_area.w = bounds.w - (final_txt_area.x + to_cust(attr.margin.right, bounds.w));
-		final_txt_area.h = bounds.h - (final_txt_area.y + to_cust(attr.margin.bottom, bounds.h));
+		final_txt_area.w = bounds.w - (to_cust(attr.margin.left, bounds.w) + to_cust(attr.margin.right, bounds.w));
+		final_txt_area.h = bounds.h - (to_cust(attr.margin.top, bounds.h)  + to_cust(attr.margin.bottom, bounds.h));
 
 		fattr.font_file = attr.font_file;
 		if (attr.font_size == 0.f) {
@@ -5092,6 +5093,148 @@ private:
 			GLogger.Log(Logger::Level::Error, "exception thrown in TextArea::genTextTexture()");
 		}
 	}
+
+	void genTextTexture2() {
+		try {
+			if (nullptr == texture) {
+				texture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, (int)bounds.w, (int)bounds.h);
+				SDL_SetTextureBlendMode(texture.get(), SDL_BLENDMODE_BLEND);
+			}
+
+			if (fattr.font_file.empty()) {
+				Fonts[Font::RobotoBold]->font_size = fattr.font_size;
+				fattr.font_file = Fonts[Font::RobotoBold]->font_name;
+				auto* tmpFont = FontSystem::Get().getFont(*Fonts[Font::RobotoBold]);
+			}
+			FontSystem::Get().setFontAttributes({ fattr.font_file.c_str(), fattr.font_style, fattr.font_size });
+
+			auto render_text = [this](const std::string& text) {
+				std::vector<std::tuple<float, float, SDL_Texture*>> line_textures{};
+				auto& ch_store = CharstoreManager::Get().getStore(fattr);
+				float max_ln_h = 0.f;
+				uint32_t current_line = 1;
+				SDL_FRect ch_dst = final_txt_area;
+
+				for (size_t i = 0; i < text.size(); ++i) {
+					char ch = text[i];
+					bool is_new_ln = (ch == '\n');
+					SDL_Texture* ch_texture = nullptr;
+					float tmp_w = 0.f, tmp_h = 0.f;
+
+					if (!is_new_ln) {
+						std::string outStr = { ch };
+						ch_texture = ch_store.getChar(outStr, attr.fg_col);
+						if (ch_texture) {
+							SDL_GetTextureSize(ch_texture, &tmp_w, &tmp_h);
+						}
+					}
+
+					const float extend = ch_dst.x + tmp_w;
+
+					// Trigger Line Wrap if it exceeds bounds (and line is not empty) or if explicit newline
+					if ((extend > final_txt_area.w && !line_textures.empty()) || is_new_ln) {
+
+						SDL_FRect ln_ch_dst{};
+						ln_ch_dst.x = 0.f;
+						ln_ch_dst.y = ch_dst.y; // Fixed: The missing 'y' assignment bug
+
+						// Replace drifting sum_w with concrete geometric width
+						float current_line_width = ch_dst.x;
+
+						if (Gravity::Center == attr.gravity) {
+							ln_ch_dst.x += (final_txt_area.w - current_line_width) / 2.f;
+						}
+						else if (Gravity::Right == attr.gravity) {
+							ln_ch_dst.x += (final_txt_area.w - current_line_width);
+						}
+
+						// Draw completed line
+						for (auto& [tw, th, texr] : line_textures) {
+							ln_ch_dst.w = tw;
+							ln_ch_dst.h = th;
+							if (texr) RenderTexture(renderer, texr, nullptr, &ln_ch_dst);
+							ln_ch_dst.x += tw;
+						}
+
+						line_textures.clear();
+
+						// Carriage Return & Line Feed
+						ch_dst.y += (max_ln_h > 0.f ? max_ln_h : (fattr.font_size > 0.f ? fattr.font_size : 20.f));
+						ch_dst.x = 0.f;
+						max_ln_h = 0.f;
+						current_line++;
+
+						// Enforce constraints
+						if (attr.max_lines > 0 && current_line > attr.max_lines) break;
+						if (!attr.overflow && (ch_dst.y + tmp_h > final_txt_area.y + final_txt_area.h)) break;
+					}
+
+					// Process the current character (Fixed the dropped character bug)
+					if (!is_new_ln) {
+						ch_dst.w = tmp_w;
+						ch_dst.h = tmp_h;
+						max_ln_h = std::max(max_ln_h, tmp_h);
+
+						line_textures.push_back({ tmp_w, tmp_h, ch_texture });
+						ch_dst.x += tmp_w;
+					}
+				}
+
+				// Final tail line rendering
+				if (!line_textures.empty()) {
+					SDL_FRect ln_ch_dst{};
+					ln_ch_dst.x = 0;
+					ln_ch_dst.y = ch_dst.y; // Fixed: Ensuring trailing text maps onto its proper line
+
+					float current_line_width = ch_dst.x;
+
+					if (Gravity::Center == attr.gravity) {
+						ln_ch_dst.x += (final_txt_area.w - current_line_width) / 2.f;
+					}
+					else if (Gravity::Right == attr.gravity) {
+						ln_ch_dst.x += (final_txt_area.w - current_line_width);
+					}
+
+					for (auto& [tw, th, texr] : line_textures) {
+						ln_ch_dst.w = tw;
+						ln_ch_dst.h = th;
+						if (texr) RenderTexture(renderer, texr, nullptr, &ln_ch_dst);
+						ln_ch_dst.x += tw;
+					}
+				}
+				};
+
+			// render the text to a temp texture with final_txt_area dimensions to avoid overflow when margin is set
+			auto temp_texture = CreateUniqueTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, (int)final_txt_area.w, (int)final_txt_area.h);
+			CacheRenderTarget crt_temp(renderer);
+			SDL_SetRenderTarget(renderer, temp_texture.get());
+			SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
+			SDL_RenderClear(renderer);
+			if (not attr.text.empty()) {
+				render_text(attr.text);
+			}
+			crt_temp.release(renderer);
+
+			CacheRenderTarget crt(renderer);
+			SDL_SetRenderTarget(renderer, texture.get());
+			SDL_SetRenderDrawColor(renderer, attr.bg_col.r, attr.bg_col.g, attr.bg_col.b, attr.bg_col.a);
+			SDL_RenderClear(renderer);
+			if (attr.outline > 0.f) {
+				fillRoundedRectOutline(renderer, { -1.f,-1.f,bounds.w + 1.f,bounds.h + 1.f }, attr.corner_radius, attr.outline, attr.outline_col);
+			}
+			if (not attr.text.empty()) {
+				//render_text(attr.text);
+				RenderTexture(renderer, temp_texture.get(), nullptr, &final_txt_area);
+			}
+			crt.release(renderer);
+			transformToRoundedTexture(renderer, texture.get(), attr.corner_radius);
+		}
+		catch (...) {
+			GLogger.Log(Logger::Level::Error, "exception thrown in TextArea::genTextTexture()");
+		}
+	}
+
+
 
 private:
 	TextArea::Attributes attr{}, initial_attr{};
@@ -6774,594 +6917,8 @@ private:
 	SDL_Color m_color;
 };
 
-struct EditBoxAttributes
-{
-	SDL_FRect rect = {0.f, 0.f, 80.f, 30.f};
-	SDL_FRect placeholderRect = {10.f, 5.f, 80.f, 90.f};
-	TextAttributes textAttributes = {"", {0x00, 0x00, 0x00, 0xff}, {0xff, 0xff, 0xff, 0xff}};
-	TextAttributes placeholderTextAttributes = {"", {0x00, 0x00, 0x00, 0xff}, {0xff, 0xff, 0xff, 0xff}};
-	SDL_FRect margin = {0.f, 0.f, 100.f, 100.f};
-	Font mem_font = Font::RobotoBold;
-	std::string fontFile;
-	Font placeholder_mem_font = Font::RobotoBold;
-	std::string placeholderFontFile;
-	FontStyle fontStyle = FontStyle::Normal;
-	FontStyle defaultTxtFontStyle = FontStyle::Normal;
-	float line_height = 0.f;
-	EdgeType edgeType;
-	uint32_t maxlines = 1;
-	// max text size in code points
-	uint32_t maxTextSize = 1024000;
-	TextWrapStyle textWrapStyle = TextWrapStyle::MAX_CHARS_PER_LN;
-	Gravity gravity = Gravity::Left;
-	float cornerRadius = 0.f;
-	int customFontstyle = 0x00;
-	float lineSpacing = 0.f;
-	float outline = 0.f;
-	bool highlightOnHover = false;
-	SDL_Color outlineColor = {0x00, 0x00, 0x00, 0x00};
-	SDL_Color cursorColor = {0x00, 0x00, 0x00, 0xff};
-	SDL_Color onHoverOutlineColor = {0x00, 0x00, 0x00, 0x00};
-	SDL_Color onHoverBgColor = {0x00, 0x00, 0x00, 0x00};
-	SDL_Color onHoverTxtColor = {0x00, 0x00, 0x00, 0x00};
-	uint32_t cursorSpeed = 500;
-};
 
-
-class EditBox : public Context, public IView
-{
-public:
-	EditBox() = default;
-	int32_t id = (-1);
-
-	EditBox& registerOnTextInputCallback(std::function<void(EditBox&)> _onTextInputCallback)
-	{
-		onTextInputCallback = _onTextInputCallback;
-		return *this;
-	}
-
-	EditBox& onTextInputFilter(std::function<void(EditBox&, std::string&)> _onTextInputFilterCallback)
-	{
-		onTextInputFilterCallback = _onTextInputFilterCallback;
-		return *this;
-	}
-
-	EditBox& Build(Context* _context, EditBoxAttributes& _attr)
-	{
-		Context::setContext(_context);
-		adaptiveVsyncHD.setAdaptiveVsync(adaptiveVsync);
-		IView::type = "editbox";
-		bounds = _attr.rect;
-		textRect = {
-			bounds.x + to_cust(_attr.margin.x, bounds.w),
-			bounds.y + to_cust(_attr.margin.y, bounds.h),
-			to_cust(_attr.margin.w, bounds.w),
-			to_cust(_attr.margin.h, bounds.h),
-		};
-		finalTextRect = textRect;
-		line_height = std::clamp(_attr.line_height,0.f,255.f);
-		if (line_height == 0.f) {
-			line_height = textRect.h;
-		}
-
-		cornerRadius = _attr.cornerRadius;
-		textAttributes = _attr.textAttributes;
-		fontAttributes = { _attr.fontFile, _attr.fontStyle, line_height };
-		maxCodePointsPerLn = static_cast<uint32_t>(textRect.w / (textRect.h / 2.f));
-		place_holder_text = _attr.placeholderTextAttributes.text;
-
-		cursor.setContext(getContext());
-		cursor.setColor(_attr.cursorColor);
-		cursor.setBlinkTm(_attr.cursorSpeed);
-		cursor.setRect({ textRect.x, textRect.y, to_cust(10.f, textRect.h), textRect.h });
-
-		TTF_Font* tmpFont = nullptr;
-
-		if (fontAttributes.font_file.empty())
-		{
-			Fonts[_attr.mem_font]->font_size = fontAttributes.font_size;
-			fontAttributes.font_file = Fonts[_attr.mem_font]->font_name;
-			tmpFont = FontSystem::Get().getFont(*Fonts[_attr.mem_font]);
-		}
-
-		charStore.setProps(getContext(), fontAttributes, _attr.customFontstyle);
-
-		maxTextSize = _attr.maxTextSize;
-		if (not _attr.placeholderTextAttributes.text.empty())
-		{
-			dflTxtRect =
-			{
-				bounds.x + to_cust(_attr.placeholderRect.x, bounds.w),
-				bounds.y + to_cust(_attr.placeholderRect.y, bounds.h),
-				to_cust(_attr.placeholderRect.w, bounds.w),
-				to_cust(_attr.placeholderRect.h, bounds.h),
-			};
-
-			FontAttributes plhFontAttr{
-				_attr.placeholderFontFile.c_str(), _attr.defaultTxtFontStyle, dflTxtRect.h };
-
-			if (plhFontAttr.font_file.empty())
-			{
-				Fonts[_attr.placeholder_mem_font]->font_size = plhFontAttr.font_size;
-				plhFontAttr.font_file = Fonts[_attr.placeholder_mem_font]->font_name;
-				tmpFont = FontSystem::Get().getFont(*Fonts[_attr.placeholder_mem_font]);
-				//GLogger.Log(Logger::Level::Info, "place holder:", _attr.placeholderTextAttributes.text.c_str(), plhFontAttr.font_file);
-			}
-
-			FontSystem::Get().setFontAttributes({ plhFontAttr.font_file.c_str(), plhFontAttr.font_style, plhFontAttr.font_size }, 0);
-			auto textTex = FontSystem::Get().genTextTextureUnique(renderer, _attr.placeholderTextAttributes.text.c_str(), _attr.placeholderTextAttributes.text_color);
-
-			float test_w = 0.f, test_h = 0.f;
-			SDL_GetTextureSize(textTex.value().get(), &test_w, &test_h);
-			if ((int)(test_w) < dflTxtRect.w)
-			{
-				dflTxtRect.w = (float)(test_w);
-			}
-			if (static_cast<float>(test_h) >= dflTxtRect.h)
-			{
-				dflTxtRect.y += static_cast<float>(TTF_GetFontDescent(tmpFont)); /*FontSystem::Get().getFont(_attr.placeholderFontFile, static_cast<int>(dflTxtRect.h))));*/
-				dflTxtRect.h = static_cast<float>(test_h);
-			}
-			//GLogger.Log(Logger::Level::Info, "real pos:", pv->getRealX(), pv->getRealY());
-			//GLogger.Log(Logger::Level::Info, "bounds rect{", bounds.x, bounds.y, bounds.w, bounds.h, "}");
-			//GLogger.Log(Logger::Level::Info, "dflt txt rect{", dflTxtRect.x, dflTxtRect.y, dflTxtRect.w, dflTxtRect.h, "}");
-
-			SDL_FRect dflSrc = { 0.f, 0.f, dflTxtRect.w, (float)test_h };
-			SDL_FRect dflDst = { 0.f, 0.f, dflTxtRect.w, dflTxtRect.h };
-
-			dflTxtTexture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
-				SDL_TEXTUREACCESS_TARGET, static_cast<int>(dflTxtRect.w), static_cast<int>(dflTxtRect.h));
-			CacheRenderTarget crt_(renderer);
-			SDL_SetRenderTarget(renderer, dflTxtTexture.get());
-			SDL_SetTextureBlendMode(dflTxtTexture.get(), SDL_BLENDMODE_BLEND);
-			RenderClear(renderer, 0, 0, 0, 0);
-			RenderTexture(renderer, textTex.value().get(), &dflSrc, &dflDst);
-			crt_.release(renderer);
-		}
-		outlineColor = _attr.outlineColor;
-		onHoverOutlineColor = _attr.onHoverOutlineColor;
-		highlightOnHover = _attr.highlightOnHover;
-		onHoverBgColor = _attr.onHoverBgColor;
-		outlineRect.Build(this, bounds, _attr.outline, cornerRadius, textAttributes.bg_color, _attr.outlineColor);
-
-		return *this;
-	}
-
-	void draw() override
-	{
-		outlineRect.draw();
-		// fillRoundedRectF(renderer, rect, cornerRadius, textAttributes.bg_color);
-		if (not hasFocus)
-		{
-			if (internalText.empty())
-			{
-				RenderTexture(renderer, dflTxtTexture.get(), nullptr, &dflTxtRect);
-			}
-			else
-			{
-				RenderTexture(renderer, txtTexture.get(), nullptr, &finalTextRect);
-			}
-		}
-		else
-		{
-			if (not internalText.empty())
-			{
-				RenderTexture(renderer, txtTexture.get(), nullptr, &finalTextRect);
-			}
-			else
-			{
-				RenderTexture(renderer, dflTxtTexture.get(), nullptr, &dflTxtRect);
-			}
-			cursor.Draw();
-		}
-
-		if (onFocusView != nullptr and hasFocus)
-			onFocusView->draw();
-
-		// return *this;
-	}
-
-	SDL_FRect& getRect()
-	{
-		return outlineRect.rect;
-	}
-
-	std::string getTextOrDefault()
-	{
-		return internalText.empty() ? place_holder_text : internalText;
-	}
-
-	std::string getText()
-	{
-		return internalText;
-	}
-
-	EditBox& setOnFocusView(IView* _onFocusView)
-	{
-		onFocusView = _onFocusView;
-		return *this;
-	}
-
-	IView* getOnFocusView()
-	{
-		return onFocusView;
-	}
-
-	bool isActive() const
-	{
-		return hasFocus;
-	}
-
-	EditBox& killFocus()
-	{
-		if (SDL_TextInputActive(window))
-			SDL_StopTextInput(window);
-		adaptiveVsyncHD.stopRedrawSession();
-		hasFocus = false;
-		if (highlightOnHover)
-		{
-			outlineRect.outline_color = outlineColor;
-			outlineRect.color = textAttributes.bg_color;
-		}
-		if (onFocusView != nullptr)
-			onFocusView->hide();
-		//GLogger.Log(Logger::Level::Info, "kill focus");
-		return *this;
-	}
-
-	bool handleEvent() override
-	{
-		bool result_ = false;
-
-		if (onFocusView and hasFocus)
-			if (onFocusView->handleEvent())
-				return true;
-		switch (event->type)
-		{
-		case EVT_WPSC:
-		{
-			outlineRect.handleEvent();
-			bounds =
-			{
-				DisplayInfo::Get().toUpdatedWidth(bounds.x),
-				DisplayInfo::Get().toUpdatedHeight(bounds.y),
-				DisplayInfo::Get().toUpdatedWidth(bounds.w),
-				DisplayInfo::Get().toUpdatedHeight(bounds.h),
-			};
-
-			dflTxtRect =
-			{
-				DisplayInfo::Get().toUpdatedWidth(dflTxtRect.x),
-				DisplayInfo::Get().toUpdatedHeight(dflTxtRect.y),
-				DisplayInfo::Get().toUpdatedWidth(dflTxtRect.w),
-				DisplayInfo::Get().toUpdatedHeight(dflTxtRect.h),
-			};
-
-			finalTextRect =
-			{
-				DisplayInfo::Get().toUpdatedWidth(finalTextRect.x),
-				DisplayInfo::Get().toUpdatedHeight(finalTextRect.y),
-				DisplayInfo::Get().toUpdatedWidth(finalTextRect.w),
-				DisplayInfo::Get().toUpdatedHeight(finalTextRect.h),
-			};
-
-			auto tmpRct = cursor.getRect();
-			tmpRct =
-			{
-				DisplayInfo::Get().toUpdatedWidth(tmpRct.x),
-				DisplayInfo::Get().toUpdatedHeight(tmpRct.y),
-				DisplayInfo::Get().toUpdatedWidth(tmpRct.w),
-				DisplayInfo::Get().toUpdatedHeight(tmpRct.h),
-			};
-			cursor.setRect(tmpRct);
-			// fontAttributes.font_size = DisplayInfo::Get().toUpdatedHeight(fontAttributes.font_size);
-			result_ = true;
-		}
-		break;
-		case EVT_FINGER_DOWN:
-		{
-			if (onClick(event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.y * DisplayInfo::Get().RenderH) and not hasFocus)
-			{
-				hasFocus = true;
-				adaptiveVsyncHD.startRedrawSession();
-				SDL_StartTextInput(window);
-				////TODO: cache current vsync then SDL_RenderSetVSync(20)
-				// SDL_GetRenderVSync(renderer, &prevVsync);
-				// SDL_SetRenderVSync(renderer, 20);
-				if (onFocusView)
-					onFocusView->show();
-				result_ = true;
-			}
-			else
-			{
-				if (hasFocus)
-				{
-					killFocus();
-					/*
-					//SDL_SetRenderVSync(renderer, prevVsync);
-					SDL_StopTextInput(), hasFocus = false, adaptiveVsyncHD.stopRedrawSession();
-					if (highlightOnHover)
-					{
-						outlineRect.outline_color = outlineColor;
-						outlineRect.color = textAttributes.bg_color;
-					}
-					if (onFocusView)
-						onFocusView->hide();
-					*/
-					//result_ = true;
-				}
-			}
-		}
-		break;
-		/*case EVT_FINGER_MOTION:
-			{
-				if (onClick(_event.tfinger.x * DisplayInfo::Get().RenderW, _event.tfinger.y * DisplayInfo::Get().RenderH)){
-					if(highlightOnHover){
-						outlineRect.outline_color = onHoverOutlineColor;
-					}
-				}else{
-					if (highlightOnHover) {
-						outlineRect.outline_color = outlineColor;
-					}
-				}
-			}
-			break;*/
-		case EVT_MOUSE_MOTION:
-		{
-			if (onClick(event->motion.x, event->motion.y))
-			{
-				if (highlightOnHover)
-				{
-					outlineRect.outline_color = onHoverOutlineColor;
-					outlineRect.color = onHoverBgColor;
-				}
-			}
-			else
-			{
-				if (highlightOnHover and not hasFocus)
-				{
-					outlineRect.outline_color = outlineColor;
-					outlineRect.color = textAttributes.bg_color;
-				}
-			}
-		}
-		break;
-		case EVT_FINGER_UP:
-		{
-			if (onClick(event->tfinger.x * DisplayInfo::Get().RenderW, event->tfinger.x * DisplayInfo::Get().RenderH))
-			{
-				// hasFocus = true;
-			}
-			else
-			{
-				// if (hasFocus)SDL_StopTextInput(), hasFocus = false;
-			}
-		}
-		break;
-		case SDL_EVENT_KEY_DOWN:
-		{
-			if (hasFocus)
-			{
-				// SDL_Log("key down");
-				cursor.m_start = SDL_GetTicks();
-				if (event->key.scancode == SDL_SCANCODE_BACKSPACE and not internalText.empty())
-				{
-					internalText.erase(internalText.size() - (inputSize.back())),
-						inputSize.pop_back();
-					updateTextTexture("");
-					if (onTextInputCallback)
-						onTextInputCallback(*this);
-				}
-				if (event->key.scancode == SDL_SCANCODE_SELECT)
-				{
-				}
-				if (event->key.scancode == SDL_SCANCODE_AC_BACK)
-				{
-					if (hasFocus)
-					{
-						killFocus();
-						return true;
-					}
-				}
-			}
-		}
-		break;
-		case SDL_EVENT_TEXT_INPUT:
-		{
-			if (hasFocus)
-			{
-				// SDL_Log("txt input");
-				cursor.m_start = SDL_GetTicks();
-				std::string newText = event->text.text;
-				if (onTextInputFilterCallback)
-					onTextInputFilterCallback(*this, newText);
-				if (not newText.empty())
-				{
-					if (inputSize.size() + 1 <= maxTextSize)
-					{
-						inputSize.emplace_back(newText.size());
-						updateTextTexture(newText);
-						if (onTextInputCallback)
-							onTextInputCallback(*this);
-					}
-				}
-				return true;
-			}
-		}
-		break;
-		default:
-			break;
-		}
-
-		return result_;
-	}
-
-	EditBox& setOnHoverOutlineColor(const SDL_Color& _color)
-	{
-		outlineRect.outline_color = _color;
-		onHoverOutlineColor = _color;
-		return *this;
-	}
-
-	EditBox& setOutlineColor(const SDL_Color& _color)
-	{
-		outlineRect.outline_color = _color;
-		outlineColor = _color;
-		return *this;
-	}
-
-	EditBox& clearAndSetText(const std::string& newText)
-	{
-		inputSize.clear();
-		internalText.clear();
-		for (const auto& ch_ : newText)
-		{
-			if (inputSize.size() + 1 <= maxTextSize)
-			{
-				inputSize.emplace_back(1);
-			}
-			else
-			{
-				//updateTextTexture(newText.substr(0, inputSize.size()));
-				return *this;
-			}
-		}
-		updateTextTexture(newText);
-		// cusor.setPosX(textRect.x + float(tmpW));
-		return *this;
-	}
-
-protected:
-	template <typename T>
-	bool onClick(T x, T y, unsigned short axis = 0)
-	{
-		[[likely]] if (axis == 0)
-		{
-			if (x < pv->getRealX() + bounds.x || x >(pv->getRealX() + bounds.x + bounds.w) || y < pv->getRealY() + bounds.y ||
-				y >(pv->getRealY() + bounds.y + bounds.h))
-				return false;
-		}
-		else if (axis == 1 /*x-axis only*/)
-		{
-			if (x < bounds.x or x >(bounds.x + bounds.w))
-				return false;
-		}
-		else if (axis == 2 /*y-axis only*/)
-		{
-			if (y < bounds.y or y >(bounds.y + bounds.h))
-				return false;
-		}
-		return true;
-	}
-
-protected:
-	void updateTextTexture(const std::string& _newText)
-	{
-		internalText += _newText;
-
-		if (internalText.empty())
-		{
-			cursor.setPosX(pv->getRealX() + textRect.x);
-			return;
-		}
-		std::string visibleText = internalText;
-		if (inputSize.size() <= maxCodePointsPerLn)
-			visibleText = internalText;
-		else
-		{
-			const int correctedTextSize = std::reduce(inputSize.begin() + (inputSize.size() - maxCodePointsPerLn), inputSize.end());
-			visibleText = internalText.substr(internalText.size() - correctedTextSize, internalText.size());
-		}
-
-		CacheRenderTarget rTargetCache(renderer);
-		txtTexture.reset();
-		if (txtTexture) {
-			txtTexture.reset();
-		}
-		txtTexture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
-			SDL_TEXTUREACCESS_TARGET, textRect.w, textRect.h);
-		SDL_SetTextureBlendMode(txtTexture.get(), SDL_BLENDMODE_BLEND);
-		SDL_SetRenderTarget(renderer, txtTexture.get());
-
-		RenderClear(renderer, 0, 0, 0, 0);
-		float tab = 0.f,cw=0.f,lw=0.f;
-		/*std::for_each(internalText.rbegin(), internalText.rend(), [this,&cw,&lw,&tab](char* _char) {
-			std::string outStr = { _char };
-			auto chtx = charStore.getChar(outStr, textAttributes.text_color);
-			int tmpW, tmpH;
-			SDL_QueryTexture(chtx, nullptr, nullptr, &tmpW, &tmpH);
-			lw = std::clamp((float)tmpW, 1.f, line_height / 1.5f);
-			SDL_FRect dst = { 1.f + cw,0.f,lw,line_height };
-			if (chtx != nullptr) {
-				RenderTexture(renderer, chtx, nullptr, &dst);
-			}
-			tab += 1.f;
-			cw += 1.f + lw;
-			});*/
-
-		for (auto& _char : internalText) {
-			std::string outStr = { _char };
-			auto chtx=charStore.getChar(outStr, textAttributes.text_color);
-			float tmpW = 0.f, tmpH = 0.f;
-			SDL_GetTextureSize(chtx, &tmpW, &tmpH);
-			lw = std::clamp((float)tmpW, 1.f, line_height / 1.5f);
-			SDL_FRect dst = { 1.f+cw,0.f,lw,line_height };
-			// check for overflow on the right side
-			/*if (dst.x + dst.w > textRect.x + textRect.w) {
-				lw = 0.f;
-				break;
-			}*/
-			if (getRealX() + textRect.x + cw - lw > textRect.x + textRect.w) {
-				lw = 0.f;
-				break;
-			}
-			if (chtx != nullptr) {
-				RenderTexture(renderer, chtx, nullptr, &dst);
-			}
-			tab += 1.f;
-			cw += 1.f+lw;
-		}
-		rTargetCache.release(renderer);
-		cursor.setPosX(getRealX() + textRect.x + cw-lw);
-		/*GLogger.Log(Logger::Level::Info, "cursor x:" + std::to_string(cursor.getRect().x) + ", y:" + std::to_string(cursor.getRect().y) + ", w:" +
-			std::to_string(cursor.getRect().w) + ", h:" + std::to_string(cursor.getRect().h));*/
-		finalTextRect.w = textRect.w;
-	}
-
-protected:
-	IView* onFocusView = nullptr;
-
-protected:
-	CharStore charStore{};
-	float cornerRadius = 0.f,line_height=0.f;
-	std::shared_ptr<SDL_Texture> txtTexture;
-	std::shared_ptr<SDL_Texture> dflTxtTexture;
-	std::function<void(EditBox&)> onTextInputCallback;
-	std::function<void(EditBox&)> onKeyPressEnter;
-	std::function<void(EditBox&, std::string&)> onTextInputFilterCallback;
-	TextAttributes textAttributes;
-	FontAttributes fontAttributes;
-	std::vector<uint32_t> inputSize;
-	uint32_t maxTextSize = 100;
-
-	SDL_FRect dflTxtRect;
-	// SDL_FRect cusorRect;
-	SDL_FRect textRect;
-	SDL_FRect finalTextRect;
-	std::string internalText, place_holder_text;
-	RectOutline outlineRect;
-	bool hasFocus = false;
-	// SDL_Color cusorColor;
-	Cursor cursor;
-	uint32_t maxCodePointsPerLn = 1;
-	AdaptiveVsyncHandler adaptiveVsyncHD, updAdaptiveVsyncHD;
-	bool highlightOnHover = false;
-	SDL_Color onHoverOutlineColor = { 0x00, 0x00, 0x00, 0x00 };
-	SDL_Color onHoverBgColor = { 0x00, 0x00, 0x00, 0x00 };
-	SDL_Color onHoverTxtColor = { 0x00, 0x00, 0x00, 0x00 };
-	SDL_Color outlineColor = { 0x00, 0x00, 0x00, 0x00 };
-	int prevVsync = 1200;
-};
+#include "EditBox.hpp"
 
 
 class UIWidget
@@ -8736,7 +8293,7 @@ public:
 
 	Cell &addView(IView *iview)
 	{
-		// iViews.emplace_back(iview);
+		iViews.emplace_back(iview);
 		return *this;
 	}
 
@@ -9009,6 +8566,9 @@ public:
 		for (auto& child : childViews) {
 			child->handleEvent();
 		}
+		for (auto& view : iViews) {
+			view->handleEvent();
+		}
 		for (auto& imgBtn : imageButton) {
 			imgBtn.handleEvent();
 		}
@@ -9092,6 +8652,14 @@ public:
 		for (auto child : childViews)
 		{
 			if (child->handleEvent())
+			{
+				return true;
+			}
+		}
+
+		for (auto view : iViews)
+		{
+			if (view->handleEvent())
 			{
 				return true;
 			}
@@ -9271,6 +8839,10 @@ public:
             vw->onUpdate();
         }
 
+		for (auto* vw : iViews) {
+			vw->onUpdate();
+		}
+
         scroll.onUpdate();
 
 		for (auto& _editBox : editBox)
@@ -9359,7 +8931,8 @@ public:
 		}
 
 		RenderTexture(renderer, texture.get(), nullptr, &bounds);
-
+		for (auto vw : iViews)
+			vw->draw();
 		for (auto child : childViews)
 			child->draw();
 	}
