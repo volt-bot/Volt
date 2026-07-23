@@ -4495,7 +4495,7 @@ struct Margin
 	float bottom = 0.f;
 };
 
-class RectOutline : public Context, IView
+class RectOutline final : public Context, IView
 {
 private:
 	SDL_FRect inner_rect{};
@@ -4570,6 +4570,13 @@ public:
 		fillRoundedRectF(renderer, rect, corner_rad, color);
 		fillRoundedRectOutline(renderer, rect, corner_rad, outline, outline_color);
 	}
+
+	void updatePosBy(float dx, float dy) override
+	{
+		bounds.x += dx, bounds.y += dy;
+		rect.x += dx, rect.y += dy;
+		inner_rect.x += dx, inner_rect.y += dy;
+	};
 };
 
 class Interpolator
@@ -4792,7 +4799,7 @@ public:
 		SDL_Color outline_col{ 145,132,238,255 };
 		Gravity gravity = Gravity::Left;
 		bool overflow = false;
-		uint32_t max_lines = 0; // NEW: 0 means infinite lines
+		uint32_t max_lines = 0; // 0 means infinite lines
 		std::function<bool(TextArea&)> onClick = nullptr;
 	};
 
@@ -6840,7 +6847,7 @@ private:
 class Cursor : public Context
 {
 public:
-	uint32_t m_start;
+	uint32_t m_start = 0;
 	int vpos, hpos, pos;
 
 	Cursor()
@@ -6912,9 +6919,9 @@ public:
 	}
 
 private:
-	SDL_FRect m_rect;
-	uint32_t m_blink_tm;
-	SDL_Color m_color;
+	SDL_FRect m_rect{};
+	uint32_t m_blink_tm = 0;
+	SDL_Color m_color{};
 };
 
 
@@ -7036,10 +7043,6 @@ public:
 		dest.y = y - dest.w / 2;
 	}
 };
-
-
-
-
 
 
 class ToggleButton;
@@ -7198,11 +7201,11 @@ private:
 
 
 /*
-* Breathe. I inspected the active file. You already started integrating ScrollView earlier; to make kinetic scrolling and the scrollbar thumb drive the same state we need two-way synchronization:
+* To make kinetic scrolling and the scrollbar thumb drive the same state we need two-way synchronization:
 •	when existing kinetic scroll code moves content, update the ScrollView offset.
 •	when ScrollView moves (thumb/track/wheel), update the content position / internal scroll state.
 •	unify clamping and units (pixels). Always use the same contentLength and viewportLength for both.
-Below are minimal, safe changes you can paste into ..\..\Desktop\GM's\volt m win\voltm.hpp. They:
+They:
 1.	add members to Cell to hold the ScrollView and sync state,
 2.	provide helper sync methods (syncScrollToView() and syncScrollFromView()),
 3.	replace the event/scroll handling to keep both in sync (wheel, drag, kinetic fling).
@@ -7347,11 +7350,6 @@ Checklist for you
 •	Replace updatePosByInternal usage if your function is named differently (I used the name from earlier messages).
 •	Make sure previousContentScrollY (or equivalent) exists in your kinetic code to compute deltas.
 •	Call ensureScrollViewSetup() on resize and after content layout passes.
-If you want I can:
-•	produce an exact in-file patch replacing specific functions (I can open locations if you point to the Cell class start or the functions that currently implement kinetic scrolling: names/line numbers),
-•	or search for your kinetic scroll symbols (contentScrollY, scroll_y, updatePosByInternal, previousContentScrollY) and prepare a single automated edit.
-Which do you prefer — a full patch applied to voltm.hpp or help me locate the exact kinetic-scroll functions to patch automatically?
-
 */
 
 
@@ -8128,7 +8126,6 @@ class Cell : public Context, public IView
 {
 private:
 	// private helpers used by CellBlock
-	bool isHeader = false;
 	uint32_t num_vert_grids = 1;
 	float org_mx = 0.f, org_my = 0.f, mx = 0.f, my = 0.f,
 		  scroll_y = 0.f, max_scroll = 0.f, dy = 0.f;
@@ -8158,6 +8155,8 @@ private:
 			textBx.updatePosBy(_dx, _dy);
 		for (auto& textBx : textArea)
 			textBx.updatePosBy(_dx, _dy);
+		for (auto& editBx : editBox)
+			editBx.updatePosBy(_dx, _dy);
 		for (auto &slider : sliders)
 			slider.updatePosBy(_dx, _dy);
 		for (auto &rtext : runningText)
@@ -8173,7 +8172,7 @@ private:
 		// ACTION_UP
 		if (cf.y < pf.y)
 		{
-			if (scroll_y + (pf.y - cf.y) < max_scroll + ph(5.f))
+			if (scroll_y + (pf.y - cf.y) < max_scroll + ph(5.f) + footer_h)
 			{
 				dy = 0.f - (pf.y - cf.y);
 				scroll_y += std::fabs(dy);
@@ -8184,7 +8183,7 @@ private:
 		// ACTION_DOWN
 		else if (pf.y < cf.y)
 		{
-			if (scroll_y - (cf.y - pf.y) > 0.f)
+			if (scroll_y - (cf.y - pf.y) > 0.f - header_h)
 			{
 				dy = (cf.y - pf.y);
 				scroll_y -= dy;
@@ -8235,6 +8234,15 @@ public:
 
 	std::vector<Cell> header_footer{};
 	//std::vector<Select> select;
+
+	enum class Type {
+		Norm,
+		Header,
+		Footer
+	} _type{};
+
+	float header_h = 0.f;
+	float footer_h = 0.f;
 
 public:
 	Cell &setContext(Context *context_) noexcept
@@ -8325,7 +8333,7 @@ public:
 		return *this;
 	}
 
-	Cell& addHeaderOrFooter(SDL_FRect pbounds,SDL_Color bg={0,0,0,0}, float _corner_radius = 0.f)
+	Cell& addHeaderOrFooter(Cell::Type type_, SDL_FRect pbounds,SDL_Color bg={0,0,0,0}, float _corner_radius = 0.f)
 	{
 		header_footer.push_back(Cell{});
 		auto& cell = header_footer.back();
@@ -8333,12 +8341,22 @@ public:
 		cell.bounds = { pw(pbounds.x), ph(pbounds.y), pw(pbounds.w), ph(pbounds.h) };
 		cell.bg_color = bg;
 		cell.corner_radius = _corner_radius;
+		cell.rel_x = rel_x + bounds.x;
+		cell.rel_y = rel_y + bounds.y;
+		cell.pv = this;
+		cell._type = type_;
+		if (type_ == Cell::Type::Header) {
+			this->header_h = cell.bounds.h;
+		}
+		if (type_ == Cell::Type::Footer) {
+			this->footer_h = cell.bounds.x + cell.bounds.h;
+		}
 		return header_footer.back();
 	}
 
 	Cell& addToggleButton(ToggleButtonAttr togBtnAttr) {
-		togBtnAttr.rect = {/*bounds.x + */ pv->to_cust(togBtnAttr.rect.x, bounds.w),
-			/*bounds.y + */ pv->to_cust(togBtnAttr.rect.y, bounds.h),
+		togBtnAttr.rect = {pv->to_cust(togBtnAttr.rect.x, bounds.w),
+			pv->to_cust(togBtnAttr.rect.y, bounds.h),
 			pv->to_cust(togBtnAttr.rect.w, bounds.w),
 			pv->to_cust(togBtnAttr.rect.h, bounds.h) };
 		togButton.emplace_back()
@@ -8353,8 +8371,8 @@ public:
 
 	Cell &addTextBox(TextBoxAttributes _TextBoxAttr) noexcept
 	{
-		_TextBoxAttr.rect = {/*bounds.x + */ pv->to_cust(_TextBoxAttr.rect.x, bounds.w),
-							 /*bounds.y + */ pv->to_cust(_TextBoxAttr.rect.y, bounds.h),
+		_TextBoxAttr.rect = {pv->to_cust(_TextBoxAttr.rect.x, bounds.w),
+							 pv->to_cust(_TextBoxAttr.rect.y, bounds.h),
 							 pv->to_cust(_TextBoxAttr.rect.w, bounds.w),
 							 pv->to_cust(_TextBoxAttr.rect.h, bounds.h)};
 		textBox.emplace_back()
@@ -8369,12 +8387,15 @@ public:
 
 	Cell& addTextArea(TextArea::Attributes _TextAreaAttr) noexcept
 	{
-		_TextAreaAttr.bounds = {/*bounds.x + */ pv->to_cust(_TextAreaAttr.bounds.x, bounds.w),
-			/*bounds.y + */ pv->to_cust(_TextAreaAttr.bounds.y, bounds.h),
+		_TextAreaAttr.bounds = {
+			pv->to_cust(_TextAreaAttr.bounds.x, bounds.w),
+			pv->to_cust(_TextAreaAttr.bounds.y, bounds.h),
 			pv->to_cust(_TextAreaAttr.bounds.w, bounds.w),
 			pv->to_cust(_TextAreaAttr.bounds.h, bounds.h) };
-		textArea.emplace_back()
+		auto& texta = textArea.emplace_back()
 			.Build(this, _TextAreaAttr);
+		texta.rel_x = rel_x;
+		texta.rel_y = rel_y;
 		//max_scroll = std::max(max_scroll, (_TextBoxAttr.rect.y + _TextBoxAttr.rect.h) - bounds.h);
 		updateMaxScroll(_TextAreaAttr.bounds.y + _TextAreaAttr.bounds.h);
 		// if (is_form and _TextBoxAttr.type="submit"){
@@ -8385,8 +8406,8 @@ public:
 
 	Cell &addTextBoxFront(TextBoxAttributes _TextBoxAttr) noexcept
 	{
-		_TextBoxAttr.rect = {/*bounds.x + */ pv->to_cust(_TextBoxAttr.rect.x, bounds.w),
-							 /*bounds.y + */ pv->to_cust(_TextBoxAttr.rect.y, bounds.h),
+		_TextBoxAttr.rect = {pv->to_cust(_TextBoxAttr.rect.x, bounds.w),
+							 pv->to_cust(_TextBoxAttr.rect.y, bounds.h),
 							 pv->to_cust(_TextBoxAttr.rect.w, bounds.w),
 							 pv->to_cust(_TextBoxAttr.rect.h, bounds.h)};
 		textBox.emplace_front()
@@ -8437,8 +8458,8 @@ public:
 	Cell &addEditBox(EditBoxAttributes _EditBoxAttr)
 	{
 		_EditBoxAttr.rect = {
-			/*bounds.x + */ pv->to_cust(_EditBoxAttr.rect.x, bounds.w),
-			/*bounds.y + */ pv->to_cust(_EditBoxAttr.rect.y, bounds.h),
+			pv->to_cust(_EditBoxAttr.rect.x, bounds.w),
+			pv->to_cust(_EditBoxAttr.rect.y, bounds.h),
 			pv->to_cust(_EditBoxAttr.rect.w, bounds.w),
 			pv->to_cust(_EditBoxAttr.rect.h, bounds.h)};
 		editBox.emplace_back()
@@ -8535,6 +8556,70 @@ public:
         return *this;
     }
 
+	Cell& hideAll() {
+		for (auto& child : childViews) {
+			child->hide();
+		}
+		for (auto& view : iViews) {
+			view->hide();
+		}
+		for (auto& imgBtn : imageButton) {
+			imgBtn.hide();
+		}
+		for (auto& textBx : textBox) {
+			textBx.hide();
+		}
+		for (auto& textBx : textArea) {
+			textBx.hide();
+		}
+		for (auto& _editBox : editBox) {
+			_editBox.hide();
+		}
+		for (auto& _slider : sliders) {
+			_slider.hide();
+		}
+		for (auto& rt : runningText) {
+			rt.hide();
+		}
+		for (auto& tb : togButton) {
+			tb.hide();
+		}
+		redraw = true;
+		return *this;
+	}
+
+	Cell& showAll() {
+		for (auto& child : childViews) {
+			child->show();
+		}
+		for (auto& view : iViews) {
+			view->show();
+		}
+		for (auto& imgBtn : imageButton) {
+			imgBtn.show();
+		}
+		for (auto& textBx : textBox) {
+			textBx.show();
+		}
+		for (auto& textBx : textArea) {
+			textBx.show();
+		}
+		for (auto& _editBox : editBox) {
+			_editBox.show();
+		}
+		for (auto& _slider : sliders) {
+			_slider.show();
+		}
+		for (auto& rt : runningText) {
+			rt.show();
+		}
+		for (auto& tb : togButton) {
+			tb.show();
+		}
+		redraw = true;
+		return *this;
+	}
+
 	inline bool isPointInBound(float x, float y) const noexcept
 	{
 		if (x > pv->getRealX() + bounds.x && x < (pv->getRealX() + bounds.x + bounds.w) && y > pv->getRealY() + bounds.y && y < pv->getRealY() + bounds.y + bounds.h)
@@ -8560,11 +8645,12 @@ public:
 
 	void allHandleEvent() {
 		texture.reset();
-		texture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
-			SDL_TEXTUREACCESS_TARGET, (int)bounds.w, (int)bounds.h);
-		SDL_SetTextureBlendMode(texture.get(), SDL_BLENDMODE_BLEND);
+		texture = nullptr;
 		for (auto& child : childViews) {
 			child->handleEvent();
+		}
+		for (auto& hf : header_footer) {
+			hf.handleEvent();
 		}
 		for (auto& view : iViews) {
 			view->handleEvent();
@@ -8615,21 +8701,21 @@ public:
 			{
 				bounds = { next_x, next_y, next_w, next_h };
 
+				// 3. Cascade the EVT_WPSC event down so other 
+				// elements can properly calculate their new proportional layouts!
+				for (auto& imgBtn : imageButton)  imgBtn.handleEvent();
+				for (auto& textBx : textBox)      textBx.handleEvent();
+				for (auto& textAr : textArea)     textAr.handleEvent();
+				for (auto& _editBox : editBox)    _editBox.handleEvent();
+				for (auto& _slider : sliders)     _slider.handleEvent();
+				for (auto& rt : runningText)      rt.handleEvent();
+				for (auto& tb : togButton)        tb.handleEvent();
+				for (auto& ft : header_footer)    ft.handleEvent();
+
 				if (useScrollView) {
 					ensureScrollViewSetup();
 				}
 			}
-
-			// 3. FIXED: Cascade the EVT_WPSC event down so your TextAreas and other 
-			// elements can properly calculate their new proportional layouts!
-			/*for (auto& imgBtn : imageButton)  imgBtn.handleEvent();
-			for (auto& textBx : textBox)      textBx.handleEvent();*/
-			for (auto& textAr : textArea)     textAr.handleEvent();
-			/*for (auto& _editBox : editBox)    _editBox.handleEvent();
-			for (auto& _slider : sliders)     _slider.handleEvent();
-			for (auto& rt : runningText)      rt.handleEvent();
-			for (auto& tb : togButton)        tb.handleEvent();
-			for (auto& ft : header_footer)    ft.handleEvent();*/
 
 			redraw = true;
 			return false;
@@ -8680,17 +8766,6 @@ public:
 			}
 		}
 
-		/*if (event->type == EVT_WPSC)
-		{
-			bounds =
-				{
-					DisplayInfo::Get().toUpdatedWidth(bounds.x),
-					DisplayInfo::Get().toUpdatedHeight(bounds.y),
-					DisplayInfo::Get().toUpdatedWidth(bounds.w),
-					DisplayInfo::Get().toUpdatedHeight(bounds.h),
-				};
-			return false;
-		}*/
 		if (isHidden())
 			return result;
 		if (event->type == EVT_FINGER_DOWN || event->type == EVT_FINGER_UP)
@@ -8699,6 +8774,7 @@ public:
 					   event->tfinger.y * DisplayInfo::Get().RenderH };
 			if (not isPointInBound(cf.x, cf.y))
 			{
+				if (auto_hide)hide();
 				return false;
 			}
 		}
@@ -8726,7 +8802,10 @@ public:
 			}
 			for (auto& _editBox : editBox) {
 				result or_eq _editBox.handleEvent();
-				if (result)break;
+				if (result) {
+					redraw = true;
+					break;
+				}
 			}
 			for (auto& _slider : sliders) {
 				result or_eq _slider.handleEvent();
@@ -8743,8 +8822,6 @@ public:
 					break;
 				}
 			}
-			/*for (auto& sl : select)
-				result or_eq sl.handleEvent();*/
 		}
 
 
@@ -8772,8 +8849,8 @@ public:
 			{
 				internal_handle_motion();
 				// --- Existing kinetic / manual scroll code branch ---
-		// Wherever your code updates contentScrollY (dragging, fling, wheel handling outside ScrollView),
-		// after you mutate contentScrollY, call:
+				// Wherever your code updates contentScrollY (dragging, fling, wheel handling outside ScrollView),
+				// after you mutate contentScrollY, call:
 				/*{
 					// Example after contentScrollY += dy;
 					// clamp contentScrollY to [0, max]
@@ -8874,10 +8951,8 @@ public:
 			return;
 		if (texture == nullptr)
 		{
-			texture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
-										  SDL_TEXTUREACCESS_TARGET, (int)bounds.w, (int)bounds.h);
+			texture = CreateSharedTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, (int)bounds.w, (int)bounds.h);
 			SDL_SetTextureBlendMode(texture.get(), SDL_BLENDMODE_BLEND);
-			// tbuild = true;
 		}
 		if (redraw)
 		{
@@ -9367,7 +9442,7 @@ public:
 	 */
 	CellBlock &setCellRect(Cell &_cell, uint32_t numVertGrids, const float h, const float margin_x = 0.f, const float margin_y = 0.f)
 	{
-		[[unlikely]] if (_cell.isHeader)
+		[[unlikely]] if (not (_cell._type == Cell::Type::Norm))
 		{
 			numVertGrids = numVerticalGrids;
 		}
@@ -9382,7 +9457,7 @@ public:
 		if (getMaxVerticalGrids() - consumedCells < numVertGrids)
 			lineCount++, _cell.bounds.y += margin_y;
 		SDL_FRect lbc;
-		if (not _cell.isHeader)
+		if (_cell._type == Cell::Type::Norm)
 			lbc = getLowestBoundCell().bounds;
 		else
 			lbc = header_cell.bounds;
@@ -9403,7 +9478,7 @@ public:
 		_cell.bounds.h = h - (margin_y * 2.f);
 		prevLineCount = lineCount;
 		consumedCells += numVertGrids;
-		[[unlikely]] if (_cell.isHeader)
+		[[unlikely]] if (_cell._type == Cell::Type::Header)
 		{
 			_cell.bounds.x += bounds.x;
 			_cell.bounds.y += bounds.y;
@@ -9587,7 +9662,7 @@ public:
 		{
 			update_top_and_bottom_cells();
 			header_cell = Cell{};
-			header_cell.isHeader = true;
+			header_cell._type = Cell::Type::Header;
 			header_cell.cellblock_parent = true;
 			header_cell.setContext(this)
 				.setIndex(0);
