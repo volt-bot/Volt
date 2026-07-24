@@ -1,5 +1,6 @@
 #pragma once
-// SegmentedControl.hpp -- carousel/segmented-control widget.
+// SegmentedControl.hpp -- rewritten carousel/segmented-control widget.
+
 
 #include "SegmentedControlCore.hpp"
 #include <cmath>
@@ -31,6 +32,7 @@ public:
 		bounds = attr.bounds;
 		cv = this;
 
+		// Convert the percentage ONCE, here, and never again.
 		// Every downstream user of padding (layout, hit-testing, snapping)
 		// reads this already-converted pixel value directly.
 		itemPaddingPx = to_cust(_attr.itemPadding, bounds.w);
@@ -69,7 +71,9 @@ public:
 				m_dragDistance += std::abs(deltaX);
 				m_velocity = -deltaX;
 
-				// position. Update it, clamp it, and derive every TextBox's
+				// m_scrollX is the ONLY source of truth for
+				// position. Update it, clamp it (with the NOW-correct,
+				// nonzero m_maxScroll -- fix #2), and derive every TextBox's
 				// bounds.x from it via applyScrollToTextAreas().
 				m_scrollX = SegCtrl::clampScroll(m_scrollX - deltaX, m_maxScroll);
 				applyScrollToTextAreas();
@@ -84,13 +88,16 @@ public:
 					// hitTestToIndex converts the ABSOLUTE
 					// screen-space click into the control's own content
 					// space by subtracting the control's own screen
-					// position (pv->getRealX() + bounds.x) before adding scroll
+					// position (pv->getRealX() + bounds.x) before adding
+					// scroll.
 					float controlScreenX = pv->getRealX() + bounds.x;
 					int idx = SegCtrl::hitTestToIndex(layout_, itemPaddingPx,
 						event->button.x, controlScreenX, m_scrollX);
-					if (idx >= 0) {
+					if (idx >= 0 && static_cast<std::size_t>(idx) != m_selectedIndex) {
+						setItemHighlighted(m_selectedIndex, false); // clear the OLD selection's highlight
 						m_selectedIndex = static_cast<std::size_t>(idx);
 						attr.selectedIndex = m_selectedIndex;
+						setItemHighlighted(m_selectedIndex, true); // apply the NEW selection's highlight
 						snapToSelected();
 					}
 				}
@@ -100,12 +107,18 @@ public:
 		return false;
 	}
 
-	// Must be called once per frame.
-	void update(float deltaTime) {
+	// Must be called once per frame by the app's main loop, passing the
+	// CURRENT ABSOLUTE tick count in milliseconds 
+	// The function computes its own genuine per-frame delta from the
+	// difference between this call and the last one (via
+	// SegCtrl::ticksToDeltaSeconds)
+	void update(float currentTicksMs) {
+		float deltaTime = SegCtrl::ticksToDeltaSeconds(currentTicksMs, last_update_ticks_ms_, has_last_update_tick_);
+
 		if (m_isDragging) return;
 
 		if (m_isAnimatingSnap) {
-			// The actual animation: m_scrollX eases toward
+			// [FIX BUG 3] The actual animation: m_scrollX eases toward
 			// m_targetScrollX over multiple frames instead of jumping there
 			// in one synchronous call.
 			m_scrollX = SegCtrl::lerpTowards(m_scrollX, m_targetScrollX, deltaTime, kSnapLerpSpeed);
@@ -115,7 +128,7 @@ public:
 				m_scrollX = m_targetScrollX;
 				applyScrollToTextAreas();
 				m_isAnimatingSnap = false;
-				adaptiveVsyncHD.stopRedrawSession(); // [FIX BUG 8]
+				adaptiveVsyncHD.stopRedrawSession();
 				redraw_session_active_ = false;
 			}
 			return;
@@ -139,10 +152,7 @@ public:
 		if (moved) applyScrollToTextAreas();
 	}
 
-	void onUpdate() override final {
-		float tcks = app->getFPS();
-		update(tcks);
-	}
+	void onUpdate() override final { update((float)SDL_GetTicks()); }
 
 	// --- Diagnostic accessors -- harmless, read-only, useful for any
 	// consumer inspecting the widget's state (e.g. a debug overlay), and
@@ -170,10 +180,21 @@ public:
 	}
 
 private:
+
+	static constexpr SDL_Color kOutlineColor = { 25, 40, 45, 0xff };
+
+	void setItemHighlighted(std::size_t index, bool highlighted) {
+		if (index >= textAreas.size()) return;
+		SDL_Color bg = highlighted ? attr.activeColor : SDL_Color{ 0, 0, 0, 0 };
+		textAreas[index].updateTextColor(bg, kOutlineColor, attr.textColor);
+	}
+
+	// Single computation, correct units, single source of
+	// truth (layout_ + textAreas), no vestigial parallel m_items model.
 	void rebuildLayout() {
 		layout_ = SegCtrl::computeLayout(attr.items.size(), bounds.w, attr.maxVisibleItems, itemPaddingPx);
 		float contentWidth = SegCtrl::computeContentWidth(layout_, itemPaddingPx);
-		m_maxScroll = SegCtrl::computeMaxScroll(contentWidth, bounds.w); // [FIX BUG 2]
+		m_maxScroll = SegCtrl::computeMaxScroll(contentWidth, bounds.w);
 
 		textAreas.clear();
 		textAreas.reserve(attr.items.size());
@@ -188,7 +209,7 @@ private:
 				.cornerRadius = 100.f,
 				.outline = 0.f,
 				.useHaptics = true,
-				.outlineColor = { 25, 40, 45, 0xff },
+				.outlineColor = kOutlineColor,
 				});
 		}
 	}
@@ -225,9 +246,11 @@ private:
 	float m_scrollX = 0.0f;
 	float m_targetScrollX = 0.0f;
 	float m_velocity = 0.0f;
-	float m_maxScroll = 0.0f;
+	float m_maxScroll = 0.0f; // genuinely computed, not permanently 0
 	bool m_isAnimatingSnap = false;
 	bool redraw_session_active_ = false; // tracked ourselves; independent of AdaptiveVsyncHandler's own internals
+	float last_update_ticks_ms_ = 0.f;   // backing state for the absolute-tick -> delta conversion
+	bool has_last_update_tick_ = false;
 
 	static constexpr float kSnapLerpSpeed = 8.f;
 
