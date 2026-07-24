@@ -18,9 +18,12 @@ public:
 		int indicatorHeight = 3;
 		float friction = 0.9f;
 		float cornerRadius = 0.f;   // percentage
+		float textCornerRadius = 100.f;
 		std::vector<std::string> items;
 		std::size_t maxVisibleItems = 5;
 		std::size_t selectedIndex = 0;
+		// onSelect callback(selected textbox, selected index)
+		std::function<void(TextBox&, std::size_t)> onSelect = nullptr;
 	};
 
 	SegmentedControl() {}
@@ -72,8 +75,7 @@ public:
 				m_velocity = -deltaX;
 
 				// m_scrollX is the ONLY source of truth for
-				// position. Update it, clamp it (with the NOW-correct,
-				// nonzero m_maxScroll -- fix #2), and derive every TextBox's
+				// position. Update it, clamp it, and derive every TextBox's
 				// bounds.x from it via applyScrollToTextAreas().
 				m_scrollX = SegCtrl::clampScroll(m_scrollX - deltaX, m_maxScroll);
 				applyScrollToTextAreas();
@@ -99,6 +101,9 @@ public:
 						attr.selectedIndex = m_selectedIndex;
 						setItemHighlighted(m_selectedIndex, true); // apply the NEW selection's highlight
 						snapToSelected();
+						if (attr.onSelect) {
+							attr.onSelect(textAreas[m_selectedIndex], m_selectedIndex);
+						}
 					}
 				}
 			}
@@ -118,7 +123,7 @@ public:
 		if (m_isDragging) return;
 
 		if (m_isAnimatingSnap) {
-			// [FIX BUG 3] The actual animation: m_scrollX eases toward
+			// The actual animation: m_scrollX eases toward
 			// m_targetScrollX over multiple frames instead of jumping there
 			// in one synchronous call.
 			m_scrollX = SegCtrl::lerpTowards(m_scrollX, m_targetScrollX, deltaTime, kSnapLerpSpeed);
@@ -154,17 +159,16 @@ public:
 
 	void onUpdate() override final { update((float)SDL_GetTicks()); }
 
-	// --- Diagnostic accessors -- harmless, read-only, useful for any
-	// consumer inspecting the widget's state (e.g. a debug overlay), and
-	// used by this file's regression tests. ---
+	// Accessors
 	[[nodiscard]] std::size_t getTextAreaCountForTest() const { return textAreas.size(); }
-	[[nodiscard]] float getItemPaddingPxForTest() const { return itemPaddingPx; }
-	[[nodiscard]] float getMaxScrollForTest() const { return m_maxScroll; }
-	[[nodiscard]] std::size_t getSelectedIndexForTest() const { return m_selectedIndex; }
+	[[nodiscard]] float getItemPaddingPx() const { return itemPaddingPx; }
+	[[nodiscard]] float getMaxScroll() const { return m_maxScroll; }
+	[[nodiscard]] std::size_t getSelectedIndex() const { return m_selectedIndex; }
 	[[nodiscard]] float getScrollXForTest() const { return m_scrollX; }
 	[[nodiscard]] float getTargetScrollXForTest() const { return m_targetScrollX; }
 	[[nodiscard]] bool isAnimatingSnapForTest() const { return m_isAnimatingSnap; }
 	[[nodiscard]] int getRedrawSessionCountForTest() const { return redraw_session_active_ ? 1 : 0; }
+	TextBox& getSelectedTextBox() { return textAreas[m_selectedIndex]; }
 
 	void draw() override final {
 		CacheRenderTarget crt(renderer);
@@ -206,7 +210,7 @@ private:
 				.textAttributes = { attr.items[i], attr.textColor, txt_bg },
 				.margin = { 5.f, 15.f, 5.f, 35.f },
 				.gravity = Gravity::Center,
-				.cornerRadius = 100.f,
+				.cornerRadius = attr.textCornerRadius,
 				.outline = 0.f,
 				.useHaptics = true,
 				.outlineColor = kOutlineColor,
