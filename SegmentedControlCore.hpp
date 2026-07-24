@@ -1,5 +1,5 @@
 #pragma once
-// SegmentedControlCore.hpp
+// SegmentedControlCore.hpp -- pure logic, zero SDL/framework dependency.
 
 #include <algorithm>
 #include <cstddef>
@@ -19,7 +19,8 @@ namespace SegCtrl {
 	//
 	// paddingPx must already be in PIXELS, not a percentage -- converting a
 	// percentage happens exactly once, by the caller, before this function
-	// ever sees it.
+	// ever sees it. (The original bug converted twice: once by the caller,
+	// once again inside the per-item loop.)
 	inline std::vector<ItemLayout> computeLayout(
 		std::size_t itemCount, float controlWidth, std::size_t maxVisibleItems, float paddingPx)
 	{
@@ -44,7 +45,11 @@ namespace SegCtrl {
 		return last.baseX + last.width + paddingPx * 2.f;
 	}
 
-	// max(0, contentWidth - viewportWidth)
+	// max(0, contentWidth - viewportWidth). This was the original bug's most
+	// visible consequence: calculateLayout() was never called and its body
+	// was entirely commented out, so this was always literally 0, which
+	// made every scroll position except exactly 0 look "out of bounds" to
+	// the rubber-band clamp below.
 	inline float computeMaxScroll(float contentWidth, float viewportWidth) {
 		return std::max(0.f, contentWidth - viewportWidth);
 	}
@@ -110,6 +115,49 @@ namespace SegCtrl {
 	// snap exactly, rather than asymptotically approaching forever.
 	inline bool isSettled(float current, float target, float epsilon = 0.25f) {
 		return std::abs(current - target) < epsilon;
+	}
+
+	// Converts "current absolute tick count in ms" + "last call's tick count"
+	// into a robust delta-time in SECONDS, suitable for feeding lerpTowards()
+	// and friction/momentum math. This exists because the natural, easy-to-
+	// reach-for call site is `update(SDL_GetTicks())` -- passing an ABSOLUTE,
+	// ever-growing counter -- not a genuine per-frame delta. Every piece of
+	// deltaTime-based math in this file assumes a small (~0.016s) value; an
+	// absolute tick count is many orders of magnitude larger, and the
+	// difference matters a lot depending on which formula it hits:
+	//   - lerpTowards() clamps its `t` to [0,1], so a huge deltaTime just
+	//     saturates to an instant jump -- silently wrong (no animation),
+	//     but at least bounded.
+	//   - the momentum formula (`scrollX += velocity * deltaTime * 60`) and
+	//     the rubber-band `std::lerp(a, b, deltaTime * 10)` are NOT clamped
+	//     -- std::lerp extrapolates freely outside t=[0,1] -- so a huge
+	//     deltaTime blows scrollX up to an enormous, effectively garbage
+	//     value. This is what "manual scroll goes to incorrect positions"
+	//     looks like: one update() call after a drag leaves nonzero
+	//     velocity is enough to send scrollX into the millions.
+	//
+	// Handles the two edge cases that make "just diff two tick counts"
+	// unsafe on its own:
+	//   - First call ever (no previous tick to diff against): returns 0 so
+	//     nothing moves on that call, rather than computing a huge delta
+	//     against an uninitialized/zero previous value.
+	//   - Clock went backwards or stalled (debugger pause, app backgrounded
+	//     for a long time): clamps the result to maxDeltaSeconds so a single
+	//     catch-up frame can't overshoot wildly (a standard "spiral of
+	//     death" guard in frame-timed update loops).
+	inline float ticksToDeltaSeconds(float currentTicksMs, float& lastTicksMs, bool& hasLastTick,
+		float maxDeltaSeconds = 0.1f)
+	{
+		if (!hasLastTick) {
+			hasLastTick = true;
+			lastTicksMs = currentTicksMs;
+			return 0.f;
+		}
+		float deltaMs = currentTicksMs - lastTicksMs;
+		lastTicksMs = currentTicksMs;
+		if (deltaMs < 0.f) return 0.f; // clock went backwards -- treat as no time passed
+		float deltaSeconds = deltaMs / 1000.f;
+		return std::min(deltaSeconds, maxDeltaSeconds);
 	}
 
 } // namespace SegCtrl
