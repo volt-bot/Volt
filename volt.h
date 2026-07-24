@@ -6674,6 +6674,8 @@ protected:
 	int custom_fontstyle_ = TTF_STYLE_NORMAL;
 };
 
+#include "SegmentedControl.hpp"
+
 class RunningText : public Context, public IView
 {
 public:
