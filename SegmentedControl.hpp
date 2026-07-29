@@ -1,8 +1,24 @@
 #pragma once
-// SegmentedControl.hpp -- rewritten carousel/segmented-control widget.
-
+// SegmentedControl.hpp -- carousel/segmented-control widget.
+//
+// Layout and hit-testing math live in SegmentedControlCore.hpp (namespace
+// SegCtrl) Scrolling/momentum/rubber-band/snap animation
+// is delegated entirely to AnimCore.hpp's Anim::ScrollController -- a
+// generic, reusable primitive shared by
+// any scrollable IView, not duplicated per-widget. This class is now just
+// the SDL/framework-facing shell: translating events into calls on
+// ScrollController, and translating its position() back into TextBox
+// positions and hit-test coordinates.
+//
+// Integration: update(currentTicksMs) must be called once per frame by your
+// app's main loop, passing the CURRENT ABSOLUTE tick count -- i.e. exactly
+// (float)SDL_GetTicks(), no conversion needed. This class calls
+// adaptiveVsyncHD.startRedrawSession()/stopRedrawSession() automatically
+// while animating, matching the same pattern EditBox/Cursor/RunningText use
+// elsewhere in this framework.
 
 #include "SegmentedControlCore.hpp"
+#include "AnimCore.hpp"
 #include <cmath>
 #include <vector>
 
@@ -35,9 +51,13 @@ public:
 		bounds = attr.bounds;
 		cv = this;
 
-		// Convert the percentage ONCE, here, and never again.
-		// Every downstream user of padding (layout, hit-testing, snapping)
-		// reads this already-converted pixel value directly.
+		Anim::ValueConfig cfg;
+		cfg.friction = attr.friction;
+		scroll_ = Anim::ScrollController(cfg);
+
+		// Percentage -> pixels, converted exactly once, here. Every
+		// downstream user (layout, hit-testing, snapping) reads this
+		// already-converted pixel value directly.
 		itemPaddingPx = to_cust(_attr.itemPadding, bounds.w);
 
 		texture = CreateUniqueTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
@@ -46,8 +66,7 @@ public:
 		rebuildLayout();
 
 		m_selectedIndex = std::min(attr.selectedIndex, attr.items.empty() ? 0 : attr.items.size() - 1);
-		m_scrollX = SegCtrl::computeSnapTarget(layout_, itemPaddingPx, m_selectedIndex, bounds.w, m_maxScroll);
-		m_targetScrollX = m_scrollX;
+		scroll_.setPosition(SegCtrl::computeSnapTarget(layout_, itemPaddingPx, m_selectedIndex, bounds.w, m_maxScroll));
 		applyScrollToTextAreas();
 	}
 
@@ -59,52 +78,50 @@ public:
 		switch (event->type) {
 		case SDL_EVENT_MOUSE_BUTTON_DOWN:
 			if (event->button.button == SDL_BUTTON_LEFT && contains(bounds, event->button.x, event->button.y)) {
-				m_isDragging = true;
-				m_isAnimatingSnap = false; // a fresh drag interrupts any in-flight snap
+				scroll_.beginDrag();
 				m_lastMouseX = event->button.x;
 				m_dragDistance = 0.f;
-				m_velocity = 0.f;
 			}
 			break;
 
 		case SDL_EVENT_MOUSE_MOTION:
-			if (m_isDragging) {
+			if (scroll_.isDragging()) {
 				float deltaX = event->motion.x - m_lastMouseX;
 				m_lastMouseX = event->motion.x;
 				m_dragDistance += std::abs(deltaX);
-				m_velocity = -deltaX;
-
-				// m_scrollX is the ONLY source of truth for
-				// position. Update it, clamp it, and derive every TextBox's
-				// bounds.x from it via applyScrollToTextAreas().
-				m_scrollX = SegCtrl::clampScroll(m_scrollX - deltaX, m_maxScroll);
+				scroll_.dragBy(-deltaX); // content moves opposite the finger, standard carousel convention
 				applyScrollToTextAreas();
 			}
 			break;
 
 		case SDL_EVENT_MOUSE_BUTTON_UP:
-			if (m_isDragging) {
-				m_isDragging = false;
+			if (scroll_.isDragging()) {
+				bool wasTap = scroll_.endDrag(m_dragDistance);
 
-				if (m_dragDistance < 10.0f) {
-					// hitTestToIndex converts the ABSOLUTE
-					// screen-space click into the control's own content
-					// space by subtracting the control's own screen
-					// position (pv->getRealX() + bounds.x) before adding
-					// scroll.
+				if (wasTap) {
+					// hitTestToIndex converts the ABSOLUTE screen-space click
+					// into the control's own content space by subtracting the
+					// control's own screen position (pv->getRealX() + bounds.x)
+					// before adding scroll.
 					float controlScreenX = pv->getRealX() + bounds.x;
 					int idx = SegCtrl::hitTestToIndex(layout_, itemPaddingPx,
-						event->button.x, controlScreenX, m_scrollX);
+						event->button.x, controlScreenX, scroll_.position());
 					if (idx >= 0 && static_cast<std::size_t>(idx) != m_selectedIndex) {
-						setItemHighlighted(m_selectedIndex, false); // clear the OLD selection's highlight
+						setItemHighlighted(m_selectedIndex, false);
 						m_selectedIndex = static_cast<std::size_t>(idx);
 						attr.selectedIndex = m_selectedIndex;
-						setItemHighlighted(m_selectedIndex, true); // apply the NEW selection's highlight
+						setItemHighlighted(m_selectedIndex, true);
 						snapToSelected();
 						if (attr.onSelect) {
 							attr.onSelect(textAreas[m_selectedIndex], m_selectedIndex);
 						}
 					}
+				}
+				else {
+					// A genuine drag release: momentum/rubber-band may still
+					// need to run. beginAnimating() is a no-op if nothing
+					// actually needs to keep ticking.
+					beginAnimatingIfNeeded();
 				}
 			}
 			break;
@@ -113,60 +130,30 @@ public:
 	}
 
 	// Must be called once per frame by the app's main loop, passing the
-	// CURRENT ABSOLUTE tick count in milliseconds 
-	// The function computes its own genuine per-frame delta from the
-	// difference between this call and the last one (via
-	// SegCtrl::ticksToDeltaSeconds)
+	// CURRENT ABSOLUTE tick count in milliseconds -- (float)SDL_GetTicks().
 	void update(float currentTicksMs) {
-		float deltaTime = SegCtrl::ticksToDeltaSeconds(currentTicksMs, last_update_ticks_ms_, has_last_update_tick_);
+		if (scroll_.isDragging()) return;
 
-		if (m_isDragging) return;
+		scroll_.update(currentTicksMs);
+		applyScrollToTextAreas();
 
-		if (m_isAnimatingSnap) {
-			// The actual animation: m_scrollX eases toward
-			// m_targetScrollX over multiple frames instead of jumping there
-			// in one synchronous call.
-			m_scrollX = SegCtrl::lerpTowards(m_scrollX, m_targetScrollX, deltaTime, kSnapLerpSpeed);
-			applyScrollToTextAreas();
-
-			if (SegCtrl::isSettled(m_scrollX, m_targetScrollX)) {
-				m_scrollX = m_targetScrollX;
-				applyScrollToTextAreas();
-				m_isAnimatingSnap = false;
-				adaptiveVsyncHD.stopRedrawSession();
-				redraw_session_active_ = false;
-			}
-			return;
+		if (redraw_session_active_ && !scroll_.isAnimating()) {
+			adaptiveVsyncHD.stopRedrawSession();
+			redraw_session_active_ = false;
 		}
-
-		// Momentum/friction after a drag release (unrelated to snap-lerp --
-		// mutually exclusive with it via the early return above).
-		bool moved = false;
-		if (std::abs(m_velocity) > 0.1f) {
-			m_scrollX += m_velocity * deltaTime * 60.0f;
-			m_velocity *= attr.friction;
-			moved = true;
-		}
-
-		float clamped = SegCtrl::clampScroll(m_scrollX, m_maxScroll);
-		if (clamped != m_scrollX) {
-			m_scrollX = std::lerp(m_scrollX, clamped, deltaTime * 10.0f);
-			moved = true;
-		}
-
-		if (moved) applyScrollToTextAreas();
 	}
 
 	void onUpdate() override final { update((float)SDL_GetTicks()); }
 
-	// Accessors
+	// --- Diagnostic accessors -- harmless, read-only, useful for any
+	// consumer inspecting the widget's state, and used by regression tests. ---
 	[[nodiscard]] std::size_t getTextAreaCountForTest() const { return textAreas.size(); }
-	[[nodiscard]] float getItemPaddingPx() const { return itemPaddingPx; }
-	[[nodiscard]] float getMaxScroll() const { return m_maxScroll; }
-	[[nodiscard]] std::size_t getSelectedIndex() const { return m_selectedIndex; }
-	[[nodiscard]] float getScrollXForTest() const { return m_scrollX; }
-	[[nodiscard]] float getTargetScrollXForTest() const { return m_targetScrollX; }
-	[[nodiscard]] bool isAnimatingSnapForTest() const { return m_isAnimatingSnap; }
+	[[nodiscard]] float getItemPaddingPxForTest() const { return itemPaddingPx; }
+	[[nodiscard]] float getMaxScrollForTest() const { return m_maxScroll; }
+	[[nodiscard]] std::size_t getSelectedIndexForTest() const { return m_selectedIndex; }
+	[[nodiscard]] float getScrollXForTest() const { return scroll_.position(); }
+	[[nodiscard]] float getTargetScrollXForTest() const { return scroll_.target(); }
+	[[nodiscard]] bool isAnimatingSnapForTest() const { return scroll_.isEasing(); }
 	[[nodiscard]] int getRedrawSessionCountForTest() const { return redraw_session_active_ ? 1 : 0; }
 	TextBox& getSelectedTextBox() { return textAreas[m_selectedIndex]; }
 
@@ -184,7 +171,6 @@ public:
 	}
 
 private:
-
 	static constexpr SDL_Color kOutlineColor = { 25, 40, 45, 0xff };
 
 	void setItemHighlighted(std::size_t index, bool highlighted) {
@@ -193,12 +179,11 @@ private:
 		textAreas[index].updateTextColor(bg, kOutlineColor, attr.textColor);
 	}
 
-	// Single computation, correct units, single source of
-	// truth (layout_ + textAreas), no vestigial parallel m_items model.
 	void rebuildLayout() {
 		layout_ = SegCtrl::computeLayout(attr.items.size(), bounds.w, attr.maxVisibleItems, itemPaddingPx);
 		float contentWidth = SegCtrl::computeContentWidth(layout_, itemPaddingPx);
 		m_maxScroll = SegCtrl::computeMaxScroll(contentWidth, bounds.w);
+		scroll_.setBounds(0.f, m_maxScroll);
 
 		textAreas.clear();
 		textAreas.reserve(attr.items.size());
@@ -218,48 +203,42 @@ private:
 		}
 	}
 
-	// The ONLY place TextBox positions are ever written. Always
-	// derives bounds.x from the fixed layout_[i].baseX minus the CURRENT
-	// m_scrollX -- called after every change to m_scrollX (drag motion,
-	// momentum, snap-lerp), never mutated incrementally/directly elsewhere.
+	// The ONLY place TextBox positions are ever written. Always derives
+	// bounds.x from the fixed layout_[i].baseX minus the CURRENT scroll
+	// position -- called after every change to it (drag motion, momentum,
+	// snap-lerp), never mutated incrementally/directly elsewhere.
 	void applyScrollToTextAreas() {
+		float s = scroll_.position();
 		for (std::size_t i = 0; i < textAreas.size() && i < layout_.size(); ++i) {
-			float targetX = layout_[i].baseX - m_scrollX;
+			float targetX = layout_[i].baseX - s;
 			float delta = targetX - textAreas[i].bounds.x;
 			if (delta != 0.f) textAreas[i].updatePosBy(delta, 0.f);
 		}
 	}
 
-	void snapToSelected() {
-		// Only set the TARGET here. update() does the actual
-		// animating, every frame, until it settles.
-		m_targetScrollX = SegCtrl::computeSnapTarget(layout_, itemPaddingPx, m_selectedIndex, bounds.w, m_maxScroll);
-		if (!SegCtrl::isSettled(m_scrollX, m_targetScrollX)) {
-			m_isAnimatingSnap = true;
+	void beginAnimatingIfNeeded() {
+		if (!scroll_.isAnimating()) return;
+		if (!redraw_session_active_) {
 			adaptiveVsyncHD.startRedrawSession();
 			redraw_session_active_ = true;
 		}
+		scroll_.resetTickBaseline();
+	}
+
+	void snapToSelected() {
+		float target = SegCtrl::computeSnapTarget(layout_, itemPaddingPx, m_selectedIndex, bounds.w, m_maxScroll);
+		scroll_.snapTo(target);
+		beginAnimatingIfNeeded();
 	}
 
 	std::vector<SegCtrl::ItemLayout> layout_;
 	std::size_t m_selectedIndex = 0;
+	float itemPaddingPx = 0.f;
+	float m_maxScroll = 0.0f;
 
-	float itemPaddingPx = 0.f; // converted exactly once, in Build()
+	Anim::ScrollController scroll_;
+	bool redraw_session_active_ = false;
 
-	// Scrolling / animation state
-	float m_scrollX = 0.0f;
-	float m_targetScrollX = 0.0f;
-	float m_velocity = 0.0f;
-	float m_maxScroll = 0.0f; // genuinely computed, not permanently 0
-	bool m_isAnimatingSnap = false;
-	bool redraw_session_active_ = false; // tracked ourselves; independent of AdaptiveVsyncHandler's own internals
-	float last_update_ticks_ms_ = 0.f;   // backing state for the absolute-tick -> delta conversion
-	bool has_last_update_tick_ = false;
-
-	static constexpr float kSnapLerpSpeed = 8.f;
-
-	// Interaction state
-	bool m_isDragging = false;
 	float m_lastMouseX = 0.f;
 	float m_dragDistance = 0.f;
 
