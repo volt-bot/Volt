@@ -49,7 +49,7 @@
 //#include "mp.h"
 #include "interpolators.h"
 #include "interpolated.hpp"
-//#include "text_editor.hpp"
+#include "AnimCore.hpp"
 #ifdef __ANDROID__
 #define POOLSTL_STD_SUPPLEMENT
 #include "poolstl/poolstl.hpp"
@@ -1026,7 +1026,7 @@ public:
 	bool disabled = false;
 	bool auto_hide = false;
 	// bool relative_pos = false;
-	std::function<void()> onHideCallback = nullptr;
+	std::function<void(IView*)> onHideCallback = nullptr;
 	std::function<void(IView*)> onToggleCallback = nullptr;
 	std::vector<IView *> childViews;
 	IView* linked_view = nullptr;
@@ -1100,7 +1100,7 @@ public:
 		bounds.y = y;
 	};
 
-	void setOnHide(std::function<void()> _onHideCallback)
+	void setOnHide(std::function<void(IView*)> _onHideCallback)
 	{
 		onHideCallback = _onHideCallback;
 	}
@@ -1141,7 +1141,7 @@ public:
 			child->hide();
 		hidden = true;
 		if (onHideCallback)
-			onHideCallback();
+			onHideCallback(this);
 		return this;
 	}
 
@@ -8832,6 +8832,19 @@ public:
 			pf = cf = { event->tfinger.x * DisplayInfo::Get().RenderW,
 					   event->tfinger.y * DisplayInfo::Get().RenderH };
 			if (isPointInBound(cf.x, cf.y))
+			{
+				dy = 0.f;
+				if (not ft_handled and not result) { finger_down = true; }
+				result or_eq true;
+			}
+			else {
+				if (auto_hide) {
+					hide();
+				}
+			}
+		}
+		else if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+			if (isPointInBound(event->button.x, event->button.y))
 			{
 				dy = 0.f;
 				if (not ft_handled and not result) { finger_down = true; }
