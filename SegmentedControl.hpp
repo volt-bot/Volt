@@ -112,9 +112,6 @@ public:
 						attr.selectedIndex = m_selectedIndex;
 						setItemHighlighted(m_selectedIndex, true);
 						snapToSelected();
-						if (attr.onSelect) {
-							attr.onSelect(textAreas[m_selectedIndex], m_selectedIndex);
-						}
 					}
 				}
 				else {
@@ -140,6 +137,9 @@ public:
 		if (redraw_session_active_ && !scroll_.isAnimating()) {
 			adaptiveVsyncHD.stopRedrawSession();
 			redraw_session_active_ = false;
+			if (attr.onSelect) {
+				attr.onSelect(textAreas[m_selectedIndex], m_selectedIndex);
+			}
 		}
 	}
 
@@ -147,15 +147,50 @@ public:
 
 	// --- Diagnostic accessors -- harmless, read-only, useful for any
 	// consumer inspecting the widget's state, and used by regression tests. ---
-	[[nodiscard]] std::size_t getTextAreaCountForTest() const { return textAreas.size(); }
-	[[nodiscard]] float getItemPaddingPxForTest() const { return itemPaddingPx; }
-	[[nodiscard]] float getMaxScrollForTest() const { return m_maxScroll; }
-	[[nodiscard]] std::size_t getSelectedIndexForTest() const { return m_selectedIndex; }
+	[[nodiscard]] std::size_t getTextAreaCount() const { return textAreas.size(); }
+	[[nodiscard]] float getItemPaddingPx() const { return itemPaddingPx; }
+	[[nodiscard]] float getMaxScroll() const { return m_maxScroll; }
+	[[nodiscard]] std::size_t getSelectedIndex() const { return m_selectedIndex; }
 	[[nodiscard]] float getScrollXForTest() const { return scroll_.position(); }
-	[[nodiscard]] float getTargetScrollXForTest() const { return scroll_.target(); }
-	[[nodiscard]] bool isAnimatingSnapForTest() const { return scroll_.isEasing(); }
-	[[nodiscard]] int getRedrawSessionCountForTest() const { return redraw_session_active_ ? 1 : 0; }
+	[[nodiscard]] float getTargetScrollX() const { return scroll_.target(); }
+	[[nodiscard]] bool isAnimatingSnap() const { return scroll_.isEasing(); }
+	[[nodiscard]] int getRedrawSessionCount() const { return redraw_session_active_ ? 1 : 0; }
 	TextBox& getSelectedTextBox() { return textAreas[m_selectedIndex]; }
+
+	/// @brief change the currently selected item.
+	/// @param index The index of the item to select.
+	/// @param animate If true, smooth-scrolls (snaps) to the target item; if false, jumps immediately.
+	/// @param triggerCallback If true, invokes the `onSelect` callback if configured.
+	void setSelected(std::size_t index, bool animate = true, bool triggerCallback = false) {
+		if (textAreas.empty() || index >= textAreas.size()) {
+			return; // Guard against out-of-bounds indices or uninitialized items
+		}
+
+		if (index == m_selectedIndex) {
+			return; // No change needed
+		}
+
+		// Unhighlight previous item & highlight new item
+		setItemHighlighted(m_selectedIndex, false);
+		m_selectedIndex = index;
+		attr.selectedIndex = index;
+		setItemHighlighted(m_selectedIndex, true);
+
+		// Update scrolling position
+		if (animate) {
+			snapToSelected();
+		}
+		else {
+			float target = SegCtrl::computeSnapTarget(layout_, itemPaddingPx, m_selectedIndex, bounds.w, m_maxScroll);
+			scroll_.setPosition(target);
+			applyScrollToTextAreas();
+		}
+
+		// Optionally invoke the callback
+		if (triggerCallback && attr.onSelect) {
+			attr.onSelect(textAreas[m_selectedIndex], m_selectedIndex);
+		}
+	}
 
 	void draw() override final {
 		CacheRenderTarget crt(renderer);
