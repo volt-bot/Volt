@@ -5321,6 +5321,259 @@ private:
 
 
 
+struct CheckBoxAttributes {
+	SDL_FRect bounds = { 0.f, 0.f, 200.f, 32.f };
+	std::string labelText = "Option";
+	bool checked = false;
+
+	// Cyberpunk / Sci-Fi Neon Palette
+	SDL_Color boxBgColor = { 12, 16, 24, 220 };
+	SDL_Color boxOutlineColor = { 0, 160, 210, 160 };
+	SDL_Color activeColor = { 0, 230, 255, 255 };         // Neon Cyan
+	SDL_Color hoverOutlineColor = { 0, 255, 255, 255 };
+	SDL_Color textColor = { 230, 240, 255, 255 };
+	SDL_Color checkColor = { 10, 15, 20, 255 };          // Dark core icon color
+
+	float cornerRadius = 4.f;       // Subtle chamfer/radius for sci-fi look
+	float boxSizeRatio = 0.75f;     // Checkbox square height relative to bounds height
+	float labelSpacing = 12.f;      // Space between check box and label text
+	float fontHeight = 16.f;
+};
+
+class CheckBox : public Context, public IView {
+public:
+	CheckBox() = default;
+
+	CheckBox& registerOnValueChangeCallback(std::function<void(CheckBox&, bool)> cb) {
+		on_value_changed_ = std::move(cb);
+		return *this;
+	}
+
+	CheckBox& Build(Context* ctx, const CheckBoxAttributes& attr) {
+		setContext(ctx);
+		IView::type = "checkbox";
+		attr_ = attr;
+		bounds = attr.bounds;
+		is_checked_ = attr.checked;
+		check_anim_ = is_checked_ ? 1.0f : 0.0f;
+
+		// Generate label texture if text is provided
+		if (!attr_.labelText.empty()) {
+			TTF_Font* tmpFont = nullptr;
+			Fonts[Font::RobotoBold]->font_size = attr_.fontHeight;
+			auto font_file = Fonts[Font::RobotoBold]->font_name;
+			tmpFont = FontSystem::Get().getFont(*Fonts[Font::RobotoBold]);
+			FontAttributes fontAttr{ font_file, FontStyle::Normal, attr_.fontHeight };
+			FontSystem::Get().setFontAttributes({ fontAttr.font_file.c_str(), fontAttr.font_style, fontAttr.font_size }, 0);
+
+			auto textTexOpt = FontSystem::Get().genTextTextureUnique(
+				renderer,
+				attr_.labelText.c_str(),
+				attr_.textColor
+			);
+
+			if (textTexOpt.has_value()) {
+				label_texture_ = std::move(textTexOpt.value());
+				float tw = 0.f, th = 0.f;
+				SDL_GetTextureSize(label_texture_.get(), &tw, &th);
+				label_size_ = { tw, th };
+			}
+		}
+
+		return *this;
+	}
+
+	bool isChecked() const { return is_checked_; }
+
+	CheckBox& setChecked(bool checked, bool animate = true) {
+		if (is_checked_ != checked) {
+			is_checked_ = checked;
+			if (!animate) {
+				check_anim_ = is_checked_ ? 1.0f : 0.0f;
+			}
+			if (on_value_changed_) {
+				on_value_changed_(*this, is_checked_);
+			}
+		}
+		return *this;
+	}
+
+	CheckBox& toggle(bool animate = true) {
+		return setChecked(!is_checked_, animate);
+	}
+
+	bool handleEvent() override {
+		if (hidden || disabled) return false;
+
+		float rx = getRealX();
+		float ry = getRealY();
+		SDL_FRect realBounds = { rx, ry, bounds.w, bounds.h };
+
+		auto contains = [](const SDL_FRect& r, float x, float y) {
+			return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+			};
+
+		switch (event->type) {
+		case SDL_EVENT_MOUSE_MOTION: {
+			is_hovered_ = contains(realBounds, event->motion.x, event->motion.y);
+			break;
+		}
+		case SDL_EVENT_MOUSE_BUTTON_DOWN: {
+			if (event->button.button == SDL_BUTTON_LEFT && contains(realBounds, event->button.x, event->button.y)) {
+				is_pressed_ = true;
+				return true;
+			}
+			break;
+		}
+		case SDL_EVENT_MOUSE_BUTTON_UP: {
+			if (event->button.button == SDL_BUTTON_LEFT && is_pressed_) {
+				is_pressed_ = false;
+				if (contains(realBounds, event->button.x, event->button.y)) {
+					toggle(true);
+					return true;
+				}
+			}
+			break;
+		}
+		default:
+			break;
+		}
+		return false;
+	}
+
+	void update(float deltaTime) {
+		if (hidden) return;
+
+		// Smooth state transitions using delta time lerps
+		float targetCheck = is_checked_ ? 1.0f : 0.0f;
+		float targetHover = is_hovered_ ? 1.0f : 0.0f;
+
+		check_anim_ = std::lerp(check_anim_, targetCheck, deltaTime * 16.0f);
+		hover_anim_ = std::lerp(hover_anim_, targetHover, deltaTime * 12.0f);
+
+		if (std::abs(check_anim_ - targetCheck) < 0.001f) check_anim_ = targetCheck;
+		if (std::abs(hover_anim_ - targetHover) < 0.001f) hover_anim_ = targetHover;
+	}
+
+	void onUpdate() override {
+		// Fallback frame update when delta time is driven externally
+		update(1.0f / 60.0f);
+	}
+
+	void draw() override {
+		if (hidden) return;
+
+		float rx = getRealX();
+		float ry = getRealY();
+
+		// Calculate Check Square Geometry
+		float boxDim = bounds.h * attr_.boxSizeRatio;
+		float boxY = ry + (bounds.h - boxDim) * 0.5f;
+		SDL_FRect boxRect = { rx, boxY, boxDim, boxDim };
+
+		// 1. Draw Outer Futuristic Glow (When hovered or checked)
+		float glowAlpha = std::max(hover_anim_ * 0.4f, check_anim_ * 0.3f);
+		if (glowAlpha > 0.01f) {
+			SDL_FRect glowRect = { boxRect.x - 2.f, boxRect.y - 2.f, boxRect.w + 4.f, boxRect.h + 4.f };
+			SDL_Color glowColor = attr_.activeColor;
+			glowColor.a = static_cast<Uint8>(glowAlpha * 255.f);
+
+			CacheRenderColor(renderer);
+			SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+			fillRoundedRectF(renderer, glowRect, attr_.cornerRadius + 1.f, glowColor);
+			RestoreCachedRenderColor(renderer);
+		}
+
+		// 2. Base Dark Container
+		fillRoundedRectF(renderer, boxRect, attr_.cornerRadius, attr_.boxBgColor);
+
+		// 3. Interpolated Border Outline
+		SDL_Color currentOutline = {
+			static_cast<Uint8>(std::lerp(attr_.boxOutlineColor.r, attr_.hoverOutlineColor.r, hover_anim_)),
+			static_cast<Uint8>(std::lerp(attr_.boxOutlineColor.g, attr_.hoverOutlineColor.g, hover_anim_)),
+			static_cast<Uint8>(std::lerp(attr_.boxOutlineColor.b, attr_.hoverOutlineColor.b, hover_anim_)),
+			static_cast<Uint8>(std::lerp(attr_.boxOutlineColor.a, attr_.hoverOutlineColor.a, hover_anim_))
+		};
+
+		// Boost outline intensity if active
+		if (check_anim_ > 0.01f) {
+			currentOutline.r = static_cast<Uint8>(std::lerp(currentOutline.r, attr_.activeColor.r, check_anim_));
+			currentOutline.g = static_cast<Uint8>(std::lerp(currentOutline.g, attr_.activeColor.g, check_anim_));
+			currentOutline.b = static_cast<Uint8>(std::lerp(currentOutline.b, attr_.activeColor.b, check_anim_));
+			currentOutline.a = static_cast<Uint8>(std::lerp(currentOutline.a, attr_.activeColor.a, check_anim_));
+		}
+
+		fillRoundedRectOutline(renderer, boxRect, attr_.cornerRadius, 1.5f, currentOutline);
+
+		// 4. Inner Animated Active Core / Check Mark
+		if (check_anim_ > 0.01f) {
+			// Scaled Inner Neon Fill
+			float innerMargin = (boxDim * 0.2f) * (1.0f - check_anim_ * 0.5f);
+			SDL_FRect activeCore = {
+				boxRect.x + innerMargin,
+				boxRect.y + innerMargin,
+				boxRect.w - (innerMargin * 2.f),
+				boxRect.h - (innerMargin * 2.f)
+			};
+
+			SDL_Color fillCol = attr_.activeColor;
+			fillCol.a = static_cast<Uint8>(check_anim_ * 255.f);
+			fillRoundedRectF(renderer, activeCore, std::max(1.f, attr_.cornerRadius - 1.f), fillCol);
+
+			// Vector Vector-based Futuristic Checkmark
+			CacheRenderColor(renderer);
+			SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+			SDL_SetRenderDrawColor(renderer, attr_.checkColor.r, attr_.checkColor.g, attr_.checkColor.b, static_cast<Uint8>(check_anim_ * 255.f));
+
+			// Checkmark coordinates relative to box
+			float p1x = boxRect.x + boxRect.w * 0.28f;
+			float p1y = boxRect.y + boxRect.h * 0.52f;
+			float p2x = boxRect.x + boxRect.w * 0.45f;
+			float p2y = boxRect.y + boxRect.h * 0.68f;
+			float p3x = boxRect.x + boxRect.w * 0.74f;
+			float p3y = boxRect.y + boxRect.h * 0.32f;
+
+			// Animate line segments using check_anim_
+			float currentP2x = std::lerp(p1x, p2x, std::min(1.0f, check_anim_ * 2.0f));
+			float currentP2y = std::lerp(p1y, p2y, std::min(1.0f, check_anim_ * 2.0f));
+
+			SDL_RenderLine(renderer, p1x, p1y, currentP2x, currentP2y);
+
+			if (check_anim_ > 0.5f) {
+				float seg2Factor = (check_anim_ - 0.5f) * 2.0f;
+				float currentP3x = std::lerp(p2x, p3x, seg2Factor);
+				float currentP3y = std::lerp(p2y, p3y, seg2Factor);
+				SDL_RenderLine(renderer, p2x, p2y, currentP3x, currentP3y);
+			}
+
+			RestoreCachedRenderColor(renderer);
+		}
+
+		// 5. Draw Label Text
+		if (label_texture_) {
+			float labelX = boxRect.x + boxRect.w + attr_.labelSpacing;
+			float labelY = ry + (bounds.h - label_size_.y) * 0.5f;
+
+			SDL_FRect dstRect = { labelX, labelY, label_size_.x, label_size_.y };
+			RenderTexture(renderer, label_texture_.get(), nullptr, &dstRect);
+		}
+	}
+
+private:
+	CheckBoxAttributes attr_{};
+	bool is_checked_ = false;
+	bool is_hovered_ = false;
+	bool is_pressed_ = false;
+
+	float check_anim_ = 0.0f; // 0.0 (Unchecked) <-> 1.0 (Checked)
+	float hover_anim_ = 0.0f; // 0.0 (Idle) <-> 1.0 (Hovered)
+
+	UniqueTexture label_texture_ = nullptr;
+	SDL_FPoint label_size_ = { 0.f, 0.f };
+
+	std::function<void(CheckBox&, bool)> on_value_changed_ = nullptr;
+};
+
 
 struct ImageButtonAttributes
 {
