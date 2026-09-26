@@ -1,33 +1,29 @@
-**Volt GUI Library**
-----
-__Please Note:__ This is WIP
+⚡ Volt
+Volt is a modern, ultra-high-performance cross-platform application development framework written in C++23. Powered by SDL under the hood, Volt delivers a seamless single-codebase experience to build native applications across Android, iOS, macOS, Windows, and Linux.
 
-Volt is an ambitious cross-platform C++ GUI & utilities library aimed at simplifying the creation of modern and visually striking graphical user interfaces (GUI) in software applications. While still in its early stages of development, Volt GUI holds immense potential to revolutionize GUI design across desktop, mobile, and web platforms.
+Designed for developers who demand raw performance, zero-overhead abstractions, and complete control, Volt combines a hardware-accelerated GUI system with robust, production-grade utilities including asynchronous execution, file system management, webviews, and advanced logging.
 
-**Project Status**
-----
-Volt GUI is currently at a nascent stage, and we're excited to invite developers of all levels to join us in shaping its future. We're seeking enthusiastic contributors who are passionate about GUI development and creating user-friendly interfaces.
+🌟 Key Features
+🚀 Modern C++23 Core: Leverages cutting-edge C++ features for maximum type safety, expressive syntax, and blazing-fast execution.
 
-**How You Can Contribute**
-----
-We appreciate any assistance in maturing this project and realizing its potential. Here's how you can help:
+🌍 True Cross-Platform: Write once, compile everywhere with first-class target support for Android, iOS, macOS, Windows, and Linux.
 
-* **Code Contributions:** Whether you're an expert or just starting out, your code can make a difference. Contribute improvements, features, and bug fixes.
-* **Testing and Feedback:** Test Volt GUI in various scenarios and provide valuable feedback about its functionality, usability, and bugs.
-* __Documentation:__ Help us create clear and concise documentation so that others can easily understand and utilize the library.
+🎨 Hardware-Accelerated GUI: A snappy, modern UI component framework rendered directly via SDL for low latency and smooth, responsive frame rates.
 
-**Getting Started**
-  ----
-**Dependencies:**
-----
-* [SDL3](https://github.com/libsdl-org/SDL)
-* [SDL_ttf](https://github.com/libsdl-org/SDL_ttf) (for text rendering)
-* [SDL_image](https://github.com/libsdl-org/SDL_image) (for image support)
+🌐 Integrated WebViews: Seamlessly embed web content and hybrid components into your native applications.
 
-**Installation & Building:**
-  ----
-  * **Windows**
-  * **MacOS**
-  * **Android**
-  * **IOS**
-  * **Linux**
+⚡ Asynchronous Execution: Thread-safe async task dispatchers and futures designed to keep your UI thread buttery smooth during heavy workloads.
+
+🗂️ Unified File System: Cross-platform I/O abstractions that safely navigate sandboxed file systems on mobile and desktop OSs.
+
+📝 Comprehensive Logging: High-performance, customizable logging utilities with level filtering and multi-sink support.
+
+📦 Getting Started
+Prerequisites
+Make sure you have the following installed on your development machine:
+
+A C++23 compliant compiler (GCC 13+, Clang 17+, or MSVC 2022+)
+
+CMake 3.25 or higher
+
+SDL3 (or SDL2 development libraries)
