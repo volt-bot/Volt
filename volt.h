@@ -1880,6 +1880,10 @@ public:
 		std::setlocale(LC_ALL, "en_US.UTF-8");
 	}
 
+	std::string getLogPath() {
+		return cfg.logs_dir + cfg.title + "_logs.txt";
+	}
+
 public:
 	short create(Application::Config config)
 	{
