@@ -2412,58 +2412,68 @@ union ColorUnion {
 	uint8_t c[4]; // [0]=Alpha, [1]=Red, [2]=Green, [3]=Blue
 };
 
-// O(1) per-pixel Sliding Window Box Blur
-void fastBoxBlur(uint32_t* data, int width, int height, int radius, int iterations) {
+void fastBoxBlur(SDL_Surface* surface, int radius, int iterations) {
+	int width = surface->w;
+	int height = surface->h;
 	if (radius < 1 || width < 1 || height < 1) return;
 
-	// A secondary buffer prevents the feedback-loop artifact of in-place blurring
+	if (SDL_BYTESPERPIXEL(surface->format) != 4) {
+		SDL_Log("Error: Blur requires a 32-bit surface (RGBA/ARGB).");
+		return;
+	}
+
+	int pitch32 = surface->pitch / 4;
+
 	std::vector<uint32_t> tempBuffer(width * height);
-	uint32_t* bufferA = data;
+	uint32_t* bufferA = static_cast<uint32_t*>(surface->pixels);
 	uint32_t* bufferB = tempBuffer.data();
 
 	int windowSize = radius * 2 + 1;
 
 	for (int iter = 0; iter < iterations; ++iter) {
-		// Horizontal Pass (Rows)
+
+		// HORIZONTAL PASS
 		for (int y = 0; y < height; ++y) {
 			int sum[4] = { 0, 0, 0, 0 };
-			int rowOffset = y * width;
 
-			// Prime the window (Edge clamping replicates the edge pixel)
-			ColorUnion firstPix; firstPix.ui32 = bufferA[rowOffset];
+			int rowOffsetA = y * pitch32;
+			int rowOffsetB = y * width;
+
+			// Prime the sliding window
+			ColorUnion firstPix; firstPix.ui32 = bufferA[rowOffsetA];
 			for (int i = 0; i < radius; ++i) {
 				sum[0] += firstPix.c[0]; sum[1] += firstPix.c[1];
 				sum[2] += firstPix.c[2]; sum[3] += firstPix.c[3];
 			}
 			for (int i = 0; i <= radius && i < width; ++i) {
-				ColorUnion p; p.ui32 = bufferA[rowOffset + i];
+				ColorUnion p; p.ui32 = bufferA[rowOffsetA + i];
 				sum[0] += p.c[0]; sum[1] += p.c[1];
 				sum[2] += p.c[2]; sum[3] += p.c[3];
 			}
 
-			// Slide across the row
+			// Slide across row
 			for (int x = 0; x < width; ++x) {
 				ColorUnion out;
 				out.c[0] = sum[0] / windowSize; out.c[1] = sum[1] / windowSize;
 				out.c[2] = sum[2] / windowSize; out.c[3] = sum[3] / windowSize;
-				bufferB[rowOffset + x] = out.ui32;
+				bufferB[rowOffsetB + x] = out.ui32;
 
 				int outgoingX = std::max(0, x - radius);
 				int incomingX = std::min(width - 1, x + radius + 1);
 
-				ColorUnion outg; outg.ui32 = bufferA[rowOffset + outgoingX];
-				ColorUnion inc;  inc.ui32 = bufferA[rowOffset + incomingX];
+				ColorUnion outg; outg.ui32 = bufferA[rowOffsetA + outgoingX];
+				ColorUnion inc;  inc.ui32 = bufferA[rowOffsetA + incomingX];
 
 				sum[0] += inc.c[0] - outg.c[0]; sum[1] += inc.c[1] - outg.c[1];
 				sum[2] += inc.c[2] - outg.c[2]; sum[3] += inc.c[3] - outg.c[3];
 			}
 		}
 
-		// Vertical Pass (Columns)
+		// VERTICAL PASS
 		for (int x = 0; x < width; ++x) {
 			int sum[4] = { 0, 0, 0, 0 };
 
-			// Prime the window
+			// Prime the sliding window
 			ColorUnion firstPix; firstPix.ui32 = bufferB[x];
 			for (int i = 0; i < radius; ++i) {
 				sum[0] += firstPix.c[0]; sum[1] += firstPix.c[1];
@@ -2475,12 +2485,12 @@ void fastBoxBlur(uint32_t* data, int width, int height, int radius, int iteratio
 				sum[2] += p.c[2]; sum[3] += p.c[3];
 			}
 
-			// Slide down the column
+			// Slide down column
 			for (int y = 0; y < height; ++y) {
 				ColorUnion out;
 				out.c[0] = sum[0] / windowSize; out.c[1] = sum[1] / windowSize;
 				out.c[2] = sum[2] / windowSize; out.c[3] = sum[3] / windowSize;
-				bufferA[y * width + x] = out.ui32;
+				bufferA[y * pitch32 + x] = out.ui32;
 
 				int outgoingY = std::max(0, y - radius);
 				int incomingY = std::min(height - 1, y + radius + 1);
@@ -2495,13 +2505,18 @@ void fastBoxBlur(uint32_t* data, int width, int height, int radius, int iteratio
 	}
 }
 
-// Alpha blends a vertical color gradient over the surface to mimic UI material
-void applyAcrylicGradient(uint32_t* data, int width, int height, uint32_t topColor, uint32_t bottomColor) {
+void applyAcrylicGradient(SDL_Surface* surface, uint32_t topColor, uint32_t bottomColor) {
+	if (SDL_BYTESPERPIXEL(surface->format) != 4) return;
+
+	int width = surface->w;
+	int height = surface->h;
+	int pitch32 = surface->pitch / 4;
+	uint32_t* data = static_cast<uint32_t*>(surface->pixels);
+
 	ColorUnion tintTop; tintTop.ui32 = topColor;
 	ColorUnion tintBottom; tintBottom.ui32 = bottomColor;
 
 	for (int y = 0; y < height; ++y) {
-		// Calculate interpolation factor for this row
 		float t = static_cast<float>(y) / std::max(1, height - 1);
 		ColorUnion rowTint;
 
@@ -2511,40 +2526,48 @@ void applyAcrylicGradient(uint32_t* data, int width, int height, uint32_t topCol
 		rowTint.c[3] = static_cast<uint8_t>(tintTop.c[3] * (1.0f - t) + tintBottom.c[3] * t);
 
 		uint32_t alpha = rowTint.c[0];
-		if (alpha == 0) continue; // Skip rendering if fully transparent
+		if (alpha == 0) continue;
 
-		int rowOffset = y * width;
+		int rowOffset = y * pitch32;
 		for (int x = 0; x < width; ++x) {
 			ColorUnion pixel;
 			pixel.ui32 = data[rowOffset + x];
 
-			// Standard alpha blending: (Foreground * Alpha + Background * (255 - Alpha)) / 255
 			pixel.c[1] = static_cast<uint8_t>(((rowTint.c[1] * alpha) + (pixel.c[1] * (255 - alpha))) / 255);
 			pixel.c[2] = static_cast<uint8_t>(((rowTint.c[2] * alpha) + (pixel.c[2] * (255 - alpha))) / 255);
 			pixel.c[3] = static_cast<uint8_t>(((rowTint.c[3] * alpha) + (pixel.c[3] * (255 - alpha))) / 255);
-			// Original background pixel's alpha is deliberately left untouched
 
 			data[rowOffset + x] = pixel.ui32;
 		}
 	}
 }
 
-void blurIMG(SDL_Surface* imageSurface, const int& blurExtend, const int& iterations = 3)
+void blurIMG(SDL_Surface* imageSurface, const int& blurExtend, const int& iterations = 3, bool applyAcrylic = true)
 {
 	const auto start = std::chrono::high_resolution_clock::now();
-	uint32_t* data = static_cast<uint32_t*>(imageSurface->pixels);
 
-	// 1. Fast Blur Phase
-	// Iterating 3 times forces the Box Blur to converge on a Gaussian distribution 
-	// resulting in exceptionally smooth, artifact-free blooms.
-	fastBoxBlur(data, imageSurface->w, imageSurface->h, blurExtend, iterations);
+	bool needsUnlock = false;
+	if (SDL_MUSTLOCK(imageSurface)) {
+		if (!SDL_LockSurface(imageSurface)) {
+			SDL_Log("Failed to lock surface for blurring: %s", SDL_GetError());
+			return;
+		}
+		needsUnlock = true;
+	}
 
-	// 2. Windows Acrylic Gradient Phase 
-	// Configure your colors here using the layout [Alpha, R, G, B]
+	fastBoxBlur(imageSurface, blurExtend, iterations);
+
 	ColorUnion topTint; topTint.c[0] = 60;  topTint.c[1] = 255; topTint.c[2] = 255; topTint.c[3] = 255;
 	ColorUnion botTint; botTint.c[0] = 110; botTint.c[1] = 220; botTint.c[2] = 220; botTint.c[3] = 220;
 
-	applyAcrylicGradient(data, imageSurface->w, imageSurface->h, topTint.ui32, botTint.ui32);
+	
+	if (applyAcrylic) {
+		applyAcrylicGradient(imageSurface, topTint.ui32, botTint.ui32);
+	}
+
+	if (needsUnlock) {
+		SDL_UnlockSurface(imageSurface);
+	}
 
 	std::chrono::duration<double> dt = (std::chrono::high_resolution_clock::now() - start);
 	SDL_Log("blurring done: %f secs", dt.count());
