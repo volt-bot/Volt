@@ -2573,6 +2573,41 @@ void blurIMG(SDL_Surface* imageSurface, const int& blurExtend, const int& iterat
 	SDL_Log("blurring done: %f secs", dt.count());
 }
 
+/**
+ * Loads an image from disk and converts it to the requested 32-bit pixel format.
+ * Automatically cleans up intermediate allocations.
+ *
+ * @param path Path to the image file.
+ * @param targetFormat Target pixel format (defaults to 32-bit ARGB8888).
+ * @return Pointer to converted SDL_Surface, or nullptr on failure. (Caller owns the returned surface).
+ */
+SDL_Surface* LoadSurfaceConverted(const std::filesystem::path& path,
+	SDL_PixelFormat targetFormat = SDL_PIXELFORMAT_ARGB8888)
+{
+	const std::string pathStr = path.string();
+
+	SDL_Surface* rawSurface = IMG_Load(pathStr.c_str());
+	if (!rawSurface) {
+		SDL_Log("Failed to load image '%s': %s", pathStr.c_str(), SDL_GetError());
+		return nullptr;
+	}
+
+	// Fast path: skip conversion if the image matches the target format already
+	if (rawSurface->format == targetFormat) {
+		return rawSurface;
+	}
+
+	SDL_Surface* convertedSurface = SDL_ConvertSurface(rawSurface, targetFormat);
+	SDL_DestroySurface(rawSurface); // Clean up 24-bit original immediately
+
+	if (!convertedSurface) {
+		SDL_Log("Failed to convert surface format for '%s': %s", pathStr.c_str(), SDL_GetError());
+		return nullptr;
+	}
+
+	return convertedSurface;
+}
+
 // Function for loading an image to SDL_Texture
 static SDL_Texture *loadImage(SDL_Renderer *renderer, const char *path)
 {
