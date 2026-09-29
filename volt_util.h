@@ -890,7 +890,12 @@ class Logger
 				last_log = finalMsg;
 			}
 		}
-		logs[level].push_back(finalMsg);
+		auto& vec = logs[level];
+		vec.push_back(finalMsg);
+		// maintain log buffer size
+		if (vec.size() > this->buffer_size) {
+			vec.erase(vec.begin());
+		}
 		lock.unlock();
 		try
 		{
@@ -992,6 +997,7 @@ class Logger
 	std::queue<std::function<void()>> tasks;
 	std::mutex queue_mutex;
 	bool stop = false;
+	std::size_t buffer_size = 10000;
 	std::string last_log{}, last_final_msg{};
 };
 
