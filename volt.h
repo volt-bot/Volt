@@ -1845,8 +1845,9 @@ public:
 		bool init_img = true;
 		bool init_everyting = true;
 		bool mouse_touch_events = true;
-		std::string logs_dir = "";
 		float toast_ft_size = 2.5f;// px
+		std::size_t logs_buffer_size = 1000;
+		std::string logs_dir = "";
 	};
 
 public:
