@@ -22,8 +22,14 @@
 #include <cmath>
 #include <vector>
 
-class SegmentedControl : public Context, public IView {
+class SegmentedControl final : public Context, public IView {
 public:
+	enum class TransitionStatus {
+		OK,
+		WAIT, // Holds the transition, keeps UI active, and polls every frame
+		CANCEL
+	};
+
 	struct Attributes {
 		SDL_FRect bounds;
 		SDL_Color bgColor = { 50, 50, 50, 255 };
@@ -38,6 +44,10 @@ public:
 		std::vector<std::string> items;
 		std::size_t maxVisibleItems = 5;
 		std::size_t selectedIndex = 0;
+
+		// Pre-transition condition check (currentIndex, targetIndex) -> TransitionStatus
+		std::function<TransitionStatus(std::size_t, std::size_t)> onPreTransition = nullptr;
+
 		// onSelect callback(selected textbox, selected index)
 		std::function<void(TextBox&, std::size_t)> onSelect = nullptr;
 	};
@@ -106,12 +116,9 @@ public:
 					float controlScreenX = pv->getRealX() + bounds.x;
 					int idx = SegCtrl::hitTestToIndex(layout_, itemPaddingPx,
 						event->button.x, controlScreenX, scroll_.position());
+
 					if (idx >= 0 && static_cast<std::size_t>(idx) != m_selectedIndex) {
-						setItemHighlighted(m_selectedIndex, false);
-						m_selectedIndex = static_cast<std::size_t>(idx);
-						attr.selectedIndex = m_selectedIndex;
-						setItemHighlighted(m_selectedIndex, true);
-						snapToSelected();
+						attemptTransition(static_cast<std::size_t>(idx), true, false);
 					}
 				}
 				else {
@@ -129,12 +136,16 @@ public:
 	// Must be called once per frame by the app's main loop, passing the
 	// CURRENT ABSOLUTE tick count in milliseconds -- (float)SDL_GetTicks().
 	void update(float currentTicksMs) {
+		if (m_isWaitingTransition) {
+			attemptTransition(m_pendingTargetIndex, m_pendingAnimate, m_pendingTriggerCallback);
+		}
+
 		if (scroll_.isDragging()) return;
 
 		scroll_.update(currentTicksMs);
 		applyScrollToTextAreas();
 
-		if (redraw_session_active_ && !scroll_.isAnimating()) {
+		if (redraw_session_active_ && !scroll_.isAnimating() && !m_isWaitingTransition) {
 			adaptiveVsyncHD.stopRedrawSession();
 			redraw_session_active_ = false;
 			if (attr.onSelect) {
@@ -165,31 +176,7 @@ public:
 		if (textAreas.empty() || index >= textAreas.size()) {
 			return; // Guard against out-of-bounds indices or uninitialized items
 		}
-
-		if (index == m_selectedIndex) {
-			return; // No change needed
-		}
-
-		// Unhighlight previous item & highlight new item
-		setItemHighlighted(m_selectedIndex, false);
-		m_selectedIndex = index;
-		attr.selectedIndex = index;
-		setItemHighlighted(m_selectedIndex, true);
-
-		// Update scrolling position
-		if (animate) {
-			snapToSelected();
-		}
-		else {
-			float target = SegCtrl::computeSnapTarget(layout_, itemPaddingPx, m_selectedIndex, bounds.w, m_maxScroll);
-			scroll_.setPosition(target);
-			applyScrollToTextAreas();
-		}
-
-		// Optionally invoke the callback
-		if (triggerCallback && attr.onSelect) {
-			attr.onSelect(textAreas[m_selectedIndex], m_selectedIndex);
-		}
+		attemptTransition(index, animate, triggerCallback);
 	}
 
 	void draw() override final {
@@ -207,6 +194,59 @@ public:
 
 private:
 	static constexpr SDL_Color kOutlineColor = { 25, 40, 45, 0xff };
+
+	void attemptTransition(std::size_t targetIndex, bool animate = true, bool triggerCallback = false) {
+		if (targetIndex == m_selectedIndex) {
+			m_isWaitingTransition = false;
+			return;
+		}
+
+		if (attr.onPreTransition) {
+			TransitionStatus status = attr.onPreTransition(m_selectedIndex, targetIndex);
+
+			if (status == TransitionStatus::CANCEL) {
+				m_isWaitingTransition = false;
+				return;
+			}
+			else if (status == TransitionStatus::WAIT) {
+				m_isWaitingTransition = true;
+				m_pendingTargetIndex = targetIndex;
+				m_pendingAnimate = animate;
+				m_pendingTriggerCallback = triggerCallback;
+
+				// Ensure the UI stays alive to poll every frame
+				if (!redraw_session_active_) {
+					adaptiveVsyncHD.startRedrawSession();
+					redraw_session_active_ = true;
+				}
+				return; // Hold here until a future frame evaluates to OK or CANCEL
+			}
+		}
+
+		// Proceed with the actual transition
+		m_isWaitingTransition = false;
+		executeTransition(targetIndex, animate, triggerCallback);
+	}
+
+	void executeTransition(std::size_t targetIndex, bool animate, bool triggerCallback) {
+		setItemHighlighted(m_selectedIndex, false);
+		m_selectedIndex = targetIndex;
+		attr.selectedIndex = targetIndex;
+		setItemHighlighted(m_selectedIndex, true);
+
+		if (animate) {
+			snapToSelected();
+		}
+		else {
+			float target = SegCtrl::computeSnapTarget(layout_, itemPaddingPx, m_selectedIndex, bounds.w, m_maxScroll);
+			scroll_.setPosition(target);
+			applyScrollToTextAreas();
+		}
+
+		if (triggerCallback && attr.onSelect) {
+			attr.onSelect(textAreas[m_selectedIndex], m_selectedIndex);
+		}
+	}
 
 	void setItemHighlighted(std::size_t index, bool highlighted) {
 		if (index >= textAreas.size()) return;
@@ -238,10 +278,6 @@ private:
 		}
 	}
 
-	// The ONLY place TextBox positions are ever written. Always derives
-	// bounds.x from the fixed layout_[i].baseX minus the CURRENT scroll
-	// position -- called after every change to it (drag motion, momentum,
-	// snap-lerp), never mutated incrementally/directly elsewhere.
 	void applyScrollToTextAreas() {
 		float s = scroll_.position();
 		for (std::size_t i = 0; i < textAreas.size() && i < layout_.size(); ++i) {
@@ -273,6 +309,12 @@ private:
 
 	Anim::ScrollController scroll_;
 	bool redraw_session_active_ = false;
+
+	// Polling state variables
+	bool m_isWaitingTransition = false;
+	std::size_t m_pendingTargetIndex = 0;
+	bool m_pendingAnimate = true;
+	bool m_pendingTriggerCallback = false;
 
 	float m_lastMouseX = 0.f;
 	float m_dragDistance = 0.f;
