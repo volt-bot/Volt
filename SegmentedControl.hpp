@@ -45,8 +45,8 @@ public:
 		std::size_t maxVisibleItems = 5;
 		std::size_t selectedIndex = 0;
 
-		// Pre-transition condition check (currentIndex, targetIndex) -> TransitionStatus
-		std::function<TransitionStatus(std::size_t, std::size_t)> onPreTransition = nullptr;
+		// Pre-transition condition check (currentIndex, targetIndex, isWaitingTransition) -> TransitionStatus
+		std::function<TransitionStatus(std::size_t, std::size_t, bool)> onPreTransition = nullptr;
 
 		// onSelect callback(selected textbox, selected index)
 		std::function<void(TextBox&, std::size_t)> onSelect = nullptr;
@@ -202,7 +202,7 @@ private:
 		}
 
 		if (attr.onPreTransition) {
-			TransitionStatus status = attr.onPreTransition(m_selectedIndex, targetIndex);
+			TransitionStatus status = attr.onPreTransition(m_selectedIndex, targetIndex, m_isWaitingTransition);
 
 			if (status == TransitionStatus::CANCEL) {
 				m_isWaitingTransition = false;
